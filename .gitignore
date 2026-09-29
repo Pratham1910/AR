@@ -29,6 +29,7 @@ data/images/*
 Thumbs.db
 .vscode/
 .idea/
+.claude/
 
 ## Docker
 docker/volumes/

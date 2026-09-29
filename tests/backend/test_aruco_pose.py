@@ -41,6 +41,8 @@ def test_detects_and_estimates_pose_for_synthetic_marker():
     assert result.tvec[2][0] > 0  # positive Z = in front of the camera
     assert result.reprojection_error_px is not None
     assert result.reprojection_error_px < 2.0  # should reproject very accurately for a synthetic, undistorted marker
+    assert result.corners_px is not None
+    assert len(result.corners_px) == 4
 
 
 def test_target_marker_id_filters_out_non_matching_marker():

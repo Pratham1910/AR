@@ -89,12 +89,21 @@ export interface QuaternionXYZW {
   w: number;
 }
 
+export interface Vector2 {
+  x: number;
+  y: number;
+}
+
 export interface PoseResponse {
   found: boolean;
   marker_id: number | null;
   position: Vector3 | null;
   quaternion: QuaternionXYZW | null;
   reprojection_error_px: number | null;
+  // Marker corners in the captured frame's own pixel space
+  // (top-left/top-right/bottom-right/bottom-left) — draw as a quadrilateral
+  // to show exactly what was detected.
+  corners_px: Vector2[] | null;
   calibration_is_approximate: boolean;
   calibration_source: string;
 }

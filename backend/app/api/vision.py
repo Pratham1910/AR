@@ -11,7 +11,7 @@ import numpy as np
 from fastapi import APIRouter, HTTPException
 
 from app.core.config import get_settings
-from app.schemas.pose import PoseRequest, PoseResponse, Quaternion, Vector3
+from app.schemas.pose import PoseRequest, PoseResponse, Quaternion, Vector2, Vector3
 from app.schemas.vision import DetectRequest, DetectResponse, StateRequest, StateResponse
 from app.services.pose.aruco_pose import ArucoPoseEstimator
 from app.services.pose.calibration import load_calibration
@@ -86,6 +86,7 @@ def estimate_pose(request: PoseRequest) -> PoseResponse:
         position=Vector3(x=pose.position[0], y=pose.position[1], z=pose.position[2]),
         quaternion=Quaternion(x=pose.quaternion[0], y=pose.quaternion[1], z=pose.quaternion[2], w=pose.quaternion[3]),
         reprojection_error_px=estimate.reprojection_error_px,
+        corners_px=[Vector2(x=x, y=y) for x, y in estimate.corners_px] if estimate.corners_px else None,
         calibration_is_approximate=calibration.is_approximate,
         calibration_source=calibration.source,
     )

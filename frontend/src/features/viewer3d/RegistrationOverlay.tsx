@@ -28,6 +28,11 @@ interface Props {
  * won't exactly match the live video's — only the marker-relative pose is
  * accurate (and only as accurate as the calibration in use; see
  * PoseResponse.calibration_is_approximate).
+ *
+ * A 2D outline (the marker's detected corners, drawn on `outlineCanvasRef`)
+ * is rendered on every attempt regardless of whether a pose was found — this
+ * is the "what did the detector actually see" debug signal (Project.md #57),
+ * distinct from the 3D model overlay which only appears once a pose exists.
  */
 export function RegistrationOverlay({ modelUrl, targetMarkerId }: Props) {
   const {
@@ -44,6 +49,7 @@ export function RegistrationOverlay({ modelUrl, targetMarkerId }: Props) {
     captureFrameBase64,
   } = useCamera();
   const overlayRef = useRef<HTMLDivElement | null>(null);
+  const outlineCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const modelObjectRef = useRef<THREE.Object3D | null>(null);
   const [pose, setPose] = useState<PoseResponse | null>(null);
   const [busy, setBusy] = useState(false);
@@ -90,6 +96,47 @@ export function RegistrationOverlay({ modelUrl, targetMarkerId }: Props) {
     };
   }, [modelUrl]);
 
+  const drawOutline = (result: PoseResponse) => {
+    const canvas = outlineCanvasRef.current;
+    const video = videoRef.current;
+    if (!canvas || !video || video.videoWidth === 0) return;
+
+    // Match the canvas's pixel buffer to the video's native resolution — the
+    // corner coordinates are in that same native space (see
+    // useCamera.captureFrameBase64), and CSS then scales both identically.
+    if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (!result.found || !result.corners_px || result.corners_px.length !== 4) return;
+
+    ctx.strokeStyle = "#00e676";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    result.corners_px.forEach((pt, i) => {
+      if (i === 0) ctx.moveTo(pt.x, pt.y);
+      else ctx.lineTo(pt.x, pt.y);
+    });
+    ctx.closePath();
+    ctx.stroke();
+
+    ctx.fillStyle = "#00e676";
+    result.corners_px.forEach((pt) => {
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 5, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    if (result.marker_id !== null) {
+      ctx.font = "24px sans-serif";
+      ctx.fillText(`id ${result.marker_id}`, result.corners_px[0].x, Math.max(20, result.corners_px[0].y - 10));
+    }
+  };
+
   const detectAndAlign = async () => {
     setBusy(true);
     setApiError(null);
@@ -98,6 +145,7 @@ export function RegistrationOverlay({ modelUrl, targetMarkerId }: Props) {
       if (!frame) throw new Error("Could not capture a frame from the camera.");
       const result = await VisionApi.estimatePose(frame, targetMarkerId);
       setPose(result);
+      drawOutline(result);
 
       const model = modelObjectRef.current;
       if (model) {
@@ -133,6 +181,10 @@ export function RegistrationOverlay({ modelUrl, targetMarkerId }: Props) {
         <div
           ref={overlayRef}
           style={{ position: "absolute", inset: 0, pointerEvents: "none" }}
+        />
+        <canvas
+          ref={outlineCanvasRef}
+          style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}
         />
         <canvas ref={canvasRef} style={{ display: "none" }} />
       </div>

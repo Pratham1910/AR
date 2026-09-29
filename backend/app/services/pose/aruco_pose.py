@@ -31,6 +31,12 @@ class PoseEstimate:
     rvec: np.ndarray | None = None
     tvec: np.ndarray | None = None
     reprojection_error_px: float | None = None
+    # The marker's 4 detected image-space corners (pixel coords, in the
+    # captured frame's own resolution), top-left/top-right/bottom-right/
+    # bottom-left. Purely for drawing a visible "this is what was detected"
+    # outline client-side (Project.md #57's debug-mode principle) — the QA/
+    # pose math never uses this, only rvec/tvec.
+    corners_px: list[tuple[float, float]] | None = None
 
 
 class ArucoPoseEstimator:
@@ -87,4 +93,5 @@ class ArucoPoseEstimator:
             rvec=rvec,
             tvec=tvec,
             reprojection_error_px=reprojection_error,
+            corners_px=[(float(x), float(y)) for x, y in marker_corners],
         )
