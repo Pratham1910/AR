@@ -2,7 +2,9 @@ import axios from "axios";
 import type {
   Asset,
   InspectionRun,
+  Model3DInfo,
   ObserveResponse,
+  PoseResponse,
   Procedure,
   StepValidationResponse,
 } from "../types";
@@ -10,6 +12,11 @@ import type {
 const baseURL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
 export const api = axios.create({ baseURL });
+
+// Absolute URL for a model/static path returned relative to the API (e.g.
+// "/static/models/bottle.glb") — the <model-viewer>/Three.js loader needs a
+// fully-qualified URL, not one relative to the frontend's own origin.
+export const resolveApiUrl = (path: string) => `${baseURL}${path}`;
 
 export const AssetsApi = {
   list: () => api.get<Asset[]>("/api/assets").then((r) => r.data),
@@ -44,4 +51,16 @@ export const InspectionApi = {
 
   complete: (inspectionId: string) =>
     api.post<{ id: string; status: string }>(`/api/inspection/${inspectionId}/complete`).then((r) => r.data),
+};
+
+export const Models3DApi = {
+  listForAsset: (assetId: string) =>
+    api.get<Model3DInfo[]>("/api/models3d", { params: { asset_id: assetId } }).then((r) => r.data),
+};
+
+export const VisionApi = {
+  estimatePose: (imageBase64: string, targetMarkerId?: number) =>
+    api
+      .post<PoseResponse>("/api/vision/pose", { image_base64: imageBase64, target_marker_id: targetMarkerId })
+      .then((r) => r.data),
 };

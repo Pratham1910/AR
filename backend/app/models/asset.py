@@ -41,5 +41,9 @@ class Component(Base):
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     class_label: Mapped[str] = mapped_column(String(64), nullable=False)  # maps to a YOLO class
 
+    # Links this component to a named node inside a Model3D's GLB scene graph
+    # (Project.md #20). Nullable because Phase 1 components don't need 3D yet.
+    cad_node_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     asset: Mapped["Asset"] = relationship(back_populates="components")
     parent: Mapped["Component | None"] = relationship(remote_side=[id])

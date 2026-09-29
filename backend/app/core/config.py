@@ -35,6 +35,14 @@ class Settings(BaseSettings):
     qa_detection_confidence_threshold: float = 0.80
     qa_state_confidence_threshold: float = 0.90
 
+    # Pose / registration (Project.md #24, #25, #26) — Phase 5.
+    camera_calibration_path: Optional[str] = None
+    aruco_dictionary: str = "DICT_4X4_50"
+    aruco_marker_length_m: float = 0.05
+
+    # Static file mount for served GLB/glTF models (Project.md #20, Phase 4).
+    models_3d_dir: str = "../data/models"
+
 
 @lru_cache
 def get_settings() -> Settings:

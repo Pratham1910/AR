@@ -68,5 +68,21 @@ npm run dev
 
 ## Status
 
-Phase 1 (Camera QA MVP) is in progress. See `docs/roadmap.md` for phase-by-phase
-status against `Project.md` §58.
+Phase 1 (Camera QA MVP) and Phase 4/5 (3D viewer + marker-based physical↔3D
+registration) are done. See `docs/roadmap.md` for phase-by-phase status
+against `Project.md` §58.
+
+## Testing the 3D / AR registration (Phase 4/5)
+
+```bash
+# after seeding (see below), generate a printable ArUco marker
+cd backend
+python -m app.workers.generate_marker --id 0 --size-px 600
+# -> data/images/aruco_DICT_4X4_50_id0.png
+```
+
+Print it, measure its printed side length in meters, set `ARUCO_MARKER_LENGTH_M`
+in `.env` to match, then in the app open **3D / AR Registration** → select
+`BOTTLE-001` → **3D Viewer** to see the provided bottle model, or
+**AR Registration** to point your camera at the printed marker and see the
+model align to it. See `docs/pose.md` for the details and known limitations.

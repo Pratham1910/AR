@@ -8,9 +8,12 @@ Run with:  python -m app.workers.seed_demo
 import json
 from pathlib import Path
 
+from sqlalchemy.orm import Session
+
 from app.core.database import SessionLocal
 from app.models.asset import Asset, Component
 from app.models.enums import RevisionStatus
+from app.models.model3d import Model3D
 from app.models.procedure import Procedure, ProcedureRevision
 from app.schemas.procedure import ProcedureDefinition
 
@@ -52,25 +55,72 @@ def seed() -> None:
         )
         if existing_procedure is not None:
             print(f"Procedure {definition.procedureId} already seeded (id={existing_procedure.id}); skipping.")
-            return
+        else:
+            # Reuse the same persistence path as the authoring API so seeding
+            # and authoring never drift (Project.md #62).
+            from app.api.procedures import create_procedure
 
-        # Reuse the same persistence path as the authoring API so seeding and
-        # authoring never drift (Project.md #62).
-        from app.api.procedures import create_procedure
+            definition_with_asset = definition.model_copy(update={"assetId": str(asset.id)})
+            procedure = create_procedure(definition_with_asset, db=db)
+            latest_revision = (
+                db.query(ProcedureRevision)
+                .filter(ProcedureRevision.procedure_id == procedure.id)
+                .order_by(ProcedureRevision.created_at.desc())
+                .first()
+            )
+            latest_revision.status = RevisionStatus.PUBLISHED
+            db.commit()
+            print(f"Seeded and published procedure {procedure.procedure_id_str} (revision {latest_revision.id})")
 
-        definition_with_asset = definition.model_copy(update={"assetId": str(asset.id)})
-        procedure = create_procedure(definition_with_asset, db=db)
-        latest_revision = (
-            db.query(ProcedureRevision)
-            .filter(ProcedureRevision.procedure_id == procedure.id)
-            .order_by(ProcedureRevision.created_at.desc())
-            .first()
-        )
-        latest_revision.status = RevisionStatus.PUBLISHED
-        db.commit()
-        print(f"Seeded and published procedure {procedure.procedure_id_str} " f"(revision {latest_revision.id})")
+        _seed_bottle_3d_demo(db)
     finally:
         db.close()
+
+
+def _seed_bottle_3d_demo(db: Session) -> None:
+    """
+    Phase 4/5 demo asset: the provided TEST BOTTLEglb.glb (single-mesh
+    placeholder, see docs/roadmap.md) registered as a Model3D so the frontend
+    3D viewer / AR registration overlay can look it up by asset instead of
+    hard-coding a filename.
+    """
+    bottle_asset = db.query(Asset).filter(Asset.name == "BOTTLE-001").one_or_none()
+    if bottle_asset is None:
+        bottle_asset = Asset(name="BOTTLE-001", description="Phase 4/5 demo: 3D viewer + marker-based registration")
+        db.add(bottle_asset)
+        db.flush()
+        print(f"Created asset {bottle_asset.id} (BOTTLE-001)")
+    else:
+        print(f"Asset already exists: {bottle_asset.id} (BOTTLE-001)")
+
+    bottle_component = (
+        db.query(Component).filter(Component.component_id_str == "BOTTLE-BODY-001").one_or_none()
+    )
+    if bottle_component is None:
+        bottle_component = Component(
+            asset_id=bottle_asset.id,
+            component_id_str="BOTTLE-BODY-001",
+            name="Bottle Body",
+            class_label="bottle",
+            cad_node_id="Cylinder",  # matches the GLB's single mesh node name
+        )
+        db.add(bottle_component)
+        db.flush()
+        print("  + component BOTTLE-BODY-001 (cad_node_id=Cylinder)")
+
+    existing_model = db.query(Model3D).filter(Model3D.storage_key == "bottle.glb").one_or_none()
+    if existing_model is None:
+        db.add(
+            Model3D(
+                asset_id=bottle_asset.id,
+                component_id=bottle_component.id,
+                name="Test Bottle",
+                format="glb",
+                storage_key="bottle.glb",
+            )
+        )
+        print("  + Model3D bottle.glb")
+    db.commit()
 
 
 if __name__ == "__main__":

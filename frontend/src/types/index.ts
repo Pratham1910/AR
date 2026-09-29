@@ -62,3 +62,39 @@ export interface ObserveResponse {
   detections: unknown[];
   frame_ref: string | null;
 }
+
+// Phase 4/5 — 3D viewer + physical<->3D registration (see backend
+// app/api/models3d.py, app/api/vision.py's /pose endpoint).
+
+export interface Model3DInfo {
+  id: string;
+  asset_id: string;
+  component_id: string | null;
+  name: string;
+  format: string;
+  storage_key: string;
+  url: string; // relative to the API base URL, e.g. /static/models/bottle.glb
+}
+
+export interface Vector3 {
+  x: number;
+  y: number;
+  z: number;
+}
+
+export interface QuaternionXYZW {
+  x: number;
+  y: number;
+  z: number;
+  w: number;
+}
+
+export interface PoseResponse {
+  found: boolean;
+  marker_id: number | null;
+  position: Vector3 | null;
+  quaternion: QuaternionXYZW | null;
+  reprojection_error_px: number | null;
+  calibration_is_approximate: boolean;
+  calibration_source: string;
+}

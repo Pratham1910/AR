@@ -39,9 +39,23 @@ Browser --> POST /api/inspection/{id}/step/{stepId}/validate
 The vision/ML stack (OpenCV, PyTorch, Ultralytics) is Python-native. Putting the
 API in the same runtime avoids an unnecessary service boundary for the MVP.
 
+## 3D / pose (Phase 4/5 — see `docs/3d.md`, `docs/pose.md`)
+
+```
+Browser (live camera) --image_base64--> POST /api/vision/pose
+    -> ArucoPoseEstimator.estimate()   (app/services/pose/aruco_pose.py)
+    -> cv_pose_to_threejs()            (app/services/pose/transforms.py)
+    -> {position, quaternion} in Three.js space
+Browser -> sets the loaded GLB's transform directly, no coordinate math client-side
+```
+
+This is intentionally a separate pipeline from the Phase 1 procedure/QA loop
+— pose/registration doesn't gate or get gated by tracking (Phase 2) or
+video-extraction (Phase 3), so it could be (and was) built ahead of them.
+
 ## Deferred (see `roadmap.md`)
 
-3D/Three.js viewer, pose/6DoF registration, depth metrology, Unity/AR/MR,
-S1000D ingestion, and connected-tool protocols are architected for (stable
-IDs, `Model3D`/`ValidationMethod.POSE` already in the schema) but not built in
-Phase 1, per Project.md §13 and §58.
+Tracking (ByteTrack/BoT-SORT), video-to-procedure extraction, depth
+metrology, Unity/AR/MR, S1000D ingestion, and connected-tool protocols are
+architected for (stable IDs, `ValidationMethod.TRACKING`/`.POSE` already in
+the schema) but not built yet, per Project.md §58.

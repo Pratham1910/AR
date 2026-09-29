@@ -71,3 +71,69 @@
   color: #c62828;
   font-weight: 600;
 }
+
+.tabs {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+  border-bottom: 1px solid #ddd;
+}
+
+.tabs button,
+.mode-toggle button {
+  padding: 0.5rem 1rem;
+  border: none;
+  background: none;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+
+.tabs button.active,
+.mode-toggle button.active {
+  border-bottom-color: #1565c0;
+  font-weight: 600;
+}
+
+.mode-toggle {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+
+.registration-controls {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 0.75rem;
+}
+
+.pose-status {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  border: 1px solid #ddd;
+}
+
+.pose-found {
+  border-color: #2e7d32;
+  background: #edf7ed;
+}
+
+.pose-not-found {
+  border-color: #ef6c00;
+  background: #fff3e0;
+}
+
+.warning {
+  color: #ef6c00;
+}
+
+.hint {
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.node-names {
+  color: #666;
+  font-size: 0.85rem;
+}
