@@ -114,7 +114,7 @@ def _seed_bottle_3d_demo(db: Session) -> None:
     # render it at roughly a real flask's size instead of the camera ending
     # up inside a multi-meter-tall cylinder.
     bottle_glb_height_units = 3.6430740356445312 - (-1.62907075881958)
-    assumed_real_height_m = 0.28
+    assumed_real_height_m = 0.15  # measured: the physical flask is ~15cm tall, ~5-6cm diameter
     bottle_scale = assumed_real_height_m / bottle_glb_height_units
 
     existing_model = db.query(Model3D).filter(Model3D.storage_key == "bottle.glb").one_or_none()
