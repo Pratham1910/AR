@@ -43,6 +43,14 @@ class Settings(BaseSettings):
     # Static file mount for served GLB/glTF models (Project.md #20, Phase 4).
     models_3d_dir: str = "../data/models"
 
+    # Live object-outline visualization (Project.md #16, #57) — a debug/demo
+    # view, not the QA-critical detector. Defaults to a stock COCO-pretrained
+    # model (auto-downloaded by ultralytics on first use) since COCO already
+    # has a "bottle" class; swap to a custom-trained model via this setting
+    # once real assembly components need outlining.
+    segmentation_model_name: str = "yolov8n-seg.pt"
+    segmentation_confidence_threshold: float = 0.4
+
 
 @lru_cache
 def get_settings() -> Settings:

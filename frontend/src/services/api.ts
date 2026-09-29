@@ -3,6 +3,7 @@ import type {
   Asset,
   InspectionRun,
   Model3DInfo,
+  ObjectRegistrationResponse,
   ObserveResponse,
   PoseResponse,
   Procedure,
@@ -62,5 +63,14 @@ export const VisionApi = {
   estimatePose: (imageBase64: string, targetMarkerId?: number) =>
     api
       .post<PoseResponse>("/api/vision/pose", { image_base64: imageBase64, target_marker_id: targetMarkerId })
+      .then((r) => r.data),
+
+  registerObject: (imageBase64: string, targetClassLabel: string, realWorldHeightM: number) =>
+    api
+      .post<ObjectRegistrationResponse>("/api/vision/object-registration", {
+        image_base64: imageBase64,
+        target_class_label: targetClassLabel,
+        real_world_height_m: realWorldHeightM,
+      })
       .then((r) => r.data),
 };

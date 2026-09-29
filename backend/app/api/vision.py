@@ -5,25 +5,54 @@ through /api/inspection/*.
 """
 
 import base64
+import time
 
 import cv2
 import numpy as np
 from fastapi import APIRouter, HTTPException
 
 from app.core.config import get_settings
-from app.schemas.pose import PoseRequest, PoseResponse, Quaternion, Vector2, Vector3
-from app.schemas.vision import DetectRequest, DetectResponse, StateRequest, StateResponse
+from app.schemas.pose import (
+    ObjectRegistrationRequest,
+    ObjectRegistrationResponse,
+    PoseRequest,
+    PoseResponse,
+    Quaternion,
+    Vector2,
+    Vector3,
+)
+from app.schemas.vision import DetectRequest, DetectResponse, SegmentRequest, SegmentResponse, StateRequest, StateResponse
 from app.services.pose.aruco_pose import ArucoPoseEstimator
 from app.services.pose.calibration import load_calibration
+from app.services.pose.markerless import estimate_object_placement
 from app.services.pose.transforms import cv_pose_to_threejs
 from app.services.state_detection.state_engine import ComponentStateRule, StateEstimationError, StateEstimator
 from app.services.vision.detector import build_detector, time_inference
+from app.services.vision.segmentation import Segmenter, build_segmenter
 
 router = APIRouter(prefix="/api/vision", tags=["vision"])
 
 _settings = get_settings()
 _detector = build_detector(_settings.model_path)
 _pose_estimator = ArucoPoseEstimator(_settings.aruco_dictionary, _settings.aruco_marker_length_m)
+_segmenter: Segmenter | None = None  # built lazily — first request pays the model download/load cost, not startup
+
+
+def _get_segmenter() -> Segmenter:
+    global _segmenter
+    if _segmenter is None:
+        try:
+            _segmenter = build_segmenter(_settings.segmentation_model_name)
+        except Exception as exc:  # noqa: BLE001 - surfaced as a clear 503, not a crash
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"Could not load segmentation model {_settings.segmentation_model_name!r}: {exc}. "
+                    "If this is a first-time download, check network access, or point "
+                    "SEGMENTATION_MODEL_NAME at a local .pt file."
+                ),
+            ) from exc
+    return _segmenter
 
 
 def decode_frame(image_base64: str) -> np.ndarray:
@@ -58,6 +87,74 @@ def estimate_state(request: StateRequest) -> StateResponse:
     except StateEstimationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return StateResponse(state_id=state_id, confidence=confidence, state_model_version=estimator.model_version)
+
+
+@router.post("/segment", response_model=SegmentResponse)
+def segment(request: SegmentRequest) -> SegmentResponse:
+    """
+    Live object outline (Project.md #16): draws the actual detected shape,
+    not just a bounding box. Uses a stock COCO-pretrained model by default —
+    see app/services/vision/segmentation.py for why that's acceptable here
+    even though the procedure detector must be custom-trainable (#15).
+    """
+    frame = decode_frame(request.image_base64)
+    segmenter = _get_segmenter()
+    threshold = request.confidence_threshold or _settings.segmentation_confidence_threshold
+
+    start = time.perf_counter()
+    objects = segmenter.segment(frame, threshold)
+    inference_ms = (time.perf_counter() - start) * 1000
+
+    return SegmentResponse(objects=objects, model_version=segmenter.model_version, inference_ms=inference_ms)
+
+
+@router.post("/object-registration", response_model=ObjectRegistrationResponse)
+def object_registration(request: ObjectRegistrationRequest) -> ObjectRegistrationResponse:
+    """
+    Markerless registration (Project.md #24's future upgrade, built as a
+    first approximate version now): finds `target_class_label` (e.g.
+    "bottle") via segmentation, draws its outline, and estimates an
+    approximate position from its apparent size vs. `real_world_height_m` —
+    no printed marker needed, but see app/services/pose/markerless.py's
+    docstring for exactly what this does and does not estimate (position
+    only, no orientation; accuracy depends on calibration + the height
+    measurement).
+    """
+    frame = decode_frame(request.image_base64)
+    height_px, width_px = frame.shape[:2]
+    calibration = load_calibration(_settings.camera_calibration_path, width_px, height_px)
+
+    segmenter = _get_segmenter()
+    threshold = request.confidence_threshold or _settings.segmentation_confidence_threshold
+    objects = segmenter.segment(frame, threshold)
+
+    matches = [o for o in objects if o.class_label == request.target_class_label]
+    if not matches:
+        return ObjectRegistrationResponse(
+            found=False,
+            approximate=True,
+            calibration_is_approximate=calibration.is_approximate,
+            calibration_source=calibration.source,
+        )
+    best = max(matches, key=lambda o: o.confidence)  # highest-confidence match if several
+
+    try:
+        pose = estimate_object_placement(best.bbox, calibration, request.real_world_height_m)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return ObjectRegistrationResponse(
+        found=True,
+        class_label=best.class_label,
+        confidence=best.confidence,
+        bbox=[best.bbox.x1, best.bbox.y1, best.bbox.x2, best.bbox.y2],
+        polygon=[Vector2(x=p.x, y=p.y) for p in best.polygon],
+        position=Vector3(x=pose.position[0], y=pose.position[1], z=pose.position[2]),
+        quaternion=Quaternion(x=pose.quaternion[0], y=pose.quaternion[1], z=pose.quaternion[2], w=pose.quaternion[3]),
+        approximate=True,
+        calibration_is_approximate=calibration.is_approximate,
+        calibration_source=calibration.source,
+    )
 
 
 @router.post("/pose", response_model=PoseResponse)

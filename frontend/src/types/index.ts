@@ -107,3 +107,19 @@ export interface PoseResponse {
   calibration_is_approximate: boolean;
   calibration_source: string;
 }
+
+// Markerless (approximate) registration — see backend
+// app/services/pose/markerless.py for exactly what is and isn't estimated
+// (position only from apparent size, no orientation).
+export interface ObjectRegistrationResponse {
+  found: boolean;
+  class_label: string | null;
+  confidence: number | null;
+  bbox: [number, number, number, number] | null;
+  polygon: Vector2[] | null;
+  position: Vector3 | null;
+  quaternion: QuaternionXYZW | null;
+  approximate: boolean;
+  calibration_is_approximate: boolean;
+  calibration_source: string;
+}

@@ -57,10 +57,26 @@ Phases per Project.md §58. Status as of this build:
   `solvePnP`) and a dedicated coordinate-transform module
   (`app/services/pose/transforms.py`) converting OpenCV camera space to
   Three.js space server-side.
-- `POST /api/vision/pose` API.
+- `POST /api/vision/pose` API, plus a 2D outline (`corners_px`) so the
+  detected marker is visibly drawn on the live feed, not just reported as
+  found/not-found (Project.md §57).
+- Object segmentation (`app/services/vision/segmentation.py`,
+  `POST /api/vision/segment`, Project.md §16): stock COCO-pretrained
+  `yolov8n-seg.pt` returns a real pixel-outline polygon per detected object
+  (not just a bounding box), separate from the Phase 1 procedure detector.
+- Markerless registration (`app/services/pose/markerless.py`,
+  `POST /api/vision/object-registration`): no printed marker needed —
+  detects a named object class and estimates an **approximate,
+  position-only** pose from its apparent size vs. a user-provided real-world
+  height. Explicitly not 6DoF and explicitly not what an industrial AR
+  platform like DELMIA Augmented Experience does (feature/CAD-matched,
+  sub-millimeter, full 6DoF) — see `docs/pose.md` for the gap and what
+  closing it would take.
 - Registration overlay (`frontend/src/features/viewer3d/RegistrationOverlay.tsx`):
-  transparent Three.js canvas over the live camera feed, "Detect & Align" /
-  live-tracking mode, places the GLB using the returned pose.
+  mode toggle between markerless (default) and ArUco marker, transparent
+  Three.js canvas + 2D outline canvas over the live camera feed, "Detect &
+  Align" / live-tracking mode, camera device selection, connection status
+  badge, places the GLB using whichever pose was returned.
 - Demo data: `BOTTLE-001` asset + `BOTTLE-BODY-001` component
   (`cad_node_id="Cylinder"`) + `Model3D` row for `data/models/bottle.glb`
   (copied from the provided `3D-models/TEST BOTTLEglb.glb`).

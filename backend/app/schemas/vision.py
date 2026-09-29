@@ -14,11 +14,25 @@ class BoundingBox(BaseModel):
     y2: float
 
 
+class Vector2(BaseModel):
+    x: float
+    y: float
+
+
 class Detection(BaseModel):
     class_label: str
     confidence: float
     bbox: BoundingBox
     tracker_id: int | None = None
+
+
+class SegmentedObject(BaseModel):
+    """A detected object's pixel-space outline (Project.md #16), not just a box."""
+
+    class_label: str
+    confidence: float
+    bbox: BoundingBox
+    polygon: list[Vector2]  # in the captured frame's own pixel space
 
 
 class DetectRequest(BaseModel):
@@ -58,3 +72,16 @@ class StateResponse(BaseModel):
     state_id: str
     confidence: float
     state_model_version: str
+
+
+class SegmentRequest(BaseModel):
+    image_base64: str
+    confidence_threshold: float | None = None  # falls back to Settings.segmentation_confidence_threshold
+
+
+class SegmentResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    objects: list[SegmentedObject]
+    model_version: str
+    inference_ms: float

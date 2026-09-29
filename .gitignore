@@ -19,6 +19,8 @@ frontend/.vite/
 ## Data / models (large binaries, not committed)
 models/yolo/*.pt
 models/yolo/*.onnx
+backend/*.pt
+backend/*.onnx
 data/videos/*
 !data/videos/.gitkeep
 data/images/*

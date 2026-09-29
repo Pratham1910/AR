@@ -26,6 +26,28 @@ class Vector2(BaseModel):
     y: float
 
 
+class ObjectRegistrationRequest(BaseModel):
+    """Markerless registration (app/services/pose/markerless.py) — approximate, position-only."""
+
+    image_base64: str
+    target_class_label: str = "bottle"
+    real_world_height_m: float
+    confidence_threshold: float | None = None
+
+
+class ObjectRegistrationResponse(BaseModel):
+    found: bool
+    class_label: str | None = None
+    confidence: float | None = None
+    bbox: list[float] | None = None  # [x1, y1, x2, y2] in the frame's own pixel space
+    polygon: list[Vector2] | None = None  # outline for drawing, same pixel space
+    position: Vector3 | None = None  # Three.js-space; None if not found
+    quaternion: Quaternion | None = None  # always identity — see markerless.py docstring
+    approximate: bool = True  # always true for this endpoint; distinguishes it from /pose's marker-based result
+    calibration_is_approximate: bool
+    calibration_source: str
+
+
 class PoseResponse(BaseModel):
     found: bool
     marker_id: int | None = None
