@@ -5,6 +5,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { CameraSelect } from "../../components/CameraSelect";
 import { CameraStatusBadge } from "../../components/CameraStatusBadge";
 import { useCamera } from "../../hooks/useCamera";
+import { ensureVisibleMaterials } from "./ensureVisibleMaterial";
 
 interface Props {
   modelUrl: string;
@@ -60,6 +61,7 @@ export function SimpleCameraOverlay({ modelUrl }: Props) {
 
     const loader = new GLTFLoader();
     loader.load(modelUrl, (gltf) => {
+      ensureVisibleMaterials(gltf.scene);
       scene.add(gltf.scene);
 
       // Auto-frame on the model's own bounding box (same approach as

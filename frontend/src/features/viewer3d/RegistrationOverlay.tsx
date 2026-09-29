@@ -4,6 +4,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { CameraSelect } from "../../components/CameraSelect";
 import { CameraStatusBadge } from "../../components/CameraStatusBadge";
 import { useCamera } from "../../hooks/useCamera";
+import { ensureVisibleMaterials } from "./ensureVisibleMaterial";
 import { VisionApi } from "../../services/api";
 import type {
   FeaturePoseResponse,
@@ -120,6 +121,7 @@ export function RegistrationOverlay({ assetId, modelUrl, modelScale = 1, targetM
       (gltf) => {
         gltf.scene.visible = false; // hidden until a pose is found
         gltf.scene.scale.setScalar(modelScale); // GLB units -> real-world meters
+        ensureVisibleMaterials(gltf.scene);
         modelObjectRef.current = gltf.scene;
         scene.add(gltf.scene);
         setModelStatus("loaded");

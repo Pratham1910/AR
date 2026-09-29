@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { ensureVisibleMaterials } from "./ensureVisibleMaterial";
 
 interface Props {
   modelUrl: string;
@@ -51,6 +52,7 @@ export function ThreeViewer({ modelUrl, height = 480 }: Props) {
       modelUrl,
       (gltf) => {
         if (disposed) return;
+        ensureVisibleMaterials(gltf.scene);
         scene.add(gltf.scene);
 
         // Frame the camera on the loaded model's bounding box, and surface
