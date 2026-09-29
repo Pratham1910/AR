@@ -123,3 +123,22 @@ export interface ObjectRegistrationResponse {
   calibration_is_approximate: boolean;
   calibration_source: string;
 }
+
+// Feature/keypoint ("image target") tracking — see backend
+// app/services/pose/feature_tracker.py. Real 6DoF (position + orientation),
+// but requires a registered reference photo of a textured surface.
+export interface RegisterReferenceImageResponse {
+  feature_count: number;
+  quality: "too_few" | "marginal" | "good";
+}
+
+export interface FeaturePoseResponse {
+  found: boolean;
+  position: Vector3 | null;
+  quaternion: QuaternionXYZW | null;
+  num_matches: number;
+  num_inliers: number;
+  inlier_points_px: Vector2[] | null;
+  calibration_is_approximate: boolean;
+  calibration_source: string;
+}

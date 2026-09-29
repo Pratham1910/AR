@@ -48,6 +48,36 @@ class ObjectRegistrationResponse(BaseModel):
     calibration_source: str
 
 
+class RegisterReferenceImageRequest(BaseModel):
+    """Feature/keypoint tracking (app/services/pose/feature_tracker.py) — register a labeled surface."""
+
+    asset_id: str
+    image_base64: str
+    label_width_m: float
+    label_height_m: float
+
+
+class RegisterReferenceImageResponse(BaseModel):
+    feature_count: int
+    quality: str  # "too_few" | "marginal" | "good" — see feature_tracker.RegistrationQuality
+
+
+class FeaturePoseRequest(BaseModel):
+    asset_id: str
+    image_base64: str
+
+
+class FeaturePoseResponse(BaseModel):
+    found: bool
+    position: Vector3 | None = None
+    quaternion: Quaternion | None = None  # a REAL orientation estimate, unlike ObjectRegistrationResponse's
+    num_matches: int = 0
+    num_inliers: int = 0
+    inlier_points_px: list[Vector2] | None = None  # for drawing what was actually matched
+    calibration_is_approximate: bool
+    calibration_source: str
+
+
 class PoseResponse(BaseModel):
     found: bool
     marker_id: int | None = None

@@ -161,6 +161,27 @@
   color: #ef6c00;
 }
 
+.registration-quality {
+  padding: 0.5rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.quality-good {
+  background: #edf7ed;
+  color: #2e7d32;
+}
+
+.quality-marginal {
+  background: #fff3e0;
+  color: #ef6c00;
+}
+
+.quality-too_few {
+  background: #fdecea;
+  color: #c62828;
+}
+
 .camera-select {
   display: flex;
   align-items: center;

@@ -1,12 +1,14 @@
 import axios from "axios";
 import type {
   Asset,
+  FeaturePoseResponse,
   InspectionRun,
   Model3DInfo,
   ObjectRegistrationResponse,
   ObserveResponse,
   PoseResponse,
   Procedure,
+  RegisterReferenceImageResponse,
   StepValidationResponse,
 } from "../types";
 
@@ -72,5 +74,20 @@ export const VisionApi = {
         target_class_label: targetClassLabel,
         real_world_height_m: realWorldHeightM,
       })
+      .then((r) => r.data),
+
+  registerReferenceImage: (assetId: string, imageBase64: string, labelWidthM: number, labelHeightM: number) =>
+    api
+      .post<RegisterReferenceImageResponse>("/api/vision/reference-image", {
+        asset_id: assetId,
+        image_base64: imageBase64,
+        label_width_m: labelWidthM,
+        label_height_m: labelHeightM,
+      })
+      .then((r) => r.data),
+
+  estimateFeaturePose: (assetId: string, imageBase64: string) =>
+    api
+      .post<FeaturePoseResponse>("/api/vision/feature-pose", { asset_id: assetId, image_base64: imageBase64 })
       .then((r) => r.data),
 };

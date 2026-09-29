@@ -26,6 +26,13 @@ data/videos/*
 data/images/*
 !data/images/.gitkeep
 
+## Runtime-generated pose artifacts (Phase 5) — per-environment, not committed
+data/calibration/camera.json
+data/calibration/images/*
+!data/calibration/images/.gitkeep
+data/reference_images/*
+!data/reference_images/.gitkeep
+
 ## OS / editor
 .DS_Store
 Thumbs.db

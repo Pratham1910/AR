@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     segmentation_model_name: str = "yolov8n-seg.pt"
     segmentation_confidence_threshold: float = 0.4
 
+    # Feature/keypoint ("image target") tracking (Project.md #24's markerless
+    # upgrade) — registered reference planes are persisted here, one file
+    # pair (.npz + .json) per asset_id.
+    reference_images_dir: str = "../data/reference_images"
+
 
 @lru_cache
 def get_settings() -> Settings:

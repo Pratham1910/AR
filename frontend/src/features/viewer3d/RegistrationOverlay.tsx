@@ -5,14 +5,21 @@ import { CameraSelect } from "../../components/CameraSelect";
 import { CameraStatusBadge } from "../../components/CameraStatusBadge";
 import { useCamera } from "../../hooks/useCamera";
 import { VisionApi } from "../../services/api";
-import type { ObjectRegistrationResponse, PoseResponse, Vector2 } from "../../types";
+import type {
+  FeaturePoseResponse,
+  ObjectRegistrationResponse,
+  PoseResponse,
+  RegisterReferenceImageResponse,
+  Vector2,
+} from "../../types";
 
 interface Props {
+  assetId: string;
   modelUrl: string;
   targetMarkerId?: number;
 }
 
-type RegistrationMode = "marker" | "markerless";
+type RegistrationMode = "marker" | "markerless" | "feature";
 
 /**
  * Phase 5 (Project.md #23-#26): physical <-> 3D registration.
@@ -30,12 +37,19 @@ type RegistrationMode = "marker" | "markerless";
  *     "bottle") via segmentation and estimates an APPROXIMATE position from
  *     its apparent size vs. `realWorldHeightM` (app/services/pose/markerless.py).
  *     Position only, no orientation — see the warning shown in this mode.
+ *   - "feature": no marker needed either, but real 6DoF (position AND
+ *     orientation) via ORB keypoint matching + solvePnPRansac against a
+ *     reference photo you register first (app/services/pose/feature_tracker.py).
+ *     Needs the object to have real visual texture (a label, logo, text) —
+ *     the closest of the three to what an industrial platform like DELMIA
+ *     Augmented Experience actually does, though still plane-based rather
+ *     than matched against the full 3D CAD geometry.
  *
  * A 2D outline is drawn on every attempt regardless of whether a pose was
  * found (Project.md #57's "show me what the detector actually saw"),
  * distinct from the 3D model overlay which only appears once a pose exists.
  */
-export function RegistrationOverlay({ modelUrl, targetMarkerId }: Props) {
+export function RegistrationOverlay({ assetId, modelUrl, targetMarkerId }: Props) {
   const {
     videoRef,
     canvasRef,
@@ -57,8 +71,14 @@ export function RegistrationOverlay({ modelUrl, targetMarkerId }: Props) {
   const [targetClassLabel, setTargetClassLabel] = useState("bottle");
   const [realWorldHeightM, setRealWorldHeightM] = useState(0.2);
 
+  const [labelWidthM, setLabelWidthM] = useState(0.08);
+  const [labelHeightM, setLabelHeightM] = useState(0.1);
+  const [registration, setRegistration] = useState<RegisterReferenceImageResponse | null>(null);
+  const [registering, setRegistering] = useState(false);
+
   const [markerPose, setMarkerPose] = useState<PoseResponse | null>(null);
   const [objectPose, setObjectPose] = useState<ObjectRegistrationResponse | null>(null);
+  const [featurePose, setFeaturePose] = useState<FeaturePoseResponse | null>(null);
   const [busy, setBusy] = useState(false);
   const [liveTracking, setLiveTracking] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
@@ -142,6 +162,32 @@ export function RegistrationOverlay({ modelUrl, targetMarkerId }: Props) {
     }
   };
 
+  const drawPoints = (points: Vector2[], color: string, label?: string) => {
+    const canvas = outlineCanvasRef.current;
+    const video = videoRef.current;
+    if (!canvas || !video || video.videoWidth === 0) return;
+
+    if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = color;
+    points.forEach((pt) => {
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, 3, 0, Math.PI * 2);
+      ctx.fill();
+    });
+
+    if (label && points.length > 0) {
+      ctx.font = "20px sans-serif";
+      ctx.fillText(label, 10, 28);
+    }
+  };
+
   const applyModelTransform = (
     position: { x: number; y: number; z: number } | null,
     quaternion: { x: number; y: number; z: number; w: number } | null
@@ -154,6 +200,21 @@ export function RegistrationOverlay({ modelUrl, targetMarkerId }: Props) {
       model.visible = true;
     } else {
       model.visible = false;
+    }
+  };
+
+  const registerReference = async () => {
+    setRegistering(true);
+    setApiError(null);
+    try {
+      const frame = captureFrameBase64();
+      if (!frame) throw new Error("Could not capture a frame from the camera.");
+      const result = await VisionApi.registerReferenceImage(assetId, frame, labelWidthM, labelHeightM);
+      setRegistration(result);
+    } catch (err) {
+      setApiError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRegistering(false);
     }
   };
 
@@ -173,7 +234,7 @@ export function RegistrationOverlay({ modelUrl, targetMarkerId }: Props) {
           clearOutline();
         }
         applyModelTransform(result.position, result.quaternion);
-      } else {
+      } else if (mode === "markerless") {
         const result = await VisionApi.registerObject(frame, targetClassLabel, realWorldHeightM);
         setObjectPose(result);
         if (result.found && result.polygon) {
@@ -182,6 +243,15 @@ export function RegistrationOverlay({ modelUrl, targetMarkerId }: Props) {
             "#29b6f6",
             `${result.class_label} ${result.confidence ? (result.confidence * 100).toFixed(0) + "%" : ""}`
           );
+        } else {
+          clearOutline();
+        }
+        applyModelTransform(result.position, result.quaternion);
+      } else {
+        const result = await VisionApi.estimateFeaturePose(assetId, frame);
+        setFeaturePose(result);
+        if (result.found && result.inlier_points_px) {
+          drawPoints(result.inlier_points_px, "#ffca28", `${result.num_inliers}/${result.num_matches} matched`);
         } else {
           clearOutline();
         }
@@ -212,6 +282,9 @@ export function RegistrationOverlay({ modelUrl, targetMarkerId }: Props) {
         <button className={mode === "marker" ? "active" : ""} onClick={() => setMode("marker")}>
           ArUco Marker (accurate 6DoF)
         </button>
+        <button className={mode === "feature" ? "active" : ""} onClick={() => setMode("feature")}>
+          Feature Tracking (real 6DoF, needs texture)
+        </button>
       </div>
 
       {mode === "markerless" && (
@@ -231,6 +304,44 @@ export function RegistrationOverlay({ modelUrl, targetMarkerId }: Props) {
             />
           </label>
         </div>
+      )}
+
+      {mode === "feature" && (
+        <div className="registration-controls">
+          <label>
+            Label width (m)
+            <input
+              type="number"
+              step="0.01"
+              min="0.01"
+              value={labelWidthM}
+              onChange={(e) => setLabelWidthM(Number(e.target.value))}
+            />
+          </label>
+          <label>
+            Label height (m)
+            <input
+              type="number"
+              step="0.01"
+              min="0.01"
+              value={labelHeightM}
+              onChange={(e) => setLabelHeightM(Number(e.target.value))}
+            />
+          </label>
+          <button onClick={registerReference} disabled={registering || !ready}>
+            {registering ? "Registering…" : "Register Reference Image"}
+          </button>
+        </div>
+      )}
+
+      {mode === "feature" && registration && (
+        <p className={`registration-quality quality-${registration.quality}`}>
+          {registration.feature_count} features extracted —{" "}
+          {registration.quality === "good" && "good, should track reliably."}
+          {registration.quality === "marginal" && "marginal — tracking may be unreliable; use a more textured label."}
+          {registration.quality === "too_few" &&
+            "too few — this surface likely lacks enough texture to track. Use a labeled/printed surface, filling the frame with it."}
+        </p>
       )}
 
       <div style={{ position: "relative", width: "100%", maxWidth: 640 }}>
@@ -309,6 +420,33 @@ export function RegistrationOverlay({ modelUrl, targetMarkerId }: Props) {
           {objectPose.calibration_is_approximate && (
             <p className="warning">
               Using an approximate default camera calibration ({objectPose.calibration_source}).
+            </p>
+          )}
+        </div>
+      )}
+
+      {mode === "feature" && !registration && (
+        <p className="warning">Register a reference image of the object's labeled/textured surface first.</p>
+      )}
+
+      {mode === "feature" && featurePose && (
+        <div className={`pose-status ${featurePose.found ? "pose-found" : "pose-not-found"}`}>
+          {featurePose.found ? (
+            <>
+              <p>
+                Matched — {featurePose.num_inliers}/{featurePose.num_matches} inlier features
+              </p>
+              <p>
+                position: ({featurePose.position!.x.toFixed(3)}, {featurePose.position!.y.toFixed(3)},{" "}
+                {featurePose.position!.z.toFixed(3)}) m
+              </p>
+            </>
+          ) : (
+            <p>No match ({featurePose.num_matches} candidate matches, not enough to solve a pose).</p>
+          )}
+          {featurePose.calibration_is_approximate && (
+            <p className="warning">
+              Using an approximate default camera calibration ({featurePose.calibration_source}).
             </p>
           )}
         </div>

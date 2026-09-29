@@ -6,6 +6,7 @@ through /api/inspection/*.
 
 import base64
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -13,17 +14,22 @@ from fastapi import APIRouter, HTTPException
 
 from app.core.config import get_settings
 from app.schemas.pose import (
+    FeaturePoseRequest,
+    FeaturePoseResponse,
     ObjectRegistrationRequest,
     ObjectRegistrationResponse,
     PoseRequest,
     PoseResponse,
     Quaternion,
+    RegisterReferenceImageRequest,
+    RegisterReferenceImageResponse,
     Vector2,
     Vector3,
 )
 from app.schemas.vision import DetectRequest, DetectResponse, SegmentRequest, SegmentResponse, StateRequest, StateResponse
 from app.services.pose.aruco_pose import ArucoPoseEstimator
 from app.services.pose.calibration import load_calibration
+from app.services.pose.feature_tracker import FeatureTracker, ReferencePlane, RegistrationQuality
 from app.services.pose.markerless import estimate_object_placement
 from app.services.pose.transforms import cv_pose_to_threejs
 from app.services.state_detection.state_engine import ComponentStateRule, StateEstimationError, StateEstimator
@@ -36,6 +42,14 @@ _settings = get_settings()
 _detector = build_detector(_settings.model_path)
 _pose_estimator = ArucoPoseEstimator(_settings.aruco_dictionary, _settings.aruco_marker_length_m)
 _segmenter: Segmenter | None = None  # built lazily — first request pays the model download/load cost, not startup
+_feature_tracker = FeatureTracker()
+_reference_planes: dict[str, ReferencePlane] = {}  # in-memory cache, keyed by asset_id
+
+
+def _reference_plane_path(asset_id: str) -> Path:
+    directory = Path(_settings.reference_images_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory / asset_id
 
 
 def _get_segmenter() -> Segmenter:
@@ -152,6 +166,77 @@ def object_registration(request: ObjectRegistrationRequest) -> ObjectRegistratio
         position=Vector3(x=pose.position[0], y=pose.position[1], z=pose.position[2]),
         quaternion=Quaternion(x=pose.quaternion[0], y=pose.quaternion[1], z=pose.quaternion[2], w=pose.quaternion[3]),
         approximate=True,
+        calibration_is_approximate=calibration.is_approximate,
+        calibration_source=calibration.source,
+    )
+
+
+@router.post("/reference-image", response_model=RegisterReferenceImageResponse)
+def register_reference_image(request: RegisterReferenceImageRequest) -> RegisterReferenceImageResponse:
+    """
+    Registers a reference photo for feature/keypoint ("image target")
+    tracking (Project.md #24's markerless upgrade — app/services/pose/
+    feature_tracker.py). Capture the object's labeled/textured surface
+    filling the frame as closely as possible; a low feature_count here means
+    live tracking will not work reliably (the surface needs real texture).
+    """
+    frame = decode_frame(request.image_base64)
+    reference = _feature_tracker.register_reference(frame, request.label_width_m, request.label_height_m)
+
+    reference.save(_reference_plane_path(request.asset_id))
+    _reference_planes[request.asset_id] = reference
+
+    feature_count = reference.descriptors.shape[0]
+    return RegisterReferenceImageResponse(
+        feature_count=feature_count, quality=RegistrationQuality.describe(feature_count)
+    )
+
+
+def _get_reference_plane(asset_id: str) -> ReferencePlane:
+    if asset_id in _reference_planes:
+        return _reference_planes[asset_id]
+    path = _reference_plane_path(asset_id)
+    if not ReferencePlane.exists(path):
+        raise HTTPException(
+            status_code=404,
+            detail=f"No reference image registered for asset {asset_id!r}. POST /api/vision/reference-image first.",
+        )
+    reference = ReferencePlane.load(path)
+    _reference_planes[asset_id] = reference
+    return reference
+
+
+@router.post("/feature-pose", response_model=FeaturePoseResponse)
+def estimate_feature_pose(request: FeaturePoseRequest) -> FeaturePoseResponse:
+    """
+    Real 6DoF pose (position AND orientation) from matching live-camera
+    features against a registered reference image, via RANSAC + solvePnP —
+    see app/services/pose/feature_tracker.py's docstring for the principle
+    and its honest limits (needs real texture; flat-plane approximation).
+    """
+    frame = decode_frame(request.image_base64)
+    height_px, width_px = frame.shape[:2]
+    calibration = load_calibration(_settings.camera_calibration_path, width_px, height_px)
+
+    reference = _get_reference_plane(request.asset_id)
+    estimate = _feature_tracker.estimate_pose(frame, reference, calibration)
+
+    if not estimate.found:
+        return FeaturePoseResponse(
+            found=False,
+            num_matches=estimate.num_matches,
+            calibration_is_approximate=calibration.is_approximate,
+            calibration_source=calibration.source,
+        )
+
+    pose = cv_pose_to_threejs(estimate.rvec, estimate.tvec)
+    return FeaturePoseResponse(
+        found=True,
+        position=Vector3(x=pose.position[0], y=pose.position[1], z=pose.position[2]),
+        quaternion=Quaternion(x=pose.quaternion[0], y=pose.quaternion[1], z=pose.quaternion[2], w=pose.quaternion[3]),
+        num_matches=estimate.num_matches,
+        num_inliers=estimate.num_inliers,
+        inlier_points_px=[Vector2(x=x, y=y) for x, y in estimate.inlier_points_px] if estimate.inlier_points_px else None,
         calibration_is_approximate=calibration.is_approximate,
         calibration_source=calibration.source,
     )
