@@ -16,12 +16,16 @@ export default function App() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const refreshAssets = () => {
+    AssetsApi.list()
+      .then(setAssets)
+      .catch((err: Error) => setError(err.message));
+  };
+
   useEffect(() => {
-    Promise.all([AssetsApi.list(), ProceduresApi.list()])
-      .then(([a, p]) => {
-        setAssets(a);
-        setProcedures(p);
-      })
+    refreshAssets();
+    ProceduresApi.list()
+      .then(setProcedures)
       .catch((err: Error) => setError(err.message));
   }, []);
 
@@ -92,7 +96,7 @@ export default function App() {
         </>
       )}
 
-      {tab === "3d" && <Viewer3DPage assets={assets} />}
+      {tab === "3d" && <Viewer3DPage assets={assets} onAssetsChanged={refreshAssets} />}
     </div>
   );
 }

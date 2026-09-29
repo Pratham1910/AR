@@ -23,6 +23,8 @@ export const resolveApiUrl = (path: string) => `${baseURL}${path}`;
 
 export const AssetsApi = {
   list: () => api.get<Asset[]>("/api/assets").then((r) => r.data),
+  create: (name: string, description?: string) =>
+    api.post<Asset>("/api/assets", { name, description }).then((r) => r.data),
 };
 
 export const ProceduresApi = {
@@ -59,6 +61,16 @@ export const InspectionApi = {
 export const Models3DApi = {
   listForAsset: (assetId: string) =>
     api.get<Model3DInfo[]>("/api/models3d", { params: { asset_id: assetId } }).then((r) => r.data),
+
+  upload: (assetId: string, name: string, file: File, realWorldHeightM?: number) => {
+    const form = new FormData();
+    form.append("asset_id", assetId);
+    form.append("name", name);
+    form.append("file", file);
+    if (realWorldHeightM !== undefined) form.append("real_world_height_m", String(realWorldHeightM));
+    // No explicit Content-Type here — axios sets the multipart boundary itself from the FormData.
+    return api.post<Model3DInfo>("/api/models3d/upload", form).then((r) => r.data);
+  },
 };
 
 export const VisionApi = {

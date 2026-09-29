@@ -4,31 +4,37 @@ import type { Asset, Model3DInfo } from "../../types";
 import { ThreeViewer } from "./ThreeViewer";
 import { SimpleCameraOverlay } from "./SimpleCameraOverlay";
 import { RegistrationOverlay } from "./RegistrationOverlay";
+import { UploadModelForm } from "./UploadModelForm";
 
 interface Props {
   assets: Asset[];
+  onAssetsChanged: () => void;
 }
 
 /**
  * Phase 4 + 5 test page: pick any asset that has a registered Model3D (the
  * seed script registers BOTTLE-001 -> bottle.glb, Project.md's provided
  * placeholder model) and either view it standalone or attempt physical<->3D
- * registration against a live camera feed of the printed ArUco marker.
+ * registration against a live camera feed. UploadModelForm lets you add
+ * more assets/models without hand-writing API calls.
  */
-export function Viewer3DPage({ assets }: Props) {
+export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
   const [selectedAssetId, setSelectedAssetId] = useState("");
   const [models, setModels] = useState<Model3DInfo[]>([]);
   const [mode, setMode] = useState<"view" | "overlay" | "register">("view");
   const [error, setError] = useState<string | null>(null);
+  const [showUpload, setShowUpload] = useState(false);
 
-  useEffect(() => {
-    if (!selectedAssetId) {
+  const refreshModels = (assetId: string) => {
+    if (!assetId) {
       setModels([]);
       return;
     }
-    Models3DApi.listForAsset(selectedAssetId)
-      .then(setModels)
-      .catch((err: Error) => setError(err.message));
+    Models3DApi.listForAsset(assetId).then(setModels).catch((err: Error) => setError(err.message));
+  };
+
+  useEffect(() => {
+    refreshModels(selectedAssetId);
   }, [selectedAssetId]);
 
   const model = models[0];
@@ -47,12 +53,25 @@ export function Viewer3DPage({ assets }: Props) {
             ))}
           </select>
         </label>
+        <button onClick={() => setShowUpload((v) => !v)}>{showUpload ? "Hide upload" : "+ Upload 3D model"}</button>
       </div>
+
+      {showUpload && (
+        <UploadModelForm
+          assets={assets}
+          onUploaded={(assetId) => {
+            onAssetsChanged(); // in case a new asset was created
+            setSelectedAssetId(assetId);
+            refreshModels(assetId);
+            setShowUpload(false);
+          }}
+        />
+      )}
 
       {error && <p className="error">{error}</p>}
 
       {selectedAssetId && models.length === 0 && !error && (
-        <p>No 3D model registered for this asset yet (POST /api/models3d to add one).</p>
+        <p>No 3D model registered for this asset yet — use "+ Upload 3D model" above.</p>
       )}
 
       {model && (
