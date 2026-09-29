@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Models3DApi, resolveApiUrl } from "../../services/api";
 import type { Asset, Model3DInfo } from "../../types";
 import { ThreeViewer } from "./ThreeViewer";
+import { SimpleCameraOverlay } from "./SimpleCameraOverlay";
 import { RegistrationOverlay } from "./RegistrationOverlay";
 
 interface Props {
@@ -17,7 +18,7 @@ interface Props {
 export function Viewer3DPage({ assets }: Props) {
   const [selectedAssetId, setSelectedAssetId] = useState("");
   const [models, setModels] = useState<Model3DInfo[]>([]);
-  const [mode, setMode] = useState<"view" | "register">("view");
+  const [mode, setMode] = useState<"view" | "overlay" | "register">("view");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -60,12 +61,16 @@ export function Viewer3DPage({ assets }: Props) {
             <button className={mode === "view" ? "active" : ""} onClick={() => setMode("view")}>
               3D Viewer (Phase 4)
             </button>
+            <button className={mode === "overlay" ? "active" : ""} onClick={() => setMode("overlay")}>
+              Camera Overlay (no detection)
+            </button>
             <button className={mode === "register" ? "active" : ""} onClick={() => setMode("register")}>
               AR Registration (Phase 5)
             </button>
           </div>
 
           {mode === "view" && <ThreeViewer modelUrl={resolveApiUrl(model.url)} />}
+          {mode === "overlay" && <SimpleCameraOverlay modelUrl={resolveApiUrl(model.url)} />}
           {mode === "register" && (
             <>
               <p className="hint">
