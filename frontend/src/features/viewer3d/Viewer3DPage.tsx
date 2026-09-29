@@ -73,7 +73,11 @@ export function Viewer3DPage({ assets }: Props) {
                 physical object, and measure its printed side length against <code>ARUCO_MARKER_LENGTH_M</code>{" "}
                 in <code>.env</code>.
               </p>
-              <RegistrationOverlay assetId={selectedAssetId} modelUrl={resolveApiUrl(model.url)} />
+              <RegistrationOverlay
+                assetId={selectedAssetId}
+                modelUrl={resolveApiUrl(model.url)}
+                modelScale={model.scale}
+              />
             </>
           )}
         </>

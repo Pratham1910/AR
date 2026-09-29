@@ -16,6 +16,14 @@ import type {
 interface Props {
   assetId: string;
   modelUrl: string;
+  /**
+   * Multiplier converting the GLB's own mesh units into real-world meters
+   * (Model3DInfo.scale). AR overlays place the model directly at a
+   * real-world position — without this, a GLB not authored at 1 unit = 1
+   * meter renders wildly wrong-sized (often invisible: the camera ends up
+   * inside an oversized mesh and backface culling hides everything).
+   */
+  modelScale?: number;
   targetMarkerId?: number;
 }
 
@@ -49,7 +57,7 @@ type RegistrationMode = "marker" | "markerless" | "feature";
  * found (Project.md #57's "show me what the detector actually saw"),
  * distinct from the 3D model overlay which only appears once a pose exists.
  */
-export function RegistrationOverlay({ assetId, modelUrl, targetMarkerId }: Props) {
+export function RegistrationOverlay({ assetId, modelUrl, modelScale = 1, targetMarkerId }: Props) {
   const {
     videoRef,
     canvasRef,
@@ -111,6 +119,7 @@ export function RegistrationOverlay({ assetId, modelUrl, targetMarkerId }: Props
       modelUrl,
       (gltf) => {
         gltf.scene.visible = false; // hidden until a pose is found
+        gltf.scene.scale.setScalar(modelScale); // GLB units -> real-world meters
         modelObjectRef.current = gltf.scene;
         scene.add(gltf.scene);
         setModelStatus("loaded");
@@ -134,7 +143,7 @@ export function RegistrationOverlay({ assetId, modelUrl, targetMarkerId }: Props
       renderer.dispose();
       container.removeChild(renderer.domElement);
     };
-  }, [modelUrl]);
+  }, [modelUrl, modelScale]);
 
   const clearOutline = () => {
     const ctx = outlineCanvasRef.current?.getContext("2d");

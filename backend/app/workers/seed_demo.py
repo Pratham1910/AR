@@ -108,6 +108,15 @@ def _seed_bottle_3d_demo(db: Session) -> None:
         db.flush()
         print("  + component BOTTLE-BODY-001 (cad_node_id=Cylinder)")
 
+    # bottle.glb's mesh is ~2m wide x ~5.27m tall in glTF units (an unscaled
+    # Blender export) — see app/models/model3d.py. Corrected so AR overlays
+    # (which place the model directly at a real-world position in meters)
+    # render it at roughly a real flask's size instead of the camera ending
+    # up inside a multi-meter-tall cylinder.
+    bottle_glb_height_units = 3.6430740356445312 - (-1.62907075881958)
+    assumed_real_height_m = 0.28
+    bottle_scale = assumed_real_height_m / bottle_glb_height_units
+
     existing_model = db.query(Model3D).filter(Model3D.storage_key == "bottle.glb").one_or_none()
     if existing_model is None:
         db.add(
@@ -117,9 +126,13 @@ def _seed_bottle_3d_demo(db: Session) -> None:
                 name="Test Bottle",
                 format="glb",
                 storage_key="bottle.glb",
+                scale=bottle_scale,
             )
         )
-        print("  + Model3D bottle.glb")
+        print(f"  + Model3D bottle.glb (scale={bottle_scale:.5f})")
+    elif existing_model.scale != bottle_scale:
+        existing_model.scale = bottle_scale
+        print(f"  ~ updated Model3D bottle.glb scale -> {bottle_scale:.5f}")
     db.commit()
 
 

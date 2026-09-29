@@ -73,6 +73,11 @@ export interface Model3DInfo {
   name: string;
   format: string;
   storage_key: string;
+  // Multiplier to convert the GLB's own mesh units into real-world meters —
+  // AR overlays MUST apply this before placing the model at a real-world
+  // position, or a GLB not authored at 1 unit = 1 meter renders wildly
+  // wrong-sized (backend/app/models/model3d.py).
+  scale: number;
   url: string; // relative to the API base URL, e.g. /static/models/bottle.glb
 }
 

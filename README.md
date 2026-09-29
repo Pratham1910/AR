@@ -58,7 +58,10 @@ cd backend
 python -m venv .venv && .venv\Scripts\activate   # Windows
 pip install -r requirements.txt
 alembic upgrade head
-uvicorn app.main:app --reload --port 8000
+# --reload-dir app: without it, uvicorn's file-watcher also watches .venv/
+# (since it lives inside backend/) and can get stuck in an endless
+# reload loop whenever anything touches a file under site-packages.
+uvicorn app.main:app --reload --reload-dir app --port 8000
 
 # 3. Frontend
 cd frontend

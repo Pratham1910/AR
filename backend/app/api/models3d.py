@@ -24,6 +24,10 @@ class Model3DCreate(BaseModel):
     name: str
     storage_key: str  # filename under data/models/, e.g. "bottle.glb"
     format: str = "glb"
+    # See app/models/model3d.py — corrects for GLBs not authored at
+    # 1 unit = 1 meter. Defaults to 1.0 (assume correctly scaled); if the AR
+    # overlay renders comically large/tiny/invisible, this is very likely why.
+    scale: float = 1.0
 
 
 class Model3DOut(BaseModel):
@@ -33,6 +37,7 @@ class Model3DOut(BaseModel):
     name: str
     format: str
     storage_key: str
+    scale: float
     url: str
 
     model_config = {"from_attributes": True}
@@ -46,6 +51,7 @@ def _to_out(model: Model3D) -> Model3DOut:
         name=model.name,
         format=model.format,
         storage_key=model.storage_key,
+        scale=model.scale,
         url=f"/static/models/{model.storage_key}",
     )
 
