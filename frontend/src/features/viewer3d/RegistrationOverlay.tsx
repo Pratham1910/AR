@@ -82,6 +82,8 @@ export function RegistrationOverlay({ assetId, modelUrl, targetMarkerId }: Props
   const [busy, setBusy] = useState(false);
   const [liveTracking, setLiveTracking] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [modelStatus, setModelStatus] = useState<"loading" | "loaded" | "error">("loading");
+  const [modelError, setModelError] = useState<string | null>(null);
 
   // --- Three.js overlay scene setup (once per model) ---
   useEffect(() => {
@@ -102,12 +104,23 @@ export function RegistrationOverlay({ assetId, modelUrl, targetMarkerId }: Props
 
     scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 2.0));
 
+    setModelStatus("loading");
+    setModelError(null);
     const loader = new GLTFLoader();
-    loader.load(modelUrl, (gltf) => {
-      gltf.scene.visible = false; // hidden until a pose is found
-      modelObjectRef.current = gltf.scene;
-      scene.add(gltf.scene);
-    });
+    loader.load(
+      modelUrl,
+      (gltf) => {
+        gltf.scene.visible = false; // hidden until a pose is found
+        modelObjectRef.current = gltf.scene;
+        scene.add(gltf.scene);
+        setModelStatus("loaded");
+      },
+      undefined,
+      (err) => {
+        setModelStatus("error");
+        setModelError(err instanceof Error ? err.message : String(err));
+      }
+    );
 
     let frameId = 0;
     const animate = () => {
@@ -357,6 +370,12 @@ export function RegistrationOverlay({ assetId, modelUrl, targetMarkerId }: Props
 
       <CameraStatusBadge status={cameraStatus} deviceLabel={deviceLabel} resolution={resolution} error={cameraError} />
       <CameraSelect devices={devices} selectedDeviceId={selectedDeviceId} onSelect={selectDevice} />
+
+      {modelStatus === "loading" && <p className="camera-status camera-status-pending">🟡 Loading 3D model…</p>}
+      {modelStatus === "loaded" && <p className="camera-status camera-status-ok">🟢 3D model loaded (hidden until a pose is found)</p>}
+      {modelStatus === "error" && (
+        <p className="camera-status camera-status-error">🔴 3D model failed to load — {modelError}</p>
+      )}
 
       <div className="registration-controls">
         <button onClick={detectAndAlign} disabled={busy || !ready}>
