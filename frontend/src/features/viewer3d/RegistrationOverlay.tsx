@@ -124,11 +124,28 @@ export function RegistrationOverlay({ assetId, modelUrl, modelScale = 1, targetM
     loader.load(
       modelUrl,
       (gltf) => {
-        gltf.scene.visible = false; // hidden until a pose is found
         gltf.scene.scale.setScalar(modelScale); // GLB units -> real-world meters
         ensureVisibleMaterials(gltf.scene);
-        modelObjectRef.current = gltf.scene;
-        scene.add(gltf.scene);
+
+        // The GLB's own local origin isn't necessarily its geometric
+        // center (bottle.glb's mesh spans Y roughly -1.6..3.6, i.e. its
+        // origin sits well below the visual middle) — but the position we
+        // place the model at *is* meant to represent the object's center
+        // (a bounding-box-center back-projection, or a reference plane's
+        // own center). Recenter the loaded scene inside a wrapper group so
+        // "place the group at position P" actually means "the model's
+        // visible center ends up at P", not "the model's arbitrary
+        // authoring-time origin ends up at P".
+        gltf.scene.updateMatrixWorld(true);
+        const box = new THREE.Box3().setFromObject(gltf.scene);
+        const center = box.getCenter(new THREE.Vector3());
+        gltf.scene.position.sub(center);
+
+        const group = new THREE.Group();
+        group.visible = false; // hidden until a pose is found
+        group.add(gltf.scene);
+        modelObjectRef.current = group;
+        scene.add(group);
         setModelStatus("loaded");
       },
       undefined,
