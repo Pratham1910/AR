@@ -1,0 +1,92 @@
+{
+  "procedureId": "PUMP-MAINT-001",
+  "revision": "A",
+  "title": "Water Pump PCB Maintenance Procedure",
+  "assetId": "PUMP-001",
+
+  "states": [
+    { "id": "STATE-COVER-CLOSED", "name": "Cover Closed" },
+    { "id": "STATE-SCREWS-REMOVED", "name": "Screws Removed" },
+    { "id": "STATE-COVER-OPEN", "name": "Cover Open" },
+    { "id": "STATE-CONNECTOR-CONNECTED", "name": "Connector Connected" },
+    { "id": "STATE-CONNECTOR-DISCONNECTED", "name": "Connector Disconnected" },
+    { "id": "STATE-PCB-INSTALLED", "name": "PCB Installed" },
+    { "id": "STATE-PCB-REMOVED", "name": "PCB Removed" },
+    { "id": "STATE-PCB-INSPECTED", "name": "PCB Inspected" }
+  ],
+
+  "steps": [
+    {
+      "id": "STEP-001",
+      "title": "Verify Cover Closed",
+      "startingState": "STATE-COVER-CLOSED",
+      "action": { "type": "INSPECT" },
+      "target": { "componentId": "COVER-001" },
+      "expectedState": "STATE-COVER-CLOSED",
+      "validation": { "methods": ["OBJECT_DETECTION", "STATE_CLASSIFICATION"] }
+    },
+    {
+      "id": "STEP-002",
+      "title": "Remove Cover Screws",
+      "startingState": "STATE-COVER-CLOSED",
+      "action": { "type": "REMOVE" },
+      "target": { "componentId": "SCREW-GROUP-001" },
+      "expectedState": "STATE-SCREWS-REMOVED",
+      "validation": { "methods": ["OBJECT_DETECTION", "STATE_CLASSIFICATION"] }
+    },
+    {
+      "id": "STEP-003",
+      "title": "Open Cover",
+      "startingState": "STATE-SCREWS-REMOVED",
+      "action": { "type": "OPEN" },
+      "target": { "componentId": "COVER-001" },
+      "expectedState": "STATE-COVER-OPEN",
+      "validation": { "methods": ["STATE_CLASSIFICATION"] }
+    },
+    {
+      "id": "STEP-004",
+      "title": "Disconnect Connector",
+      "startingState": "STATE-COVER-OPEN",
+      "action": { "type": "DISCONNECT" },
+      "target": { "componentId": "CONNECTOR-J1" },
+      "expectedState": "STATE-CONNECTOR-DISCONNECTED",
+      "validation": { "methods": ["OBJECT_DETECTION", "STATE_CLASSIFICATION"] }
+    },
+    {
+      "id": "STEP-005",
+      "title": "Remove PCB",
+      "startingState": "STATE-CONNECTOR-DISCONNECTED",
+      "action": { "type": "REMOVE" },
+      "target": { "componentId": "PCB-001" },
+      "expectedState": "STATE-PCB-REMOVED",
+      "validation": { "methods": ["OBJECT_DETECTION", "TRACKING", "STATE_CLASSIFICATION"] }
+    },
+    {
+      "id": "STEP-006",
+      "title": "Inspect PCB",
+      "startingState": "STATE-PCB-REMOVED",
+      "action": { "type": "INSPECT" },
+      "target": { "componentId": "PCB-001" },
+      "expectedState": "STATE-PCB-INSPECTED",
+      "validation": { "methods": ["OBJECT_DETECTION"] }
+    },
+    {
+      "id": "STEP-007",
+      "title": "Reinstall PCB",
+      "startingState": "STATE-PCB-INSPECTED",
+      "action": { "type": "INSTALL" },
+      "target": { "componentId": "PCB-001" },
+      "expectedState": "STATE-PCB-INSTALLED",
+      "validation": { "methods": ["OBJECT_DETECTION", "STATE_CLASSIFICATION"] }
+    },
+    {
+      "id": "STEP-008",
+      "title": "Close Cover and Verify Final State",
+      "startingState": "STATE-PCB-INSTALLED",
+      "action": { "type": "CLOSE" },
+      "target": { "componentId": "COVER-001" },
+      "expectedState": "STATE-COVER-CLOSED",
+      "validation": { "methods": ["OBJECT_DETECTION", "STATE_CLASSIFICATION"] }
+    }
+  ]
+}

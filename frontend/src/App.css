@@ -1,0 +1,73 @@
+.app {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 1.5rem;
+  font-family: system-ui, sans-serif;
+}
+
+.subtitle {
+  color: #666;
+  margin-top: -0.5rem;
+}
+
+.setup {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 400px;
+}
+
+.setup label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.inspection-runner {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+}
+
+.step-title {
+  font-size: 1.2rem;
+  font-weight: 600;
+}
+
+.result-panel {
+  margin-top: 1rem;
+  padding: 1rem;
+  border-radius: 8px;
+  border: 1px solid #ddd;
+}
+
+.result-pass {
+  border-color: #2e7d32;
+  background: #edf7ed;
+}
+
+.result-fail {
+  border-color: #c62828;
+  background: #fdecea;
+}
+
+.result-uncertain,
+.result-manual_review,
+.result-not_evaluated {
+  border-color: #ef6c00;
+  background: #fff3e0;
+}
+
+.result-badge {
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+.reason {
+  color: #c62828;
+}
+
+.error {
+  color: #c62828;
+  font-weight: 600;
+}

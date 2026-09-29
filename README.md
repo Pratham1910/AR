@@ -1,0 +1,72 @@
+# TVASTA — Industrial AR/MR Procedure & QA Platform
+
+An industrial maintenance, inspection, and QA platform where a procedure is not a
+PDF or a video — it is an executable **State → Action → Validation → State**
+workflow, verified against a physical asset by computer vision.
+
+See [`Project.md`](Project.md) for the full architecture brief this build follows.
+
+## Architecture (Phase 1)
+
+```
+        Web Client (React + TS)
+                 │
+              FastAPI
+   ┌─────────────┼─────────────┐
+Procedure      Vision         QA
+ Engine        Engine        Engine
+   │             │             │
+   └─────────────┼─────────────┘
+            Evidence Engine
+                 │
+        PostgreSQL   +   MinIO
+```
+
+Procedure/Vision/QA/Evidence engines are independent layers (see `docs/architecture.md`).
+No subsystem performs another's job — the vision engine never decides PASS/FAIL, the
+QA engine never runs inference.
+
+Unity/AR/MR, 3D↔physical registration (pose/6DoF) and depth-based metrology are
+**future phases** (see `Project.md` §58, §74) — Phase 1 proves the core loop with a
+plain camera:
+
+```
+CAMERA → DETECTION → STATE → QA → EVIDENCE
+```
+
+## Project layout
+
+```
+backend/     FastAPI app: procedure engine, QA engine, vision service, evidence
+frontend/    React + TS web client (camera capture, inspection runner UI)
+data/        Seed procedure JSON, reference images/videos
+models/yolo/ Trained/placeholder YOLO weights (not committed)
+docker/      Supporting docker assets
+docs/        Per-subsystem documentation
+tests/       Backend + vision tests
+3D-models/   Reference GLB/glTF assets (Phase 4+)
+```
+
+## Running locally (development)
+
+```bash
+# 1. Infra
+docker compose up -d postgres minio
+
+# 2. Backend
+cd backend
+python -m venv .venv && .venv\Scripts\activate   # Windows
+pip install -r requirements.txt
+alembic upgrade head
+uvicorn app.main:app --reload --port 8000
+
+# 3. Frontend
+cd frontend
+npm install
+npm run dev
+```
+
+## Status
+
+Phase 1 (Camera QA MVP) is in progress. See `docs/roadmap.md` for phase-by-phase
+status against `Project.md` §58.

@@ -1,0 +1,34 @@
+## Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+## Node / frontend
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+## Env / secrets
+.env
+.env.*
+!.env.example
+
+## Data / models (large binaries, not committed)
+models/yolo/*.pt
+models/yolo/*.onnx
+data/videos/*
+!data/videos/.gitkeep
+data/images/*
+!data/images/.gitkeep
+
+## OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+## Docker
+docker/volumes/
