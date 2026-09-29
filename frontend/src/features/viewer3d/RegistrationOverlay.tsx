@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { CameraSelect } from "../../components/CameraSelect";
+import { CameraStatusBadge } from "../../components/CameraStatusBadge";
 import { useCamera } from "../../hooks/useCamera";
 import { VisionApi } from "../../services/api";
 import type { PoseResponse } from "../../types";
@@ -28,7 +30,19 @@ interface Props {
  * PoseResponse.calibration_is_approximate).
  */
 export function RegistrationOverlay({ modelUrl, targetMarkerId }: Props) {
-  const { videoRef, canvasRef, ready, error: cameraError, captureFrameBase64 } = useCamera();
+  const {
+    videoRef,
+    canvasRef,
+    ready,
+    status: cameraStatus,
+    error: cameraError,
+    deviceLabel,
+    resolution,
+    devices,
+    selectedDeviceId,
+    selectDevice,
+    captureFrameBase64,
+  } = useCamera();
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const modelObjectRef = useRef<THREE.Object3D | null>(null);
   const [pose, setPose] = useState<PoseResponse | null>(null);
@@ -123,8 +137,8 @@ export function RegistrationOverlay({ modelUrl, targetMarkerId }: Props) {
         <canvas ref={canvasRef} style={{ display: "none" }} />
       </div>
 
-      {!ready && !cameraError && <p>Requesting camera access…</p>}
-      {cameraError && <p className="error">Camera error: {cameraError}</p>}
+      <CameraStatusBadge status={cameraStatus} deviceLabel={deviceLabel} resolution={resolution} error={cameraError} />
+      <CameraSelect devices={devices} selectedDeviceId={selectedDeviceId} onSelect={selectDevice} />
 
       <div className="registration-controls">
         <button onClick={detectAndAlign} disabled={busy || !ready}>

@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import { CameraSelect } from "../../components/CameraSelect";
+import { CameraStatusBadge } from "../../components/CameraStatusBadge";
 import { useCamera } from "../../hooks/useCamera";
 import { InspectionApi } from "../../services/api";
 import type { InspectionRun, StepValidationResponse } from "../../types";
@@ -15,7 +17,19 @@ interface Props {
  *   PASS/FAIL/UNCERTAIN with reason and evidence -> advance or retry.
  */
 export function InspectionRunner({ assetId, procedureRevisionId, operator }: Props) {
-  const { videoRef, canvasRef, ready, error: cameraError, captureFrameBase64 } = useCamera();
+  const {
+    videoRef,
+    canvasRef,
+    ready,
+    status: cameraStatus,
+    error: cameraError,
+    deviceLabel,
+    resolution,
+    devices,
+    selectedDeviceId,
+    selectDevice,
+    captureFrameBase64,
+  } = useCamera();
   const [run, setRun] = useState<InspectionRun | null>(null);
   const [busy, setBusy] = useState(false);
   const [lastResult, setLastResult] = useState<StepValidationResponse | null>(null);
@@ -65,8 +79,8 @@ export function InspectionRunner({ assetId, procedureRevisionId, operator }: Pro
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
         <video ref={videoRef} autoPlay playsInline muted style={{ width: "100%", maxWidth: 640 }} />
         <canvas ref={canvasRef} style={{ display: "none" }} />
-        {!ready && !cameraError && <p>Requesting camera access…</p>}
-        {cameraError && <p className="error">Camera error: {cameraError}</p>}
+        <CameraStatusBadge status={cameraStatus} deviceLabel={deviceLabel} resolution={resolution} error={cameraError} />
+        <CameraSelect devices={devices} selectedDeviceId={selectedDeviceId} onSelect={selectDevice} />
       </div>
 
       <div className="step-pane">

@@ -137,3 +137,34 @@
   color: #666;
   font-size: 0.85rem;
 }
+
+.camera-status {
+  font-size: 0.9rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 6px;
+  display: inline-block;
+  margin: 0.5rem 0;
+}
+
+.camera-status-ok {
+  background: #edf7ed;
+  color: #2e7d32;
+}
+
+.camera-status-error {
+  background: #fdecea;
+  color: #c62828;
+}
+
+.camera-status-pending {
+  background: #fff3e0;
+  color: #ef6c00;
+}
+
+.camera-select {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  margin: 0.5rem 0;
+}
