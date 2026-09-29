@@ -114,5 +114,8 @@ Phases per Project.md §58. Status as of this build:
   image, not a physical printed marker + real camera in this session —
   the `generate_marker`/`calibrate_camera` workers are ready for that test
   in a normal environment.
-- The AR overlay's Three.js camera FOV is a fixed guess, not derived from the
-  real camera_matrix — see `docs/pose.md`'s "known limitation".
+- Fixed: the AR overlay's Three.js camera now matches the backend's
+  calibration exactly (`camera_vertical_fov_deg`/`camera_aspect` returned on
+  every pose response) instead of a hardcoded guess — see `docs/pose.md`'s
+  "known limitations" for what's still not corrected (an off-center
+  principal point, only relevant once a real calibration is in use).

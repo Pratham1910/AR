@@ -75,6 +75,7 @@ export function RegistrationOverlay({ assetId, modelUrl, modelScale = 1, targetM
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const outlineCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const modelObjectRef = useRef<THREE.Object3D | null>(null);
+  const cameraObjectRef = useRef<THREE.PerspectiveCamera | null>(null);
 
   const [mode, setMode] = useState<RegistrationMode>("markerless");
   const [targetClassLabel, setTargetClassLabel] = useState("bottle");
@@ -103,7 +104,11 @@ export function RegistrationOverlay({ assetId, modelUrl, modelScale = 1, targetM
     const height = container.clientHeight;
 
     const scene = new THREE.Scene();
+    // FOV/aspect start as a placeholder and are corrected to the backend's
+    // exact calibration on the first pose response (see applyCameraModel
+    // below) — a guessed constant here visibly misaligns the overlay.
     const camera = new THREE.PerspectiveCamera(60, width / height, 0.01, 100);
+    cameraObjectRef.current = camera;
     // Camera stays at the origin, looking down -Z — see module docstring.
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -212,6 +217,19 @@ export function RegistrationOverlay({ assetId, modelUrl, modelScale = 1, targetM
     }
   };
 
+  const applyCameraModel = (verticalFovDeg: number, aspect: number) => {
+    const camera = cameraObjectRef.current;
+    if (!camera) return;
+    // Must match the backend's calibration exactly (not the container's own
+    // measured aspect) — that calibration is what the position/pose math
+    // itself was computed against.
+    if (camera.fov !== verticalFovDeg || camera.aspect !== aspect) {
+      camera.fov = verticalFovDeg;
+      camera.aspect = aspect;
+      camera.updateProjectionMatrix();
+    }
+  };
+
   const applyModelTransform = (
     position: { x: number; y: number; z: number } | null,
     quaternion: { x: number; y: number; z: number; w: number } | null
@@ -252,6 +270,7 @@ export function RegistrationOverlay({ assetId, modelUrl, modelScale = 1, targetM
       if (mode === "marker") {
         const result = await VisionApi.estimatePose(frame, targetMarkerId);
         setMarkerPose(result);
+        applyCameraModel(result.camera_vertical_fov_deg, result.camera_aspect);
         if (result.found && result.corners_px) {
           drawPolygon(result.corners_px, "#00e676", result.marker_id !== null ? `id ${result.marker_id}` : undefined);
         } else {
@@ -261,6 +280,7 @@ export function RegistrationOverlay({ assetId, modelUrl, modelScale = 1, targetM
       } else if (mode === "markerless") {
         const result = await VisionApi.registerObject(frame, targetClassLabel, realWorldHeightM);
         setObjectPose(result);
+        applyCameraModel(result.camera_vertical_fov_deg, result.camera_aspect);
         if (result.found && result.polygon) {
           drawPolygon(
             result.polygon,
@@ -274,6 +294,7 @@ export function RegistrationOverlay({ assetId, modelUrl, modelScale = 1, targetM
       } else {
         const result = await VisionApi.estimateFeaturePose(assetId, frame);
         setFeaturePose(result);
+        applyCameraModel(result.camera_vertical_fov_deg, result.camera_aspect);
         if (result.found && result.inlier_points_px) {
           drawPoints(result.inlier_points_px, "#ffca28", `${result.num_inliers}/${result.num_matches} matched`);
         } else {

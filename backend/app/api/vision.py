@@ -149,6 +149,8 @@ def object_registration(request: ObjectRegistrationRequest) -> ObjectRegistratio
             approximate=True,
             calibration_is_approximate=calibration.is_approximate,
             calibration_source=calibration.source,
+            camera_vertical_fov_deg=calibration.vertical_fov_deg(),
+            camera_aspect=calibration.aspect_ratio(),
         )
     best = max(matches, key=lambda o: o.confidence)  # highest-confidence match if several
 
@@ -168,6 +170,8 @@ def object_registration(request: ObjectRegistrationRequest) -> ObjectRegistratio
         approximate=True,
         calibration_is_approximate=calibration.is_approximate,
         calibration_source=calibration.source,
+        camera_vertical_fov_deg=calibration.vertical_fov_deg(),
+        camera_aspect=calibration.aspect_ratio(),
     )
 
 
@@ -227,6 +231,8 @@ def estimate_feature_pose(request: FeaturePoseRequest) -> FeaturePoseResponse:
             num_matches=estimate.num_matches,
             calibration_is_approximate=calibration.is_approximate,
             calibration_source=calibration.source,
+            camera_vertical_fov_deg=calibration.vertical_fov_deg(),
+            camera_aspect=calibration.aspect_ratio(),
         )
 
     pose = cv_pose_to_threejs(estimate.rvec, estimate.tvec)
@@ -239,6 +245,8 @@ def estimate_feature_pose(request: FeaturePoseRequest) -> FeaturePoseResponse:
         inlier_points_px=[Vector2(x=x, y=y) for x, y in estimate.inlier_points_px] if estimate.inlier_points_px else None,
         calibration_is_approximate=calibration.is_approximate,
         calibration_source=calibration.source,
+        camera_vertical_fov_deg=calibration.vertical_fov_deg(),
+        camera_aspect=calibration.aspect_ratio(),
     )
 
 
@@ -259,6 +267,8 @@ def estimate_pose(request: PoseRequest) -> PoseResponse:
             found=False,
             calibration_is_approximate=calibration.is_approximate,
             calibration_source=calibration.source,
+            camera_vertical_fov_deg=calibration.vertical_fov_deg(),
+            camera_aspect=calibration.aspect_ratio(),
         )
 
     pose = cv_pose_to_threejs(estimate.rvec, estimate.tvec)
@@ -271,4 +281,6 @@ def estimate_pose(request: PoseRequest) -> PoseResponse:
         corners_px=[Vector2(x=x, y=y) for x, y in estimate.corners_px] if estimate.corners_px else None,
         calibration_is_approximate=calibration.is_approximate,
         calibration_source=calibration.source,
+        camera_vertical_fov_deg=calibration.vertical_fov_deg(),
+        camera_aspect=calibration.aspect_ratio(),
     )

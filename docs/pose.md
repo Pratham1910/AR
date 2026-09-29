@@ -186,16 +186,27 @@ separate 2D outline canvas. A mode toggle switches between:
   points in yellow, and places the model at the recovered real 6DoF pose.
 
 Either way, the model's `position`/`quaternion` are set directly from the
-response — no coordinate math on the frontend. A "live tracking" checkbox
-repeats detection on an interval; **Detect & Align** does one shot.
+response — no coordinate math on the frontend. Every response also carries
+`camera_vertical_fov_deg`/`camera_aspect` (from
+`CameraCalibration.vertical_fov_deg()`/`aspect_ratio()`), and the overlay's
+Three.js camera is updated to match exactly on every response
+(`applyCameraModel` in `RegistrationOverlay.tsx`) — a hardcoded/guessed
+frontend FOV previously mismatched whatever FOV the backend actually used to
+compute position, which visibly pushed the 3D overlay off the real object
+even when position/orientation were otherwise correct. A "live tracking"
+checkbox repeats detection on an interval; **Detect & Align** does one shot.
 
-**Known limitations**: the overlay's Three.js camera FOV is a fixed guess,
-not derived from the backend's actual `camera_matrix`, so the overlay's
-*perspective* won't exactly match the real video's. Markerless mode has no
-orientation estimate at all; feature-tracking mode needs real object texture
-and only models a flat reference plane — see "Three registration methods"
-above for exactly what each does and doesn't estimate, and what closing the
-remaining gap to DELMIA-grade registration would actually require.
+**Known limitations**: this still only corrects the *symmetric* part of the
+camera model (FOV/aspect) — a real calibration with an off-center principal
+point (`cx`/`cy` not exactly at the image center) would need an asymmetric
+frustum (`camera.setViewOffset`), not implemented yet; the default
+approximate calibration is symmetric by construction, so this doesn't matter
+until a real `calibrate_camera.py` calibration is in use. Markerless mode
+still has no orientation estimate at all; feature-tracking mode needs real
+object texture and only models a flat reference plane — see "Three
+registration methods" above for exactly what each does and doesn't estimate,
+and what closing the remaining gap to DELMIA-grade registration would
+actually require.
 
 ## Tests
 

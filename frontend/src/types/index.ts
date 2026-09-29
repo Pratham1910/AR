@@ -111,6 +111,11 @@ export interface PoseResponse {
   corners_px: Vector2[] | null;
   calibration_is_approximate: boolean;
   calibration_source: string;
+  // The overlay's Three.js camera MUST use this exact FOV/aspect, not a
+  // guessed constant, or the 3D model visibly drifts off the real object
+  // even when position/orientation are computed correctly.
+  camera_vertical_fov_deg: number;
+  camera_aspect: number;
 }
 
 // Markerless (approximate) registration — see backend
@@ -127,6 +132,8 @@ export interface ObjectRegistrationResponse {
   approximate: boolean;
   calibration_is_approximate: boolean;
   calibration_source: string;
+  camera_vertical_fov_deg: number;
+  camera_aspect: number;
 }
 
 // Feature/keypoint ("image target") tracking — see backend
@@ -146,4 +153,6 @@ export interface FeaturePoseResponse {
   inlier_points_px: Vector2[] | null;
   calibration_is_approximate: boolean;
   calibration_source: string;
+  camera_vertical_fov_deg: number;
+  camera_aspect: number;
 }

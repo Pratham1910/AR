@@ -39,6 +39,21 @@ class CameraCalibration:
             source=str(path),
         )
 
+    def vertical_fov_deg(self) -> float:
+        """
+        The vertical field of view this calibration implies, in degrees —
+        for the frontend's Three.js overlay camera (Project.md #26). Without
+        this, a hardcoded/guessed frontend FOV mismatches whatever FOV the
+        backend actually used to compute position from apparent size, and
+        the 3D overlay drifts visibly off the real object even when the
+        underlying detection/pose math is correct.
+        """
+        fy = self.camera_matrix[1, 1]
+        return math.degrees(2 * math.atan(self.image_height / (2 * fy)))
+
+    def aspect_ratio(self) -> float:
+        return self.image_width / self.image_height
+
     def save(self, path: str | Path) -> None:
         Path(path).write_text(
             json.dumps(

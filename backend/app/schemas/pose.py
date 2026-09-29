@@ -46,6 +46,12 @@ class ObjectRegistrationResponse(BaseModel):
     approximate: bool = True  # always true for this endpoint; distinguishes it from /pose's marker-based result
     calibration_is_approximate: bool
     calibration_source: str
+    # The frontend overlay's Three.js camera MUST use this exact FOV/aspect
+    # (not a guessed constant), or the 3D model visibly drifts off the real
+    # object even when position/orientation are computed correctly — see
+    # CameraCalibration.vertical_fov_deg()'s docstring.
+    camera_vertical_fov_deg: float
+    camera_aspect: float
 
 
 class RegisterReferenceImageRequest(BaseModel):
@@ -76,6 +82,8 @@ class FeaturePoseResponse(BaseModel):
     inlier_points_px: list[Vector2] | None = None  # for drawing what was actually matched
     calibration_is_approximate: bool
     calibration_source: str
+    camera_vertical_fov_deg: float
+    camera_aspect: float
 
 
 class PoseResponse(BaseModel):
@@ -90,3 +98,5 @@ class PoseResponse(BaseModel):
     corners_px: list[Vector2] | None = None
     calibration_is_approximate: bool
     calibration_source: str
+    camera_vertical_fov_deg: float
+    camera_aspect: float
