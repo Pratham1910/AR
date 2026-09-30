@@ -17,6 +17,8 @@ import json
 import struct
 from dataclasses import dataclass
 
+import numpy as np
+
 
 class GlbParseError(ValueError):
     pass
@@ -71,31 +73,76 @@ def compute_glb_bounds(data: bytes) -> GlbBounds:
         raise GlbParseError("No JSON chunk found in .glb file")
 
     accessors = json_chunk.get("accessors", [])
-    position_accessor_indices = {
-        prim["attributes"]["POSITION"]
-        for mesh in json_chunk.get("meshes", [])
-        for prim in mesh.get("primitives", [])
-        if "POSITION" in prim.get("attributes", {})
-    }
+    meshes = json_chunk.get("meshes", [])
 
-    if not position_accessor_indices:
+    def mesh_boxes(mesh_index: int) -> list[tuple[np.ndarray, np.ndarray]]:
+        boxes = []
+        for prim in meshes[mesh_index].get("primitives", []):
+            idx = prim.get("attributes", {}).get("POSITION")
+            if idx is None:
+                continue
+            accessor = accessors[idx]
+            if "min" in accessor and "max" in accessor:  # not every exporter writes bounds
+                boxes.append((np.asarray(accessor["min"], float), np.asarray(accessor["max"], float)))
+        return boxes
+
+    if not any("POSITION" in p.get("attributes", {}) for m in meshes for p in m.get("primitives", [])):
         raise GlbParseError("No mesh with a POSITION attribute found in .glb file")
 
-    mins: list[tuple[float, float, float]] = []
-    maxs: list[tuple[float, float, float]] = []
-    for idx in position_accessor_indices:
-        accessor = accessors[idx]
-        if "min" not in accessor or "max" not in accessor:
-            continue  # not every exporter writes bounds on every accessor
-        mins.append(tuple(accessor["min"]))
-        maxs.append(tuple(accessor["max"]))
+    # Walk the scene graph so node scale/rotation/translation count — an
+    # exporter may keep a unit conversion or axis flip as a node transform
+    # (Blender's FBX->glTF path does) instead of baking it into vertices.
+    # Each primitive's accessor box is transformed corner-by-corner, the same
+    # thing Three.js's Box3.setFromObject() does.
+    corners: list[np.ndarray] = []
+    nodes = json_chunk.get("nodes", [])
+    scenes = json_chunk.get("scenes", [])
+    roots = scenes[json_chunk.get("scene", 0)].get("nodes", []) if scenes else []
 
-    if not mins:
+    def visit(node_index: int, parent: np.ndarray) -> None:
+        node = nodes[node_index]
+        world = parent @ _node_matrix(node)
+        if "mesh" in node:
+            for lo, hi in mesh_boxes(node["mesh"]):
+                box = np.array([[x, y, z, 1.0] for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])])
+                corners.append((box @ world.T)[:, :3])
+        for child in node.get("children", []):
+            visit(child, world)
+
+    for root in roots:
+        visit(root, np.eye(4))
+
+    if not corners:  # no scene graph referencing the meshes: fall back to raw accessor bounds
+        for mesh_index in range(len(meshes)):
+            for lo, hi in mesh_boxes(mesh_index):
+                corners.append(np.stack([lo, hi]))
+
+    if not corners:
         raise GlbParseError("No POSITION accessor in this .glb has min/max bounds")
 
-    overall_min = tuple(min(v[axis] for v in mins) for axis in range(3))
-    overall_max = tuple(max(v[axis] for v in maxs) for axis in range(3))
-    return GlbBounds(min=overall_min, max=overall_max)
+    points = np.concatenate(corners)
+    return GlbBounds(
+        min=tuple(float(v) for v in points.min(axis=0)),
+        max=tuple(float(v) for v in points.max(axis=0)),
+    )
+
+
+def _node_matrix(node: dict) -> np.ndarray:
+    """A glTF node's local transform: `matrix` (column-major) or T * R * S."""
+    if "matrix" in node:
+        return np.asarray(node["matrix"], float).reshape(4, 4).T
+    x, y, z, w = node.get("rotation", [0.0, 0.0, 0.0, 1.0])
+    rotation = np.array(
+        [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ]
+    )
+    matrix = np.eye(4)
+    matrix[:3, :3] = rotation @ np.diag(node.get("scale", [1.0, 1.0, 1.0]))
+    matrix[:3, 3] = node.get("translation", [0.0, 0.0, 0.0])
+    return matrix
 
 
 def compute_scale_for_real_height(data: bytes, real_height_m: float) -> float:

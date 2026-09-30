@@ -42,6 +42,9 @@ class Settings(BaseSettings):
 
     # Static file mount for served GLB/glTF models (Project.md #20, Phase 4).
     models_3d_dir: str = "../data/models"
+    # FBX uploads are converted to GLB with headless Blender. Unset = look on
+    # PATH, then the newest C:/Program Files/Blender Foundation/Blender */.
+    blender_path: Optional[str] = None
 
     # Live object-outline visualization (Project.md #16, #57) — a debug/demo
     # view, not the QA-critical detector. Defaults to a stock COCO-pretrained

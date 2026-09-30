@@ -1,4 +1,5 @@
 import { useState } from "react";
+import axios from "axios";
 import { AssetsApi, Models3DApi } from "../../services/api";
 import type { Asset } from "../../types";
 
@@ -39,7 +40,7 @@ export function UploadModelForm({ assets, onUploaded }: Props) {
     setSuccessMessage(null);
 
     if (!file) {
-      setError("Choose a .glb file first.");
+      setError("Choose a .glb or .fbx file first.");
       return;
     }
     if (assetChoice === "__new__" && !newAssetName.trim()) {
@@ -60,9 +61,14 @@ export function UploadModelForm({ assets, onUploaded }: Props) {
         detectionClassLabel.trim() || undefined
       );
 
+      const isFbx = file.name.toLowerCase().endsWith(".fbx");
       setSuccessMessage(
-        `Uploaded "${model.name}" — scale ${model.scale.toFixed(5)}` +
-          (heightM === undefined ? " (default 1.0 — no real height given, likely wrong)." : ".") +
+        `Uploaded "${model.name}"${isFbx ? " (converted from FBX)" : ""} — scale ${model.scale.toFixed(5)}` +
+          (heightM !== undefined
+            ? "."
+            : isFbx
+              ? " (FBX units applied; give a real height if the overlay size looks wrong)."
+              : " (default 1.0 — no real height given, likely wrong).") +
           (model.component_class_label ? ` Detection class: "${model.component_class_label}".` : "")
       );
       setFile(null);
@@ -71,7 +77,8 @@ export function UploadModelForm({ assets, onUploaded }: Props) {
       setDetectionClassLabel("");
       onUploaded(assetId);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      const detail = axios.isAxiosError(err) ? err.response?.data?.detail : undefined;
+      setError(typeof detail === "string" ? detail : err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
     }
@@ -106,8 +113,8 @@ export function UploadModelForm({ assets, onUploaded }: Props) {
       </label>
 
       <label>
-        .glb file
-        <input type="file" accept=".glb" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+        3D model file (.glb or .fbx)
+        <input type="file" accept=".glb,.fbx" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
       </label>
 
       <label>
@@ -132,7 +139,7 @@ export function UploadModelForm({ assets, onUploaded }: Props) {
       </label>
 
       <button type="submit" disabled={busy}>
-        {busy ? "Uploading…" : "Upload"}
+        {busy ? (file?.name.toLowerCase().endsWith(".fbx") ? "Converting FBX…" : "Uploading…") : "Upload"}
       </button>
 
       {error && <p className="error">{error}</p>}

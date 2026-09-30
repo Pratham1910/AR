@@ -10,6 +10,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -17,6 +18,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.asset import Asset, Component
 from app.models.model3d import Model3D
+from app.services.model3d.fbx_convert import BlenderNotFound, FbxConversionError, convert_fbx_to_glb
 from app.services.model3d.glb_inspect import GlbParseError, compute_scale_for_real_height
 
 router = APIRouter(prefix="/api/models3d", tags=["3d"])
@@ -223,8 +225,14 @@ async def upload_model(
     db: Session = Depends(get_db),
 ) -> Model3DOut:
     """
-    Uploads a .glb file, saves it under models_3d_dir (served at
+    Uploads a .glb or .fbx file, saves it under models_3d_dir (served at
     /static/models/*), and registers it against an existing Asset.
+
+    An .fbx is converted to .glb with headless Blender first (see
+    app/services/model3d/fbx_convert.py) — everything downstream only speaks
+    GLB. The original .fbx is kept next to it with the same name stem.
+    Blender applies the FBX's own unit scale, so an FBX authored in real
+    units comes out in meters even without `real_world_height_m`.
 
     If `real_world_height_m` is given, the model's `scale` (Project.md #20's
     "unit correction", the exact fix bottle.glb needed by hand) is computed
@@ -243,10 +251,20 @@ async def upload_model(
         raise HTTPException(status_code=404, detail="Asset not found")
     if component_id is not None and db.get(Component, component_id) is None:
         raise HTTPException(status_code=404, detail="Component not found")
-    if not file.filename or not file.filename.lower().endswith(".glb"):
-        raise HTTPException(status_code=400, detail="Only .glb files are supported")
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in (".glb", ".fbx"):
+        raise HTTPException(status_code=400, detail="Only .glb and .fbx files are supported")
 
     contents = await file.read()
+    source_fbx: bytes | None = None
+    if suffix == ".fbx":
+        source_fbx = contents
+        try:
+            contents = await run_in_threadpool(convert_fbx_to_glb, source_fbx, _settings.blender_path)
+        except BlenderNotFound as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except FbxConversionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     scale = 1.0
     if real_world_height_m is not None:
@@ -260,8 +278,10 @@ async def upload_model(
 
     models_dir = Path(_settings.models_3d_dir)
     models_dir.mkdir(parents=True, exist_ok=True)
-    storage_key = _safe_storage_filename(models_dir, file.filename)
+    storage_key = _safe_storage_filename(models_dir, str(Path(file.filename).with_suffix(".glb")))
     (models_dir / storage_key).write_bytes(contents)
+    if source_fbx is not None:
+        (models_dir / Path(storage_key).with_suffix(".fbx")).write_bytes(source_fbx)
 
     model = Model3D(
         asset_id=asset_id,
