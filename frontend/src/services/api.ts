@@ -62,12 +62,19 @@ export const Models3DApi = {
   listForAsset: (assetId: string) =>
     api.get<Model3DInfo[]>("/api/models3d", { params: { asset_id: assetId } }).then((r) => r.data),
 
-  upload: (assetId: string, name: string, file: File, realWorldHeightM?: number) => {
+  upload: (
+    assetId: string,
+    name: string,
+    file: File,
+    realWorldHeightM?: number,
+    detectionClassLabel?: string
+  ) => {
     const form = new FormData();
     form.append("asset_id", assetId);
     form.append("name", name);
     form.append("file", file);
     if (realWorldHeightM !== undefined) form.append("real_world_height_m", String(realWorldHeightM));
+    if (detectionClassLabel) form.append("detection_class_label", detectionClassLabel);
     // No explicit Content-Type here — axios sets the multipart boundary itself from the FormData.
     return api.post<Model3DInfo>("/api/models3d/upload", form).then((r) => r.data);
   },

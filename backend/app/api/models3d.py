@@ -35,6 +35,9 @@ class Model3DCreate(BaseModel):
     # 1 unit = 1 meter. Defaults to 1.0 (assume correctly scaled); if the AR
     # overlay renders comically large/tiny/invisible, this is very likely why.
     scale: float = 1.0
+    # If no component_id is given but this is set, a Component is created
+    # with this class_label and linked — see _get_or_create_detection_component.
+    detection_class_label: str | None = None
 
 
 class Model3DOut(BaseModel):
@@ -46,11 +49,22 @@ class Model3DOut(BaseModel):
     storage_key: str
     scale: float
     url: str
+    # The linked Component's class_label, if any — what the vision layer
+    # should call this object (e.g. "cup", "bottle"). Lets the frontend
+    # auto-fill "Object class" for markerless registration instead of
+    # leaving a free-typed field that can silently disagree with whichever
+    # asset/model is actually selected (a real bug this fixes: switching
+    # assets used to leave the previous asset's object class behind).
+    component_class_label: str | None = None
 
     model_config = {"from_attributes": True}
 
 
-def _to_out(model: Model3D) -> Model3DOut:
+def _to_out(model: Model3D, db: Session) -> Model3DOut:
+    component_class_label = None
+    if model.component_id is not None:
+        component = db.get(Component, model.component_id)
+        component_class_label = component.class_label if component else None
     return Model3DOut(
         id=model.id,
         asset_id=model.asset_id,
@@ -60,7 +74,32 @@ def _to_out(model: Model3D) -> Model3DOut:
         storage_key=model.storage_key,
         scale=model.scale,
         url=f"/static/models/{model.storage_key}",
+        component_class_label=component_class_label,
     )
+
+
+def _get_or_create_detection_component(db: Session, asset_id: uuid.UUID, class_label: str, name: str) -> Component:
+    """
+    One Component per (asset, class_label) — reuses an existing one so
+    uploading a second model for the same object doesn't create duplicates.
+    """
+    existing = (
+        db.query(Component)
+        .filter(Component.asset_id == asset_id, Component.class_label == class_label)
+        .one_or_none()
+    )
+    if existing is not None:
+        return existing
+
+    component = Component(
+        asset_id=asset_id,
+        component_id_str=f"{class_label.upper()}-{uuid.uuid4().hex[:8]}",
+        name=name,
+        class_label=class_label,
+    )
+    db.add(component)
+    db.flush()
+    return component
 
 
 @router.get("", response_model=list[Model3DOut])
@@ -68,7 +107,7 @@ def list_models(asset_id: uuid.UUID | None = None, db: Session = Depends(get_db)
     query = db.query(Model3D)
     if asset_id is not None:
         query = query.filter(Model3D.asset_id == asset_id)
-    return [_to_out(m) for m in query.all()]
+    return [_to_out(m, db) for m in query.all()]
 
 
 @router.post("", response_model=Model3DOut, status_code=201)
@@ -78,11 +117,24 @@ def register_model(payload: Model3DCreate, db: Session = Depends(get_db)) -> Mod
     if payload.component_id is not None and db.get(Component, payload.component_id) is None:
         raise HTTPException(status_code=404, detail="Component not found")
 
-    model = Model3D(**payload.model_dump())
+    component_id = payload.component_id
+    if component_id is None and payload.detection_class_label:
+        component_id = _get_or_create_detection_component(
+            db, payload.asset_id, payload.detection_class_label, payload.name
+        ).id
+
+    model = Model3D(
+        asset_id=payload.asset_id,
+        component_id=component_id,
+        name=payload.name,
+        storage_key=payload.storage_key,
+        format=payload.format,
+        scale=payload.scale,
+    )
     db.add(model)
     db.commit()
     db.refresh(model)
-    return _to_out(model)
+    return _to_out(model, db)
 
 
 def _safe_storage_filename(directory: Path, original_filename: str) -> str:
@@ -110,6 +162,9 @@ async def upload_model(
     file: UploadFile = File(...),
     component_id: uuid.UUID | None = Form(None),
     real_world_height_m: float | None = Form(None),
+    detection_class_label: str | None = Form(
+        None, description="e.g. 'cup', 'bottle' — a COCO class the markerless-detection endpoint can look for"
+    ),
     db: Session = Depends(get_db),
 ) -> Model3DOut:
     """
@@ -122,6 +177,12 @@ async def upload_model(
     app/services/model3d/glb_inspect.py. Without it, scale defaults to 1.0,
     which is very likely wrong for any GLB not specifically authored at
     1 unit = 1 meter.
+
+    If `detection_class_label` is given (and no explicit `component_id`), a
+    Component carrying that class_label is created/reused and linked, so the
+    frontend can auto-fill markerless registration's "Object class" from
+    whichever asset is selected instead of a free-typed field that can
+    silently disagree with it.
     """
     if db.get(Asset, asset_id) is None:
         raise HTTPException(status_code=404, detail="Asset not found")
@@ -139,6 +200,9 @@ async def upload_model(
         except GlbParseError as exc:
             raise HTTPException(status_code=400, detail=f"Could not read this .glb file: {exc}") from exc
 
+    if component_id is None and detection_class_label:
+        component_id = _get_or_create_detection_component(db, asset_id, detection_class_label, name).id
+
     models_dir = Path(_settings.models_3d_dir)
     models_dir.mkdir(parents=True, exist_ok=True)
     storage_key = _safe_storage_filename(models_dir, file.filename)
@@ -155,4 +219,4 @@ async def upload_model(
     db.add(model)
     db.commit()
     db.refresh(model)
-    return _to_out(model)
+    return _to_out(model, db)

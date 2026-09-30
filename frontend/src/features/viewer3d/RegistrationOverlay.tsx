@@ -26,6 +26,16 @@ interface Props {
    */
   modelScale?: number;
   targetMarkerId?: number;
+  /**
+   * The currently selected asset's own detection class (Model3DInfo.
+   * component_class_label), e.g. "cup" for a coffee mug asset. When this
+   * changes (the user picked a different asset), "Object class" below is
+   * reset to match it — without this, switching assets silently left the
+   * PREVIOUS asset's object class behind, so the overlay could show one
+   * object's 3D model while detecting a completely different class in the
+   * live feed (a real bug this fixes).
+   */
+  defaultTargetClassLabel?: string | null;
 }
 
 type RegistrationMode = "marker" | "markerless" | "feature";
@@ -58,7 +68,13 @@ type RegistrationMode = "marker" | "markerless" | "feature";
  * found (Project.md #57's "show me what the detector actually saw"),
  * distinct from the 3D model overlay which only appears once a pose exists.
  */
-export function RegistrationOverlay({ assetId, modelUrl, modelScale = 1, targetMarkerId }: Props) {
+export function RegistrationOverlay({
+  assetId,
+  modelUrl,
+  modelScale = 1,
+  targetMarkerId,
+  defaultTargetClassLabel,
+}: Props) {
   const {
     videoRef,
     canvasRef,
@@ -76,10 +92,28 @@ export function RegistrationOverlay({ assetId, modelUrl, modelScale = 1, targetM
   const outlineCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const modelObjectRef = useRef<THREE.Object3D | null>(null);
   const cameraObjectRef = useRef<THREE.PerspectiveCamera | null>(null);
+  // Latest pose the backend reported. The render loop eases the model's
+  // ACTUAL displayed transform toward this every frame (below), rather than
+  // snapping to it the instant a new detection arrives — detections only
+  // arrive every few hundred ms (a full camera->backend->response round
+  // trip), so without this the model visibly "pops" between positions
+  // instead of gliding. This does not make tracking more ACCURATE — see the
+  // module docstring's honest limits on markerless mode — it only makes the
+  // existing per-detection estimates feel continuous instead of jerky.
+  const targetPositionRef = useRef(new THREE.Vector3());
+  const targetQuaternionRef = useRef(new THREE.Quaternion());
+  const hasTargetRef = useRef(false);
 
   const [mode, setMode] = useState<RegistrationMode>("markerless");
-  const [targetClassLabel, setTargetClassLabel] = useState("bottle");
+  const [targetClassLabel, setTargetClassLabel] = useState(defaultTargetClassLabel || "bottle");
   const [realWorldHeightM, setRealWorldHeightM] = useState(0.2);
+
+  // Re-sync "Object class" whenever the selected asset's own detection class
+  // changes (i.e. the user switched assets) — see the Props doc above for
+  // exactly what silent-mismatch bug this prevents.
+  useEffect(() => {
+    if (defaultTargetClassLabel) setTargetClassLabel(defaultTargetClassLabel);
+  }, [defaultTargetClassLabel]);
 
   const [labelWidthM, setLabelWidthM] = useState(0.08);
   const [labelHeightM, setLabelHeightM] = useState(0.1);
@@ -156,8 +190,16 @@ export function RegistrationOverlay({ assetId, modelUrl, modelScale = 1, targetM
     );
 
     let frameId = 0;
+    const SMOOTHING = 0.25; // fraction of the remaining distance closed per frame — higher = snappier, lower = smoother/laggier
     const animate = () => {
       frameId = requestAnimationFrame(animate);
+
+      const model = modelObjectRef.current;
+      if (model && hasTargetRef.current) {
+        model.position.lerp(targetPositionRef.current, SMOOTHING);
+        model.quaternion.slerp(targetQuaternionRef.current, SMOOTHING);
+      }
+
       renderer.render(scene, camera);
     };
     animate();
@@ -254,11 +296,20 @@ export function RegistrationOverlay({ assetId, modelUrl, modelScale = 1, targetM
     const model = modelObjectRef.current;
     if (!model) return;
     if (position && quaternion) {
-      model.position.set(position.x, position.y, position.z);
-      model.quaternion.set(quaternion.x, quaternion.y, quaternion.z, quaternion.w);
+      const wasVisible = model.visible;
+      targetPositionRef.current.set(position.x, position.y, position.z);
+      targetQuaternionRef.current.set(quaternion.x, quaternion.y, quaternion.z, quaternion.w);
+      if (!wasVisible || !hasTargetRef.current) {
+        // First sighting (or reappearing after being lost) — snap instead of
+        // gliding in from wherever it last was (or the origin).
+        model.position.copy(targetPositionRef.current);
+        model.quaternion.copy(targetQuaternionRef.current);
+      }
+      hasTargetRef.current = true;
       model.visible = true;
     } else {
       model.visible = false;
+      hasTargetRef.current = false;
     }
   };
 
@@ -328,12 +379,28 @@ export function RegistrationOverlay({ assetId, modelUrl, modelScale = 1, targetM
 
   useEffect(() => {
     if (!liveTracking) return;
-    const interval = setInterval(() => {
-      if (!busy) void detectAndAlign();
-    }, 800);
-    return () => clearInterval(interval);
+    let cancelled = false;
+
+    // Self-rescheduling rather than a fixed setInterval: each detection is a
+    // full camera -> backend -> response round trip, so a fixed interval
+    // either wastes time waiting when the backend was already fast, or
+    // stacks up overlapping requests when it's slow. This runs exactly as
+    // fast as the backend can actually keep up, with only a small minimum
+    // gap (50ms) so an instant response doesn't spin needlessly.
+    const loop = async () => {
+      while (!cancelled) {
+        await detectAndAlign();
+        if (cancelled) break;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    };
+    void loop();
+
+    return () => {
+      cancelled = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveTracking, busy, mode, targetClassLabel, realWorldHeightM]);
+  }, [liveTracking, mode, targetClassLabel, realWorldHeightM]);
 
   return (
     <div>
@@ -432,7 +499,7 @@ export function RegistrationOverlay({ assetId, modelUrl, modelScale = 1, targetM
         </button>
         <label>
           <input type="checkbox" checked={liveTracking} onChange={(e) => setLiveTracking(e.target.checked)} />
-          Live tracking (every ~0.8s)
+          Live tracking (as fast as detection responds, smoothed)
         </label>
       </div>
 

@@ -101,6 +101,7 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
                 assetId={selectedAssetId}
                 modelUrl={resolveApiUrl(model.url)}
                 modelScale={model.scale}
+                defaultTargetClassLabel={model.component_class_label}
               />
             </>
           )}

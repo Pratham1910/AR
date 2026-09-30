@@ -79,6 +79,11 @@ export interface Model3DInfo {
   // wrong-sized (backend/app/models/model3d.py).
   scale: number;
   url: string; // relative to the API base URL, e.g. /static/models/bottle.glb
+  // The linked Component's class_label, if any (e.g. "cup", "bottle") — the
+  // vision layer's name for this object. Use this to auto-fill markerless
+  // registration's "Object class" instead of leaving a free-typed field
+  // that can silently disagree with whichever asset is actually selected.
+  component_class_label: string | null;
 }
 
 export interface Vector3 {

@@ -15,6 +15,12 @@ interface Props {
  * needed by hand (Project.md #20/#26). Skipping the height just uploads at
  * scale=1.0, which is very likely wrong for anything not already authored
  * at 1 unit = 1 meter.
+ *
+ * "Detection class" is separate from all of that: it's what the markerless
+ * registration mode should call this object (a COCO class like "cup" or
+ * "bottle"). Giving it here links a Component to the model so switching
+ * assets in the 3D/AR page auto-fills the right object class instead of
+ * leaving whatever was typed for a previous asset.
  */
 export function UploadModelForm({ assets, onUploaded }: Props) {
   const [assetChoice, setAssetChoice] = useState<string>("__new__");
@@ -22,6 +28,7 @@ export function UploadModelForm({ assets, onUploaded }: Props) {
   const [modelName, setModelName] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [realHeightM, setRealHeightM] = useState<string>("");
+  const [detectionClassLabel, setDetectionClassLabel] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -45,15 +52,23 @@ export function UploadModelForm({ assets, onUploaded }: Props) {
       const assetId = assetChoice === "__new__" ? (await AssetsApi.create(newAssetName.trim())).id : assetChoice;
 
       const heightM = realHeightM.trim() ? Number(realHeightM) : undefined;
-      const model = await Models3DApi.upload(assetId, modelName.trim() || file.name, file, heightM);
+      const model = await Models3DApi.upload(
+        assetId,
+        modelName.trim() || file.name,
+        file,
+        heightM,
+        detectionClassLabel.trim() || undefined
+      );
 
       setSuccessMessage(
         `Uploaded "${model.name}" — scale ${model.scale.toFixed(5)}` +
-          (heightM === undefined ? " (default 1.0 — no real height given, likely wrong)." : ".")
+          (heightM === undefined ? " (default 1.0 — no real height given, likely wrong)." : ".") +
+          (model.component_class_label ? ` Detection class: "${model.component_class_label}".` : "")
       );
       setFile(null);
       setModelName("");
       setRealHeightM("");
+      setDetectionClassLabel("");
       onUploaded(assetId);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -104,6 +119,15 @@ export function UploadModelForm({ assets, onUploaded }: Props) {
           value={realHeightM}
           onChange={(e) => setRealHeightM(e.target.value)}
           placeholder="e.g. 0.15"
+        />
+      </label>
+
+      <label>
+        Detection class (for Markerless mode) — optional but recommended
+        <input
+          value={detectionClassLabel}
+          onChange={(e) => setDetectionClassLabel(e.target.value)}
+          placeholder="e.g. cup, bottle"
         />
       </label>
 
