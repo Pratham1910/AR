@@ -85,3 +85,23 @@ class SegmentResponse(BaseModel):
     objects: list[SegmentedObject]
     model_version: str
     inference_ms: float
+
+
+class TrackRequest(BaseModel):
+    """
+    Project.md #17 (Phase 2): frame-to-frame identity. `session_id` scopes a
+    ByteTrack instance to one physical camera/inspection stream — pick any
+    stable string for the duration of that stream (e.g. an inspection_run_id
+    or a frontend-generated UUID), and reuse it for every frame.
+    """
+
+    session_id: str
+    image_base64: str
+
+
+class TrackResponse(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    detections: list[Detection]  # tracker_id populated, stable per physical object across calls
+    model_version: str
+    inference_ms: float

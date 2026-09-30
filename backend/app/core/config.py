@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     # pair (.npz + .json) per asset_id.
     reference_images_dir: str = "../data/reference_images"
 
+    # Auth / RBAC (Project.md #45, Phase 8). Deliberately minimal for now —
+    # email-only login, no password/SSO (not requested, and a materially
+    # larger scope). MUST be overridden via .env for any real deployment;
+    # the default here only exists so local dev works without extra setup.
+    jwt_secret_key: str = "dev-only-change-me"
+    jwt_algorithm: str = "HS256"
+    jwt_expires_minutes: int = 480
+
 
 @lru_cache
 def get_settings() -> Settings:

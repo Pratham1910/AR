@@ -26,13 +26,23 @@ from app.schemas.pose import (
     Vector2,
     Vector3,
 )
-from app.schemas.vision import DetectRequest, DetectResponse, SegmentRequest, SegmentResponse, StateRequest, StateResponse
+from app.schemas.vision import (
+    DetectRequest,
+    DetectResponse,
+    SegmentRequest,
+    SegmentResponse,
+    StateRequest,
+    StateResponse,
+    TrackRequest,
+    TrackResponse,
+)
 from app.services.pose.aruco_pose import ArucoPoseEstimator
 from app.services.pose.calibration import load_calibration
 from app.services.pose.feature_tracker import FeatureTracker, ReferencePlane, RegistrationQuality
 from app.services.pose.markerless import estimate_object_placement
 from app.services.pose.transforms import cv_pose_to_threejs
 from app.services.state_detection.state_engine import ComponentStateRule, StateEstimationError, StateEstimator
+from app.services.tracking.tracker import ObjectTracker
 from app.services.vision.detector import build_detector, time_inference
 from app.services.vision.segmentation import Segmenter, build_segmenter
 
@@ -44,6 +54,7 @@ _pose_estimator = ArucoPoseEstimator(_settings.aruco_dictionary, _settings.aruco
 _segmenter: Segmenter | None = None  # built lazily — first request pays the model download/load cost, not startup
 _feature_tracker = FeatureTracker()
 _reference_planes: dict[str, ReferencePlane] = {}  # in-memory cache, keyed by asset_id
+_object_trackers: dict[str, ObjectTracker] = {}  # one ByteTrack instance per session_id (Project.md #17)
 
 
 def _reference_plane_path(asset_id: str) -> Path:
@@ -85,6 +96,33 @@ def detect(request: DetectRequest) -> DetectResponse:
     frame = decode_frame(request.image_base64)
     detections, inference_ms = time_inference(_detector, frame)
     return DetectResponse(detections=detections, model_version=_detector.model_version, inference_ms=inference_ms)
+
+
+@router.post("/track", response_model=TrackResponse)
+def track(request: TrackRequest) -> TrackResponse:
+    """
+    Detection + frame-to-frame identity (Project.md #17, Phase 2). Call this
+    instead of /detect for anything that needs to know "is this the same
+    physical object as last frame" — e.g. confirming a specific PCB (not just
+    *a* PCB) was the one removed across several frames. `session_id` must be
+    reused for every frame of the same camera stream; a new id starts a
+    fresh ByteTrack instance with no memory of previous tracks.
+    """
+    frame = decode_frame(request.image_base64)
+    detections, inference_ms = time_inference(_detector, frame)
+
+    tracker = _object_trackers.setdefault(request.session_id, ObjectTracker())
+    tracked_detections = tracker.update(detections)
+
+    return TrackResponse(detections=tracked_detections, model_version=_detector.model_version, inference_ms=inference_ms)
+
+
+@router.delete("/track/{session_id}")
+def reset_track(session_id: str) -> dict:
+    """Clears a tracking session's state — call when an inspection run ends or the camera stream restarts."""
+    if session_id in _object_trackers:
+        del _object_trackers[session_id]
+    return {"reset": True, "session_id": session_id}
 
 
 @router.post("/state", response_model=StateResponse)

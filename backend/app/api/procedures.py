@@ -13,14 +13,19 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.api.deps import require_role
 from app.core.database import get_db
 from app.models.asset import Asset, Component
-from app.models.enums import RevisionStatus
+from app.models.enums import RevisionStatus, UserRole
 from app.models.procedure import Procedure, ProcedureRevision, State
 from app.models.step import Step, ValidationRule
+from app.models.user import User
 from app.schemas.procedure import ProcedureDefinition
+from app.services.audit import audit_log
 
 router = APIRouter(prefix="/api/procedures", tags=["procedures"])
+
+_CAN_PUBLISH = (UserRole.ADMIN, UserRole.ENGINEER, UserRole.TECHNICAL_AUTHOR)
 
 
 class ProcedureRevisionOut(BaseModel):
@@ -131,7 +136,12 @@ def get_procedure(procedure_id: uuid.UUID, db: Session = Depends(get_db)) -> Pro
 
 
 @router.post("/{procedure_id}/publish", response_model=ProcedureRevisionOut)
-def publish_latest_revision(procedure_id: uuid.UUID, db: Session = Depends(get_db)) -> ProcedureRevision:
+def publish_latest_revision(
+    procedure_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(*_CAN_PUBLISH)),
+) -> ProcedureRevision:
+    """Publishing is gated (Project.md #45) — only Engineer/Technical Author/Admin roles may promote a draft."""
     procedure = db.get(Procedure, procedure_id)
     if procedure is None:
         raise HTTPException(status_code=404, detail="Procedure not found")
@@ -144,6 +154,14 @@ def publish_latest_revision(procedure_id: uuid.UUID, db: Session = Depends(get_d
     if draft is None:
         raise HTTPException(status_code=400, detail="No draft revision to publish")
     draft.status = RevisionStatus.PUBLISHED
+    audit_log.record(
+        db,
+        user_id=current_user.id,
+        action="publish_procedure_revision",
+        entity_type="ProcedureRevision",
+        entity_id=str(draft.id),
+        details={"procedure_id": str(procedure_id), "revision_label": draft.revision_label},
+    )
     db.commit()
     db.refresh(draft)
     return draft

@@ -64,6 +64,7 @@ class CandidateStepStatus(str, Enum):
 
 
 class CandidateStep(BaseModel):
+    componentId: str  # which physical component this transition was observed on
     startState: str
     action: str
     endState: str

@@ -51,5 +51,23 @@ class InspectionStepStatus(BaseModel):
     step_id: uuid.UUID
     step_id_str: str
     title: str
-    result: QAResult
+    result: QAResult  # the original AI/rule decision — never overwritten by a manual override (Project.md #44)
     confidence: float | None
+    manual_override_result: QAResult | None = None
+    manual_override_by: str | None = None
+    manual_override_reason: str | None = None
+
+
+class ManualOverrideRequest(BaseModel):
+    """Project.md #44: a qualified user can override an uncertain result — the original AI result is kept, not replaced."""
+
+    result: QAResult
+    reason: str
+
+
+class ManualOverrideResponse(BaseModel):
+    step_id: uuid.UUID
+    original_result: QAResult
+    manual_override_result: QAResult
+    manual_override_by: str
+    manual_override_reason: str

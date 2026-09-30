@@ -13,26 +13,33 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.api.deps import require_role
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.models.enums import InspectionRunStatus, QAResult, ValidationMethod
+from app.models.enums import InspectionRunStatus, QAResult, UserRole, ValidationMethod
 from app.models.inspection import InspectionRun, InspectionStep, Observation
 from app.models.procedure import ProcedureRevision, State
 from app.models.step import Step
+from app.models.user import User
 from app.schemas.inspection import (
     InspectionStartRequest,
     InspectionStartResponse,
     InspectionStepStatus,
+    ManualOverrideRequest,
+    ManualOverrideResponse,
     ObserveRequest,
     StepValidationResponse,
     ValidationDetail,
 )
 from app.schemas.vision import Detection
+from app.services.audit import audit_log
 from app.services.evidence.storage import build_evidence_store
 from app.services.qa_engine.engine import QAEngine, QAInput, QAThresholds
 from app.services.state_detection.state_engine import ComponentStateRule, StateEstimator, action_expects_presence
 from app.services.vision.detector import build_detector, time_inference
 from app.api.vision import decode_frame  # reuse the same base64 decode path
+
+_CAN_OVERRIDE = (UserRole.ADMIN, UserRole.QA_INSPECTOR)
 
 router = APIRouter(prefix="/api/inspection", tags=["inspection"])
 
@@ -102,6 +109,9 @@ def get_inspection(inspection_id: uuid.UUID, db: Session = Depends(get_db)) -> I
                 title=s.step.title,
                 result=s.result,
                 confidence=s.confidence,
+                manual_override_result=s.manual_override_result,
+                manual_override_by=s.manual_override_by,
+                manual_override_reason=s.manual_override_reason,
             )
             for s in run.steps
         ],
@@ -223,6 +233,51 @@ def validate_step(inspection_id: uuid.UUID, step_id: uuid.UUID, db: Session = De
         validation=decision.validation,
         evidence=evidence_keys,
         reason=decision.reason,
+    )
+
+
+@router.post("/{inspection_id}/step/{step_id}/override", response_model=ManualOverrideResponse)
+def override_step_result(
+    inspection_id: uuid.UUID,
+    step_id: uuid.UUID,
+    payload: ManualOverrideRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(*_CAN_OVERRIDE)),
+) -> ManualOverrideResponse:
+    """
+    Project.md #44: a qualified user (QA Inspector/Admin) can override an
+    uncertain result. The original AI/rule `result` is NEVER overwritten —
+    it stays exactly as the QA engine produced it; the override is recorded
+    alongside it in separate columns, with who did it, when, and why.
+    """
+    inspection_step = _get_inspection_step(db, inspection_id, step_id)
+    original_result = inspection_step.result
+
+    inspection_step.manual_override_result = payload.result
+    inspection_step.manual_override_by = current_user.email
+    inspection_step.manual_override_reason = payload.reason
+    inspection_step.manual_override_at = datetime.now(timezone.utc)
+
+    audit_log.record(
+        db,
+        user_id=current_user.id,
+        action="manual_override",
+        entity_type="InspectionStep",
+        entity_id=str(inspection_step.id),
+        details={
+            "original_result": original_result.value,
+            "override_result": payload.result.value,
+            "reason": payload.reason,
+        },
+    )
+    db.commit()
+
+    return ManualOverrideResponse(
+        step_id=step_id,
+        original_result=original_result,
+        manual_override_result=payload.result,
+        manual_override_by=current_user.email,
+        manual_override_reason=payload.reason,
     )
 
 
