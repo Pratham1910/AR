@@ -5,7 +5,8 @@ import { CameraSelect } from "../../components/CameraSelect";
 import { CameraStatusBadge } from "../../components/CameraStatusBadge";
 import { useCamera } from "../../hooks/useCamera";
 import { ensureVisibleMaterials } from "./ensureVisibleMaterial";
-import { Models3DApi, VisionApi } from "../../services/api";
+import { Models3DApi, VisionApi, apiErrorMessage } from "../../services/api";
+import { ClassSelect } from "../../components/ClassSelect";
 import type {
   AnchorOffset,
   FeaturePoseResponse,
@@ -184,14 +185,14 @@ export function RegistrationOverlay({
       });
       setAnchorSaved(true);
     } catch (err) {
-      setApiError(err instanceof Error ? err.message : String(err));
+      setApiError(apiErrorMessage(err));
     } finally {
       setAnchorSaving(false);
     }
   };
 
   const [mode, setMode] = useState<RegistrationMode>("markerless");
-  const [targetClassLabel, setTargetClassLabel] = useState(defaultTargetClassLabel || "bottle");
+  const [targetClassLabel, setTargetClassLabel] = useState(defaultTargetClassLabel || "");
   const [realWorldHeightM, setRealWorldHeightM] = useState(0.2);
 
   // Re-sync "Object class" whenever the selected asset's own detection class
@@ -477,13 +478,17 @@ export function RegistrationOverlay({
       const result = await VisionApi.registerReferenceImage(assetId, frame, labelWidthM, labelHeightM);
       setRegistration(result);
     } catch (err) {
-      setApiError(err instanceof Error ? err.message : String(err));
+      setApiError(apiErrorMessage(err));
     } finally {
       setRegistering(false);
     }
   };
 
   const detectAndAlign = async () => {
+    if ((mode === "markerless" || mode === "model") && !targetClassLabel) {
+      setApiError("Pick an object class first — it's what the camera looks for.");
+      return;
+    }
     setBusy(true);
     setApiError(null);
     try {
@@ -550,7 +555,7 @@ export function RegistrationOverlay({
         applyModelTransform(result.position, result.quaternion);
       }
     } catch (err) {
-      setApiError(err instanceof Error ? err.message : String(err));
+      setApiError(apiErrorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -602,7 +607,7 @@ export function RegistrationOverlay({
         <div className="registration-controls">
           <label>
             Object class
-            <input value={targetClassLabel} onChange={(e) => setTargetClassLabel(e.target.value)} />
+            <ClassSelect value={targetClassLabel} onChange={setTargetClassLabel} />
           </label>
           <button
             onClick={() => {
@@ -620,7 +625,7 @@ export function RegistrationOverlay({
         <div className="registration-controls">
           <label>
             Object class
-            <input value={targetClassLabel} onChange={(e) => setTargetClassLabel(e.target.value)} />
+            <ClassSelect value={targetClassLabel} onChange={setTargetClassLabel} />
           </label>
           <label>
             Real height (m)

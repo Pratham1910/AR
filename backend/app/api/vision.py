@@ -97,6 +97,39 @@ def _get_segmenter() -> Segmenter:
     return _segmenter
 
 
+def detectable_classes() -> list[str]:
+    """Class labels the object-finding model (YOLO segmentation) can detect.
+    Markerless and model-based registration find an object by one of these —
+    a label outside this list (a typo, a custom name) is silently never found."""
+    return _get_segmenter().class_names
+
+
+def normalize_class_label(label: str) -> str:
+    """Case-insensitive match to a detectable class, or a 400 listing the choices."""
+    classes = detectable_classes()
+    by_lower = {c.lower(): c for c in classes}
+    match = by_lower.get(label.strip().lower())
+    if match is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"'{label}' is not a class the detector knows, so this object would never be found. "
+                f"Pick one of: {', '.join(sorted(classes))}"
+            ),
+        )
+    return match
+
+
+def forget_model_pose(model_id: str) -> None:
+    """Drop a deleted model's tracking state and pose-service mesh (best effort)."""
+    _model_pose_client.forget(model_id)
+
+
+@router.get("/classes", response_model=list[str])
+def list_detectable_classes() -> list[str]:
+    return sorted(detectable_classes())
+
+
 def decode_frame(image_base64: str) -> np.ndarray:
     try:
         raw = base64.b64decode(image_base64)
@@ -212,7 +245,8 @@ def object_registration(request: ObjectRegistrationRequest) -> ObjectRegistratio
     threshold = request.confidence_threshold or _settings.segmentation_confidence_threshold
     objects = segmenter.segment(frame, threshold)
 
-    matches = [o for o in objects if o.class_label == request.target_class_label]
+    target_class_label = normalize_class_label(request.target_class_label)
+    matches = [o for o in objects if o.class_label == target_class_label]
     if not matches:
         return ObjectRegistrationResponse(
             found=False,
@@ -386,8 +420,9 @@ def estimate_model_pose(request: ModelPoseRequest, db: Session = Depends(get_db)
     if not class_label:
         raise HTTPException(
             status_code=400,
-            detail="This model has no detection class (e.g. 'cup'); pass class_label or re-upload with one",
+            detail="This model has no detection class (e.g. 'cup'); set one in the model settings",
         )
+    class_label = normalize_class_label(class_label)
 
     frame = decode_frame(request.image_base64)
     height_px, width_px = frame.shape[:2]

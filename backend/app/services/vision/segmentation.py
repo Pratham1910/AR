@@ -31,6 +31,11 @@ class Segmenter(ABC):
     def segment(self, frame: np.ndarray, confidence_threshold: float) -> list[SegmentedObject]:
         """Run segmentation on a single BGR frame and return per-object outlines."""
 
+    @property
+    @abstractmethod
+    def class_names(self) -> list[str]:
+        """Every class label this model can ever return — anything else is never detected."""
+
 
 class MockSegmenter(Segmenter):
     """Fixed/injectable outlines — mirrors detector.MockDetector's role for tests/offline dev."""
@@ -42,6 +47,10 @@ class MockSegmenter(Segmenter):
 
     def segment(self, frame: np.ndarray, confidence_threshold: float) -> list[SegmentedObject]:  # noqa: ARG002
         return list(self._fixed_objects)
+
+    @property
+    def class_names(self) -> list[str]:
+        return sorted({o.class_label for o in self._fixed_objects})
 
 
 class YoloSegmenter(Segmenter):
@@ -59,6 +68,10 @@ class YoloSegmenter(Segmenter):
         # place that decision is made (Project.md #62).
         self._model = YOLO(model_name)
         self.model_version = model_name
+
+    @property
+    def class_names(self) -> list[str]:
+        return list(self._model.names.values())
 
     def segment(self, frame: np.ndarray, confidence_threshold: float) -> list[SegmentedObject]:
         results = self._model.predict(frame, conf=confidence_threshold, verbose=False)

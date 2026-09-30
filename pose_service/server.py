@@ -139,6 +139,17 @@ def register_object(req: RegisterObjectRequest) -> RegisterObjectResponse:
     )
 
 
+@app.delete("/objects/{label}")
+def delete_object(label: str) -> dict:
+    path = _mesh_path(label)
+    existed = path.exists()
+    if existed:
+        path.unlink()
+        with _lock:
+            _rebuild_estimator()
+    return {"label": label, "deleted": existed}
+
+
 class EstimateRequest(BaseModel):
     label: str
     image_base64: str  # JPEG/PNG, RGB

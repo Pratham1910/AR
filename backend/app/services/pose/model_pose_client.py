@@ -59,6 +59,16 @@ class ModelPoseClient:
         self._registered_scale[label] = scale
         self.reset_tracks_for(label)
 
+    def forget(self, label: str) -> None:
+        """Model deleted: drop local state and ask the service to drop its mesh.
+        Best effort — if the service isn't running there's nothing to clean."""
+        self._registered_scale.pop(label, None)
+        self.reset_tracks_for(label)
+        try:
+            self._client.delete(f"/objects/{label}")
+        except httpx.HTTPError:
+            pass
+
     def reset_tracks_for(self, label: str) -> None:
         for key in [k for k in self._tracks if k.startswith(f"{label}:")]:
             del self._tracks[key]

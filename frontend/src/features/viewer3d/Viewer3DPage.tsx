@@ -5,6 +5,7 @@ import { ThreeViewer } from "./ThreeViewer";
 import { SimpleCameraOverlay } from "./SimpleCameraOverlay";
 import { RegistrationOverlay } from "./RegistrationOverlay";
 import { UploadModelForm } from "./UploadModelForm";
+import { ModelSettingsPanel } from "./ModelSettingsPanel";
 
 interface Props {
   assets: Asset[];
@@ -26,7 +27,7 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [showUpload, setShowUpload] = useState(false);
 
-  const refreshModels = (assetId: string) => {
+  const refreshModels = (assetId: string, keepModelId?: string) => {
     if (!assetId) {
       setModels([]);
       return;
@@ -34,11 +35,12 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
     Models3DApi.listForAsset(assetId)
       .then((list) => {
         setModels(list);
-        // Backend now returns newest-first; default to it, but let the user
+        // Backend returns newest-first; default to it, but let the user
         // pick a different one explicitly when an asset has several models —
         // silently picking models[0] with no visible indicator was the root
         // cause of at least one asset/model mismatch bug.
-        setSelectedModelId(list[0]?.id ?? "");
+        const keep = keepModelId && list.some((m) => m.id === keepModelId);
+        setSelectedModelId(keep ? keepModelId : (list[0]?.id ?? ""));
       })
       .catch((err: Error) => setError(err.message));
   };
@@ -69,7 +71,8 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
             <select value={selectedModelId} onChange={(e) => setSelectedModelId(e.target.value)}>
               {models.map((m) => (
                 <option key={m.id} value={m.id}>
-                  {m.name} ({m.storage_key}, scale={m.scale})
+                  {m.name} ({m.storage_key}
+                  {m.real_height_m !== null ? `, ${(m.real_height_m * 100).toFixed(1)} cm` : ""})
                 </option>
               ))}
             </select>
@@ -98,6 +101,11 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
 
       {model && (
         <>
+          <ModelSettingsPanel
+            model={model}
+            onSaved={() => refreshModels(selectedAssetId, model.id)}
+            onDeleted={() => refreshModels(selectedAssetId)}
+          />
           <div className="mode-toggle">
             <button className={mode === "view" ? "active" : ""} onClick={() => setMode("view")}>
               3D Viewer (Phase 4)

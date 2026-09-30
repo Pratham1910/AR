@@ -18,8 +18,9 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.asset import Asset, Component
 from app.models.model3d import Model3D
+from app.api.vision import forget_model_pose, normalize_class_label
 from app.services.model3d.fbx_convert import BlenderNotFound, FbxConversionError, convert_fbx_to_glb
-from app.services.model3d.glb_inspect import GlbParseError, compute_scale_for_real_height
+from app.services.model3d.glb_inspect import GlbParseError, compute_glb_bounds, compute_scale_for_real_height
 
 router = APIRouter(prefix="/api/models3d", tags=["3d"])
 _settings = get_settings()
@@ -58,6 +59,9 @@ class Model3DOut(BaseModel):
     # asset/model is actually selected (a real bug this fixes: switching
     # assets used to leave the previous asset's object class behind).
     component_class_label: str | None = None
+    # How tall the model renders in the AR overlay (mesh height x scale), so a
+    # wrong scale is visible at a glance (e.g. 20m instead of 0.24m).
+    real_height_m: float | None = None
     # See app/models/model3d.py — the model's own local transform relative to
     # the tracked reference plane (marker or feature-tracking target).
     # Defaults to zero offset/identity rotation (model planted directly at
@@ -83,12 +87,21 @@ class Model3DAnchorUpdate(BaseModel):
     anchor_rotation_w: float
 
 
+def _glb_path(model: Model3D) -> Path:
+    return Path(_settings.models_3d_dir) / model.storage_key
+
+
 def _to_out(model: Model3D, db: Session) -> Model3DOut:
     component_class_label = None
     if model.component_id is not None:
         component = db.get(Component, model.component_id)
         component_class_label = component.class_label if component else None
+    try:
+        real_height_m = compute_glb_bounds(_glb_path(model).read_bytes()).height * model.scale
+    except (OSError, GlbParseError):
+        real_height_m = None
     return Model3DOut(
+        real_height_m=real_height_m,
         id=model.id,
         asset_id=model.asset_id,
         component_id=model.component_id,
@@ -154,7 +167,7 @@ def register_model(payload: Model3DCreate, db: Session = Depends(get_db)) -> Mod
     component_id = payload.component_id
     if component_id is None and payload.detection_class_label:
         component_id = _get_or_create_detection_component(
-            db, payload.asset_id, payload.detection_class_label, payload.name
+            db, payload.asset_id, normalize_class_label(payload.detection_class_label), payload.name
         ).id
 
     model = Model3D(
@@ -166,6 +179,64 @@ def register_model(payload: Model3DCreate, db: Session = Depends(get_db)) -> Mod
         scale=payload.scale,
     )
     db.add(model)
+    db.commit()
+    db.refresh(model)
+    return _to_out(model, db)
+
+
+@router.delete("/{model_id}", status_code=204)
+def delete_model(model_id: uuid.UUID, db: Session = Depends(get_db)) -> None:
+    """
+    Removes a model. Its .glb (and original .fbx, if any) is MOVED to
+    models_3d_dir/.deleted/ rather than erased, so a mistaken delete can be
+    undone by moving the file back and re-uploading/registering it. A file
+    still used by another model row is left in place.
+    """
+    model = db.get(Model3D, model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    storage_key = model.storage_key
+    db.delete(model)
+    db.commit()
+
+    still_used = db.query(Model3D).filter(Model3D.storage_key == storage_key).count() > 0
+    if not still_used:
+        models_dir = Path(_settings.models_3d_dir)
+        trash = models_dir / ".deleted"
+        for path in (models_dir / storage_key, (models_dir / storage_key).with_suffix(".fbx")):
+            if path.exists():
+                trash.mkdir(exist_ok=True)
+                target = trash / path.name
+                counter = 1
+                while target.exists():
+                    target = trash / f"{path.stem}-{counter}{path.suffix}"
+                    counter += 1
+                path.replace(target)
+    forget_model_pose(str(model_id))
+
+
+class Model3DSettingsUpdate(BaseModel):
+    real_world_height_m: float | None = None  # recomputes scale from the GLB's own bounds
+    detection_class_label: str | None = None  # must be a class the detector knows
+
+
+@router.patch("/{model_id}", response_model=Model3DOut)
+def update_model_settings(model_id: uuid.UUID, payload: Model3DSettingsUpdate, db: Session = Depends(get_db)) -> Model3DOut:
+    """Fix an uploaded model's real-world size or detection class in place —
+    the two settings that make a model silently fail to overlay if wrong."""
+    model = db.get(Model3D, model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    if payload.real_world_height_m is not None:
+        if payload.real_world_height_m <= 0:
+            raise HTTPException(status_code=400, detail="Real height must be positive")
+        try:
+            model.scale = compute_scale_for_real_height(_glb_path(model).read_bytes(), payload.real_world_height_m)
+        except (OSError, GlbParseError) as exc:
+            raise HTTPException(status_code=400, detail=f"Could not read this model's .glb: {exc}") from exc
+    if payload.detection_class_label is not None:
+        label = normalize_class_label(payload.detection_class_label)
+        model.component_id = _get_or_create_detection_component(db, model.asset_id, label, model.name).id
     db.commit()
     db.refresh(model)
     return _to_out(model, db)
@@ -254,6 +325,16 @@ async def upload_model(
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in (".glb", ".fbx"):
         raise HTTPException(status_code=400, detail="Only .glb and .fbx files are supported")
+    # A GLB's units are whatever the exporter used (often not meters), so
+    # without a real height the overlay renders absurdly sized — the model is
+    # "detected" but never visibly overlaps. FBX carries its own units.
+    if suffix == ".glb" and real_world_height_m is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Give the object's real height (m) — a .glb's own units are rarely meters",
+        )
+    if detection_class_label:
+        detection_class_label = normalize_class_label(detection_class_label)
 
     contents = await file.read()
     source_fbx: bytes | None = None

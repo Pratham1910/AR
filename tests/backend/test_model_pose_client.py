@@ -92,6 +92,29 @@ def test_mesh_is_reregistered_when_scale_changes_and_tracks_reset():
     assert not client.has_track("m1", "s1")  # old pose was solved against the wrong-sized mesh
 
 
+def test_forget_drops_mesh_and_tracks_and_tolerates_a_stopped_service():
+    service = FakeService([{"found": True, "pose": _pose(0.4), "score": 0.9, "mode": "coarse+refine", "elapsed_ms": 900}])
+    deletes: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "DELETE":
+            deletes.append(request.url.path)
+            return httpx.Response(200, json={"deleted": True})
+        return service(request)
+
+    client = ModelPoseClient("http://pose", 5.0, transport=httpx.MockTransport(handler))
+    client.ensure_registered("m1", b"glb", 0.01)
+    _estimate(client)
+    client.forget("m1")
+    assert deletes == ["/objects/m1"]
+    assert not client.has_track("m1", "s1")
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    ModelPoseClient("http://pose", 5.0, transport=httpx.MockTransport(refuse)).forget("m1")  # no exception
+
+
 def test_unreachable_service_raises_clear_error():
     def refuse(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)

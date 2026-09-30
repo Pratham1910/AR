@@ -83,9 +83,25 @@ export const Models3DApi = {
 
   updateAnchor: (modelId: string, anchor: AnchorOffset) =>
     api.patch<Model3DInfo>(`/api/models3d/${modelId}/anchor`, anchor).then((r) => r.data),
+
+  updateSettings: (modelId: string, settings: { real_world_height_m?: number; detection_class_label?: string }) =>
+    api.patch<Model3DInfo>(`/api/models3d/${modelId}`, settings).then((r) => r.data),
+
+  remove: (modelId: string) => api.delete(`/api/models3d/${modelId}`).then(() => undefined),
+};
+
+// The server's `detail` message when there is one (e.g. "'bot' is not a class
+// the detector knows…"), instead of axios's generic "status code 400".
+export const apiErrorMessage = (err: unknown): string => {
+  const detail = axios.isAxiosError(err) ? err.response?.data?.detail : undefined;
+  if (typeof detail === "string") return detail;
+  return err instanceof Error ? err.message : String(err);
 };
 
 export const VisionApi = {
+  // Class labels the object detector can find — anything else is never detected.
+  classes: () => api.get<string[]>("/api/vision/classes").then((r) => r.data),
+
   estimatePose: (imageBase64: string, targetMarkerId?: number) =>
     api
       .post<PoseResponse>("/api/vision/pose", { image_base64: imageBase64, target_marker_id: targetMarkerId })

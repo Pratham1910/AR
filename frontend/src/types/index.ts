@@ -84,6 +84,9 @@ export interface Model3DInfo {
   // registration's "Object class" instead of leaving a free-typed field
   // that can silently disagree with whichever asset is actually selected.
   component_class_label: string | null;
+  // How tall the model renders in the AR overlay, in meters (mesh height x
+  // scale) — null if the GLB couldn't be read.
+  real_height_m: number | null;
   // The model's own local transform relative to the tracked reference plane
   // (marker or feature-tracking target) — see backend app/models/model3d.py.
   // Defaults to zero offset/identity rotation (model planted directly at the

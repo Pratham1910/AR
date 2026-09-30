@@ -1,6 +1,6 @@
 import { useState } from "react";
-import axios from "axios";
-import { AssetsApi, Models3DApi } from "../../services/api";
+import { ClassSelect } from "../../components/ClassSelect";
+import { AssetsApi, Models3DApi, apiErrorMessage } from "../../services/api";
 import type { Asset } from "../../types";
 
 interface Props {
@@ -10,18 +10,16 @@ interface Props {
 
 /**
  * Lets a user add a new 3D model without hand-writing API calls: pick an
- * existing asset or name a new one, choose a .glb file, and optionally give
- * its real-world height so the backend can auto-compute `scale`
- * (app/services/model3d/glb_inspect.py) — the exact correction bottle.glb
- * needed by hand (Project.md #20/#26). Skipping the height just uploads at
- * scale=1.0, which is very likely wrong for anything not already authored
- * at 1 unit = 1 meter.
+ * existing asset or name a new one, choose a .glb/.fbx file, and give the
+ * physical object's real height so the backend can compute `scale`
+ * (app/services/model3d/glb_inspect.py). Required for .glb — skipping it
+ * left models at scale=1.0, rendering e.g. a bottle 20m tall that was
+ * "detected" but never visibly overlapped. Optional for .fbx, which carries
+ * its own units.
  *
- * "Detection class" is separate from all of that: it's what the markerless
- * registration mode should call this object (a COCO class like "cup" or
- * "bottle"). Giving it here links a Component to the model so switching
- * assets in the 3D/AR page auto-fills the right object class instead of
- * leaving whatever was typed for a previous asset.
+ * "Detection class" is how the camera finds the object (markerless and
+ * model-based modes), so it's picked from the classes the detector actually
+ * knows — free-typed labels like "bot" were silently never detected.
  */
 export function UploadModelForm({ assets, onUploaded }: Props) {
   const [assetChoice, setAssetChoice] = useState<string>("__new__");
@@ -45,6 +43,16 @@ export function UploadModelForm({ assets, onUploaded }: Props) {
     }
     if (assetChoice === "__new__" && !newAssetName.trim()) {
       setError("Name the new asset, or pick an existing one.");
+      return;
+    }
+    // Both checked before creating a new asset, so a rejected upload doesn't leave an empty asset behind.
+    const isFbxFile = file.name.toLowerCase().endsWith(".fbx");
+    if (!isFbxFile && !(Number(realHeightM) > 0)) {
+      setError("Enter the object's real height in meters — a .glb's own units are rarely meters, so without it the overlay comes out the wrong size.");
+      return;
+    }
+    if (!detectionClassLabel) {
+      setError("Pick a detection class — it's how the camera finds this object.");
       return;
     }
 
@@ -77,8 +85,7 @@ export function UploadModelForm({ assets, onUploaded }: Props) {
       setDetectionClassLabel("");
       onUploaded(assetId);
     } catch (err) {
-      const detail = axios.isAxiosError(err) ? err.response?.data?.detail : undefined;
-      setError(typeof detail === "string" ? detail : err instanceof Error ? err.message : String(err));
+      setError(apiErrorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -118,7 +125,7 @@ export function UploadModelForm({ assets, onUploaded }: Props) {
       </label>
 
       <label>
-        Real height (m) — optional but recommended
+        Real height of the physical object (m){file?.name.toLowerCase().endsWith(".fbx") ? " — optional for FBX" : " — required"}
         <input
           type="number"
           step="0.01"
@@ -130,12 +137,8 @@ export function UploadModelForm({ assets, onUploaded }: Props) {
       </label>
 
       <label>
-        Detection class (for Markerless mode) — optional but recommended
-        <input
-          value={detectionClassLabel}
-          onChange={(e) => setDetectionClassLabel(e.target.value)}
-          placeholder="e.g. cup, bottle"
-        />
+        Detection class — what the camera looks for (pick the closest match)
+        <ClassSelect value={detectionClassLabel} onChange={setDetectionClassLabel} />
       </label>
 
       <button type="submit" disabled={busy}>
