@@ -85,16 +85,19 @@ export function SimpleCameraOverlay({ modelUrl }: Props) {
     };
     animate();
 
-    const handleResize = () => {
+    // Observes the container, not the window: it also resizes when the webcam
+    // video finishes loading, which a window "resize" event never reports.
+    const resizeObserver = new ResizeObserver(() => {
+      if (container.clientWidth === 0 || container.clientHeight === 0) return;
       camera.aspect = container.clientWidth / container.clientHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(container.clientWidth, container.clientHeight);
-    };
-    window.addEventListener("resize", handleResize);
+    });
+    resizeObserver.observe(container);
 
     return () => {
       cancelAnimationFrame(frameId);
-      window.removeEventListener("resize", handleResize);
+      resizeObserver.disconnect();
       controls.dispose();
       renderer.dispose();
       container.removeChild(renderer.domElement);

@@ -241,6 +241,18 @@ export function RegistrationOverlay({
     renderer.setClearColor(0x000000, 0); // transparent, so the video shows through
     container.appendChild(renderer.domElement);
 
+    // The container only reaches its real height once the webcam video has
+    // loaded (after this effect runs), so the canvas must follow it — sized
+    // once at mount it stays at a placeholder height and the whole render is
+    // squashed into the top of the frame. Only the canvas size follows the
+    // container; the camera's aspect stays the backend calibration's.
+    const resizeObserver = new ResizeObserver(() => {
+      if (container.clientWidth > 0 && container.clientHeight > 0) {
+        renderer.setSize(container.clientWidth, container.clientHeight);
+      }
+    });
+    resizeObserver.observe(container);
+
     scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 2.0));
 
     setModelStatus("loading");
@@ -297,6 +309,7 @@ export function RegistrationOverlay({
 
     return () => {
       cancelAnimationFrame(frameId);
+      resizeObserver.disconnect();
       renderer.dispose();
       container.removeChild(renderer.domElement);
     };
