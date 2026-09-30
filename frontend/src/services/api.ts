@@ -5,6 +5,7 @@ import type {
   FeaturePoseResponse,
   InspectionRun,
   Model3DInfo,
+  ModelPoseResponse,
   ObjectRegistrationResponse,
   ObserveResponse,
   PoseResponse,
@@ -112,5 +113,16 @@ export const VisionApi = {
   estimateFeaturePose: (assetId: string, imageBase64: string) =>
     api
       .post<FeaturePoseResponse>("/api/vision/feature-pose", { asset_id: assetId, image_base64: imageBase64 })
+      .then((r) => r.data),
+
+  estimateModelPose: (modelId: string, imageBase64: string, sessionId: string, classLabel: string, reset = false) =>
+    api
+      .post<ModelPoseResponse>("/api/vision/model-pose", {
+        model_id: modelId,
+        image_base64: imageBase64,
+        session_id: sessionId,
+        class_label: classLabel,
+        reset,
+      })
       .then((r) => r.data),
 };

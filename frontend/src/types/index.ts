@@ -164,6 +164,26 @@ export interface PoseResponse {
   axes: PoseAxes | null;
 }
 
+// Model-based (CAD) 6DoF — MegaPose matches the model's own mesh (backend
+// /api/vision/model-pose, served by pose_service/ in WSL). The pose is the
+// MODEL's own pose, so it's applied directly with no anchor offset.
+export interface ModelPoseResponse {
+  found: boolean;
+  mode: "coarse+refine" | "refine" | "no_detection";
+  score: number | null;
+  class_label: string | null;
+  bbox: [number, number, number, number] | null;
+  position: Vector3 | null;
+  quaternion: QuaternionXYZW | null;
+  rotation_deg: RotationDeg | null;
+  axes: PoseAxes | null;
+  elapsed_ms: number;
+  calibration_is_approximate: boolean;
+  calibration_source: string;
+  camera_vertical_fov_deg: number;
+  camera_aspect: number;
+}
+
 // Markerless (approximate) registration — see backend
 // app/services/pose/markerless.py for exactly what is and isn't estimated
 // (position only from apparent size, no orientation).

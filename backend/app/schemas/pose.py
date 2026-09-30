@@ -108,6 +108,42 @@ class FeaturePoseResponse(BaseModel):
     axes: PoseAxes | None = None  # debug gizmo — see PoseAxes
 
 
+class ModelPoseRequest(BaseModel):
+    """Model-based (CAD) 6DoF pose: MegaPose matches the Model3D's own mesh."""
+
+    model_config = {"protected_namespaces": ()}
+
+    model_id: str
+    image_base64: str
+    session_id: str = "default"  # one tracking state per camera/session
+    reset: bool = False  # drop the current track and do a full search this frame
+    # YOLO class used to find the object for a full search. Defaults to the
+    # model's linked Component.class_label; required if the model has none.
+    class_label: str | None = None
+
+
+class ModelPoseResponse(BaseModel):
+    found: bool
+    # "coarse+refine" = full search from a fresh YOLO box (slow, ~1s);
+    # "refine" = tracking from the previous frame's pose (fast);
+    # "no_detection" = no track and YOLO didn't find the object's class.
+    mode: str
+    score: float | None = None  # MegaPose pose score; low = poor match, track is dropped
+    class_label: str | None = None
+    bbox: list[float] | None = None  # YOLO box used for a full search, if one ran this frame
+    # The pose of the MODEL ITSELF (its recentered mesh frame) — apply
+    # directly, no anchor offset needed, unlike marker/feature modes.
+    position: Vector3 | None = None
+    quaternion: Quaternion | None = None
+    rotation_deg: RotationDeg | None = None
+    axes: PoseAxes | None = None
+    elapsed_ms: float = 0.0
+    calibration_is_approximate: bool
+    calibration_source: str
+    camera_vertical_fov_deg: float
+    camera_aspect: float
+
+
 class PoseResponse(BaseModel):
     found: bool
     marker_id: int | None = None

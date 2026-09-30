@@ -8,14 +8,22 @@ import base64
 import time
 from pathlib import Path
 
+import uuid
+
 import cv2
 import numpy as np
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.core.database import get_db
+from app.models.asset import Component
+from app.models.model3d import Model3D
 from app.schemas.pose import (
     FeaturePoseRequest,
     FeaturePoseResponse,
+    ModelPoseRequest,
+    ModelPoseResponse,
     ObjectRegistrationRequest,
     ObjectRegistrationResponse,
     PoseAxes,
@@ -42,7 +50,13 @@ from app.services.pose.aruco_pose import ArucoPoseEstimator
 from app.services.pose.calibration import load_calibration
 from app.services.pose.feature_tracker import FeatureTracker, ReferencePlane, RegistrationQuality
 from app.services.pose.markerless import estimate_object_placement
-from app.services.pose.transforms import cv_pose_to_threejs, euler_angles_deg, project_pose_axes
+from app.services.pose.model_pose_client import ModelPoseClient, PoseServiceUnavailable
+from app.services.pose.transforms import (
+    cv_model_pose_to_threejs,
+    cv_pose_to_threejs,
+    euler_angles_deg,
+    project_pose_axes,
+)
 from app.services.state_detection.state_engine import ComponentStateRule, StateEstimationError, StateEstimator
 from app.services.tracking.tracker import ObjectTracker
 from app.services.vision.detector import build_detector, time_inference
@@ -57,6 +71,7 @@ _segmenter: Segmenter | None = None  # built lazily — first request pays the m
 _feature_tracker = FeatureTracker()
 _reference_planes: dict[str, ReferencePlane] = {}  # in-memory cache, keyed by asset_id
 _object_trackers: dict[str, ObjectTracker] = {}  # one ByteTrack instance per session_id (Project.md #17)
+_model_pose_client = ModelPoseClient(_settings.pose_service_url, _settings.pose_service_timeout_s)
 
 
 def _reference_plane_path(asset_id: str) -> Path:
@@ -344,4 +359,102 @@ def estimate_pose(request: PoseRequest) -> PoseResponse:
         camera_aspect=calibration.aspect_ratio(),
         rotation_deg=rotation_deg,
         axes=axes,
+    )
+
+
+@router.post("/model-pose", response_model=ModelPoseResponse)
+def estimate_model_pose(request: ModelPoseRequest, db: Session = Depends(get_db)) -> ModelPoseResponse:
+    """
+    Model-based (CAD) 6DoF pose: MegaPose (pose_service/, WSL2 + CUDA) matches
+    the Model3D's own mesh against the frame, so the result is the pose of
+    the model itself — not of a marker or a flat photo patch — and needs no
+    anchor offset. The first frame (or after tracking is lost) runs YOLO to
+    find the object's class, then a full coarse+refine search inside that box;
+    later frames only refine from the previous pose.
+    """
+    try:
+        model = db.get(Model3D, uuid.UUID(request.model_id))
+    except ValueError:
+        model = None
+    if model is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    class_label = request.class_label
+    if class_label is None and model.component_id is not None:
+        component = db.get(Component, model.component_id)
+        class_label = component.class_label if component else None
+    if not class_label:
+        raise HTTPException(
+            status_code=400,
+            detail="This model has no detection class (e.g. 'cup'); pass class_label or re-upload with one",
+        )
+
+    frame = decode_frame(request.image_base64)
+    height_px, width_px = frame.shape[:2]
+    calibration = load_calibration(_settings.camera_calibration_path, width_px, height_px)
+
+    def response(**kwargs) -> ModelPoseResponse:
+        return ModelPoseResponse(
+            class_label=class_label,
+            calibration_is_approximate=calibration.is_approximate,
+            calibration_source=calibration.source,
+            camera_vertical_fov_deg=calibration.vertical_fov_deg(),
+            camera_aspect=calibration.aspect_ratio(),
+            **kwargs,
+        )
+
+    label = str(model.id)
+    glb_path = Path(_settings.models_3d_dir) / model.storage_key
+    try:
+        _model_pose_client.ensure_registered(label, glb_path.read_bytes(), model.scale)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"GLB file missing: {glb_path}") from exc
+    except PoseServiceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if request.reset:
+        _model_pose_client.reset(label, request.session_id)
+
+    bbox = None
+    if not _model_pose_client.has_track(label, request.session_id):
+        objects = _get_segmenter().segment(frame, _settings.segmentation_confidence_threshold)
+        matches = [o for o in objects if o.class_label == class_label]
+        if not matches:
+            return response(found=False, mode="no_detection")
+        best = max(matches, key=lambda o: o.confidence)
+        bbox = [best.bbox.x1, best.bbox.y1, best.bbox.x2, best.bbox.y2]
+
+    ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    if not ok:
+        raise HTTPException(status_code=500, detail="Could not re-encode frame")
+    try:
+        result = _model_pose_client.estimate(
+            label,
+            request.session_id,
+            jpeg.tobytes(),
+            calibration.camera_matrix,
+            bbox,
+            _settings.model_pose_min_score,
+            _settings.model_pose_track_iterations,
+        )
+    except PoseServiceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    if not result.found:
+        return response(found=False, mode=result.mode, score=result.score, bbox=bbox, elapsed_ms=result.elapsed_ms)
+
+    t_co = result.t_camera_object
+    pose = cv_model_pose_to_threejs(t_co)
+    rvec, _ = cv2.Rodrigues(t_co[:3, :3])
+    axes, rotation_deg = _debug_pose_gizmo(rvec.reshape(3), t_co[:3, 3], calibration, axis_length_m=0.05)
+    return response(
+        found=True,
+        mode=result.mode,
+        score=result.score,
+        bbox=bbox,
+        position=Vector3(x=pose.position[0], y=pose.position[1], z=pose.position[2]),
+        quaternion=Quaternion(x=pose.quaternion[0], y=pose.quaternion[1], z=pose.quaternion[2], w=pose.quaternion[3]),
+        rotation_deg=rotation_deg,
+        axes=axes,
+        elapsed_ms=result.elapsed_ms,
     )

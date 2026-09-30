@@ -9,6 +9,7 @@ import { Models3DApi, VisionApi } from "../../services/api";
 import type {
   AnchorOffset,
   FeaturePoseResponse,
+  ModelPoseResponse,
   ObjectRegistrationResponse,
   PoseAxes,
   PoseResponse,
@@ -51,7 +52,7 @@ interface Props {
   initialAnchor?: AnchorOffset;
 }
 
-type RegistrationMode = "marker" | "markerless" | "feature";
+type RegistrationMode = "marker" | "markerless" | "feature" | "model";
 
 /**
  * Phase 5 (Project.md #23-#26): physical <-> 3D registration.
@@ -208,6 +209,11 @@ export function RegistrationOverlay({
   const [markerPose, setMarkerPose] = useState<PoseResponse | null>(null);
   const [objectPose, setObjectPose] = useState<ObjectRegistrationResponse | null>(null);
   const [featurePose, setFeaturePose] = useState<FeaturePoseResponse | null>(null);
+  const [modelPose, setModelPose] = useState<ModelPoseResponse | null>(null);
+  // One MegaPose tracking state per mounted overlay, so two tabs/cameras
+  // don't refine from each other's previous pose.
+  const sessionIdRef = useRef(`s-${Math.random().toString(36).slice(2)}`);
+  const resetModelTrackRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const [liveTracking, setLiveTracking] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
@@ -404,7 +410,9 @@ export function RegistrationOverlay({
 
   const applyModelTransform = (
     position: { x: number; y: number; z: number } | null,
-    quaternion: { x: number; y: number; z: number; w: number } | null
+    quaternion: { x: number; y: number; z: number; w: number } | null,
+    // false for model-based (CAD) mode: its pose is already the model's own.
+    useAnchor = true
   ) => {
     const model = modelObjectRef.current;
     if (!model) return;
@@ -417,7 +425,7 @@ export function RegistrationOverlay({
       // sit relative to that patch. anchorPos is expressed in the plane's
       // OWN local frame, so it must be rotated by the plane's orientation
       // before being added to its world position (not just added directly).
-      const { pos, eulerDeg } = anchorRef.current;
+      const { pos, eulerDeg } = useAnchor ? anchorRef.current : { pos: { x: 0, y: 0, z: 0 }, eulerDeg: { rx: 0, ry: 0, rz: 0 } };
       const planeQuat = new THREE.Quaternion(quaternion.x, quaternion.y, quaternion.z, quaternion.w);
       const anchorQuat = new THREE.Quaternion().setFromEuler(
         new THREE.Euler(
@@ -494,6 +502,28 @@ export function RegistrationOverlay({
           clearOutline();
         }
         applyModelTransform(result.position, result.quaternion);
+      } else if (mode === "model") {
+        const reset = resetModelTrackRef.current;
+        resetModelTrackRef.current = false;
+        const result = await VisionApi.estimateModelPose(modelId, frame, sessionIdRef.current, targetClassLabel, reset);
+        setModelPose(result);
+        applyCameraModel(result.camera_vertical_fov_deg, result.camera_aspect);
+        clearOutline();
+        if (result.bbox) {
+          const [x1, y1, x2, y2] = result.bbox;
+          drawPolygon(
+            [
+              { x: x1, y: y1 },
+              { x: x2, y: y1 },
+              { x: x2, y: y2 },
+              { x: x1, y: y2 },
+            ],
+            "#ab47bc",
+            `${result.class_label} (full search)`
+          );
+        }
+        if (result.found && result.axes) drawAxes(result.axes);
+        applyModelTransform(result.position, result.quaternion, false);
       } else {
         const result = await VisionApi.estimateFeaturePose(assetId, frame);
         setFeaturePose(result);
@@ -550,7 +580,28 @@ export function RegistrationOverlay({
         <button className={mode === "feature" ? "active" : ""} onClick={() => setMode("feature")}>
           Feature Tracking (real 6DoF, needs texture)
         </button>
+        <button className={mode === "model" ? "active" : ""} onClick={() => setMode("model")}>
+          Model-based CAD (MegaPose, GPU)
+        </button>
       </div>
+
+      {mode === "model" && (
+        <div className="registration-controls">
+          <label>
+            Object class
+            <input value={targetClassLabel} onChange={(e) => setTargetClassLabel(e.target.value)} />
+          </label>
+          <button
+            onClick={() => {
+              resetModelTrackRef.current = true;
+              if (!liveTracking) void detectAndAlign();
+            }}
+            disabled={busy || !ready}
+          >
+            Re-detect (full search)
+          </button>
+        </div>
+      )}
 
       {mode === "markerless" && (
         <div className="registration-controls">
@@ -745,6 +796,46 @@ export function RegistrationOverlay({
 
       {mode === "feature" && !registration && (
         <p className="warning">Register a reference image of the object's labeled/textured surface first.</p>
+      )}
+
+      {mode === "model" && (
+        <p className="hint">
+          Matches this 3D model's own shape against the camera image (MegaPose on the GPU pose service), so the
+          model lands on the real object itself — no marker, reference photo, or alignment offset. The first
+          lock runs a full search inside the detected box (~1s); after that each frame only refines from the
+          last pose. Needs the pose service running in WSL (see <code>pose_service/README.md</code>), and the
+          model's real-world size must be correct, since distance is inferred from it.
+        </p>
+      )}
+
+      {mode === "model" && modelPose && (
+        <div className={`pose-status ${modelPose.found ? "pose-found" : "pose-not-found"}`}>
+          {modelPose.found ? (
+            <>
+              <p>
+                Locked ({modelPose.mode === "refine" ? "tracking" : "full search"}) — score{" "}
+                {modelPose.score?.toFixed(2) ?? "n/a"}, {modelPose.elapsed_ms.toFixed(0)} ms
+              </p>
+              <p>
+                position: ({modelPose.position!.x.toFixed(3)}, {modelPose.position!.y.toFixed(3)},{" "}
+                {modelPose.position!.z.toFixed(3)}) m
+              </p>
+              {modelPose.rotation_deg && (
+                <p>
+                  rotation: Rx={modelPose.rotation_deg.rx.toFixed(1)}° Ry={modelPose.rotation_deg.ry.toFixed(1)}° Rz=
+                  {modelPose.rotation_deg.rz.toFixed(1)}°
+                </p>
+              )}
+            </>
+          ) : modelPose.mode === "no_detection" ? (
+            <p>No "{modelPose.class_label}" detected in frame — point the camera at the object.</p>
+          ) : (
+            <p>
+              Lost / poor match (score {modelPose.score?.toFixed(2) ?? "n/a"}) — next frame will re-detect and
+              search again.
+            </p>
+          )}
+        </div>
       )}
 
       {mode === "feature" && featurePose && (

@@ -9,7 +9,7 @@ Phases per Project.md §58. Status as of this build:
 | 2 | Tracking (ByteTrack/BoT-SORT, lost/recovery) | ✅ Done — see below |
 | 3 | Video-to-procedure extraction (candidate steps, human approval) | ✅ Done — see below |
 | 4 | 3D (GLB/glTF, Three.js viewer, animation) | ✅ Done (viewer; animation not yet — see below) |
-| 5 | 3D ↔ physical registration (calibration, pose, solvePnP, 6DoF) | ✅ Done — marker-based, see `docs/pose.md` |
+| 5 | 3D ↔ physical registration (calibration, pose, solvePnP, 6DoF) | ✅ Done — marker, feature-tracking, and **model-based (MegaPose)** modes; see `docs/pose.md`, `pose_service/README.md` |
 | 6 | Depth / metrology (depth camera, Open3D, gap/clearance) | 🟡 Built, **unverified against real depth hardware** — see below |
 | 7 | AR/MR (Unity, OpenXR) | ⬜ **Cannot be built in this environment** — no Unity Editor/toolchain available here; needs a machine with Unity installed |
 | 8 | Enterprise (RBAC, audit) done; (S1000D, PLM/MES/QMS, tools) not started | 🟡 Partial — see below |
@@ -90,6 +90,30 @@ Phases per Project.md §58. Status as of this build:
   and `tests/backend/test_aruco_pose.py` (synthetic-marker detection,
   including "no marker" and "wrong target id" cases) — no physical camera or
   printed marker required to verify the pipeline logic.
+
+## Phase 5 — model-based (CAD) registration
+
+The marker, feature-tracking and markerless modes all track a *proxy* (a
+printed marker, a flat photo patch, a YOLO box) and place the model relative
+to it — none of them compares the 3D model's own shape to the image, which
+is why an overlay could track "something" yet not sit on the real object.
+Model-based mode closes that gap:
+
+- `pose_service/` — MegaPose (HappyPose), RGB-only, in WSL2 + CUDA. Matches
+  the Model3D mesh itself (scaled by `Model3D.scale`, recentered exactly as
+  the frontend renders it) and returns `T_camera_object`.
+- `POST /api/vision/model-pose` — YOLO finds the object's class for the
+  first lock (full search, ~2.6s), then each frame refines from the previous
+  pose (~220ms on an RTX 4090). A pose score below 0.5 drops the track.
+- `cv_model_pose_to_threejs` — the object frame here is the mesh's own glTF
+  frame, so the conversion is `C·R`, not the marker path's `C·R·C` (which
+  would render the model flipped 180°). Covered by `test_transforms.py`.
+- **Verified** with a known-answer test (the cup GLB rendered at a known
+  pose, 35cm away): 3.5mm / 4.5° error on first lock, ~3mm / 3° while
+  tracking; score 1.0 with the cup present vs 0.21 on an empty frame.
+  **Not yet verified on a live webcam** in this session (the camera was held
+  by the browser). Untextured GLBs match on silhouette/shape only, and a mug
+  with its handle hidden has an ambiguous spin angle.
 
 ## Phase 2 — Tracking
 

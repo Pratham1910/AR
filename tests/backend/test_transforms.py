@@ -6,6 +6,7 @@ import pytest
 from app.services.pose.calibration import CameraCalibration
 from app.services.pose.transforms import (
     compose_transforms,
+    cv_model_pose_to_threejs,
     cv_pose_to_threejs,
     euler_angles_deg,
     invert_transform,
@@ -59,6 +60,38 @@ def test_cv_pose_to_threejs_flips_y():
     tvec = np.array([0.0, -0.5, 1.0])
     pose = cv_pose_to_threejs(rvec, tvec)
     assert pose.position[1] > 0
+
+
+def _quat_rotate(q, v):
+    x, y, z, w = q
+    u = np.array([x, y, z])
+    v = np.asarray(v, dtype=float)
+    return 2 * np.dot(u, v) * u + (w * w - np.dot(u, u)) * v + 2 * w * np.cross(u, v)
+
+
+def test_cv_model_pose_identity_keeps_model_up_pointing_down_in_image():
+    """OpenCV identity rotation means the model's +Y maps to camera +Y, which
+    is DOWN in the image. In Three.js (Y up) the model's +Y must therefore map
+    to world -Y, and +Z (toward the camera's viewing direction) to -Z."""
+    t_co = np.eye(4)
+    t_co[:3, 3] = [0.0, 0.0, 0.5]
+    pose = cv_model_pose_to_threejs(t_co)
+    assert pose.position == pytest.approx((0.0, 0.0, -0.5), abs=1e-9)
+    assert _quat_rotate(pose.quaternion, [0, 1, 0]) == pytest.approx([0, -1, 0], abs=1e-9)
+    assert _quat_rotate(pose.quaternion, [0, 0, 1]) == pytest.approx([0, 0, -1], abs=1e-9)
+    assert _quat_rotate(pose.quaternion, [1, 0, 0]) == pytest.approx([1, 0, 0], abs=1e-9)
+
+
+def test_cv_model_pose_upright_object_stays_upright():
+    """A mesh standing upright in front of the camera (its +Y along camera
+    -Y, i.e. up in the image) must come out with +Y pointing up in Three.js —
+    the case that a C@R@C conversion would get upside down."""
+    t_co = np.eye(4)
+    t_co[:3, :3] = np.diag([1.0, -1.0, -1.0])  # model up = image up, model faces the camera
+    t_co[:3, 3] = [0.0, 0.0, 0.5]
+    pose = cv_model_pose_to_threejs(t_co)
+    assert _quat_rotate(pose.quaternion, [0, 1, 0]) == pytest.approx([0, 1, 0], abs=1e-9)
+    assert _quat_rotate(pose.quaternion, [0, 0, 1]) == pytest.approx([0, 0, 1], abs=1e-9)
 
 
 def test_euler_angles_identity_is_zero():

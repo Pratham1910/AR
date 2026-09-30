@@ -98,6 +98,25 @@ def cv_pose_to_threejs(rvec: np.ndarray, tvec: np.ndarray) -> Pose6DoF:
     return Pose6DoF(position=tuple(float(v) for v in gl_position), quaternion=quaternion)
 
 
+def cv_model_pose_to_threejs(t_camera_object: np.ndarray) -> Pose6DoF:
+    """
+    Like cv_pose_to_threejs, but for a pose whose object frame IS the 3D
+    model's own (glTF) frame — e.g. MegaPose, which matches the mesh itself.
+
+    Only the camera side changes convention here: x_gl = C @ (R @ m + t), so
+    the rotation is C @ R, not C @ R @ C. cv_pose_to_threejs's extra right-hand
+    C re-interprets the object's own axes as OpenCV-style, which is right for
+    an ArUco marker's frame but would render a mesh-matched model flipped
+    180 degrees about X.
+    """
+    rotation = t_camera_object[:3, :3]
+    translation = t_camera_object[:3, 3]
+    gl_rotation = _CV_TO_GL @ rotation
+    gl_position = _CV_TO_GL @ translation
+    quaternion = _rotation_matrix_to_quaternion(gl_rotation)
+    return Pose6DoF(position=tuple(float(v) for v in gl_position), quaternion=quaternion)
+
+
 def euler_angles_deg_from_rotation_matrix(rotation_matrix: np.ndarray) -> tuple[float, float, float]:
     """
     Tait-Bryan (XYZ order) Euler angles in degrees, purely for human-readable
