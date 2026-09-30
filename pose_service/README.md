@@ -19,7 +19,7 @@ UV_HTTP_TIMEOUT=900 uv pip install --python .venv/bin/python \
   -r requirements/pypi.txt -r requirements/cu124.txt \
   --build-constraints ../build-constraints.txt \
   --extra-index-url https://download.pytorch.org/whl/cu124 --index-strategy unsafe-best-match
-uv pip install --python .venv/bin/python fastapi uvicorn
+uv pip install --python .venv/bin/python fastapi uvicorn fast-simplification
 HAPPYPOSE_DATA_DIR=~/tvasta-pose/data .venv/bin/python -m happypose.toolbox.utils.download --megapose_models
 ```
 

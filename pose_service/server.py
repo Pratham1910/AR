@@ -50,6 +50,12 @@ MESH_DIR = Path(os.getenv("TVASTA_POSE_MESH_DIR", Path.home() / "tvasta-pose" / 
 # but slowest. Subsampling (as HappyPose's own example does, [::8]) trades a
 # little first-lock robustness for a much faster first lock.
 COARSE_GRID_STRIDE = int(os.getenv("MEGAPOSE_COARSE_GRID_STRIDE", "4"))
+# MegaPose pads every loaded object's data to the LARGEST mesh, so one heavy
+# model slows every request, even for other objects. Measured on an RTX 4090:
+# cup tracking ~185ms with small meshes loaded, ~1.7-2.7s once a 105k-face
+# mesh was also loaded. It matches shape/silhouette, so detail beyond this
+# buys nothing; meshes are decimated to at most this many faces.
+MAX_MESH_FACES = int(os.getenv("TVASTA_POSE_MAX_FACES", "10000"))
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 app = FastAPI(title="TVASTA model-based pose service")
@@ -62,6 +68,21 @@ _labels: set[str] = set()
 
 def _mesh_path(label: str) -> Path:
     return MESH_DIR / f"{label}.ply"
+
+
+def _simplified(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    if len(mesh.faces) <= MAX_MESH_FACES:
+        return mesh
+    return mesh.simplify_quadric_decimation(face_count=MAX_MESH_FACES)
+
+
+def _simplify_existing_meshes() -> None:
+    """One-off for meshes registered before the face cap existed. They're
+    already recentered, and decimation keeps the bounds within ~0.1%."""
+    for path in MESH_DIR.glob("*.ply"):
+        mesh = trimesh.load(path, force="mesh")
+        if len(mesh.faces) > MAX_MESH_FACES:
+            _simplified(mesh).export(path)
 
 
 def _rebuild_estimator() -> None:
@@ -86,6 +107,7 @@ def _rebuild_estimator() -> None:
 @app.on_event("startup")
 def _startup() -> None:
     MESH_DIR.mkdir(parents=True, exist_ok=True)
+    _simplify_existing_meshes()
     with _lock:
         _rebuild_estimator()
 
@@ -125,8 +147,11 @@ def register_object(req: RegisterObjectRequest) -> RegisterObjectResponse:
 
     mesh = mesh.copy()
     mesh.apply_scale(req.scale)
+    # Recenter on the FULL-detail bounds (what the frontend renders and
+    # recenters on), then simplify, so the two frames stay identical.
     lo, hi = mesh.bounds
     mesh.apply_translation(-(lo + hi) / 2.0)
+    mesh = _simplified(mesh)
 
     MESH_DIR.mkdir(parents=True, exist_ok=True)
     mesh.export(_mesh_path(req.label))
