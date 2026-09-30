@@ -618,6 +618,15 @@ export function RegistrationOverlay({
                   Rz={featurePose.rotation_deg.rz.toFixed(1)}°
                 </p>
               )}
+              {featurePose.num_matches > 0 && featurePose.num_inliers / featurePose.num_matches < 0.25 && (
+                <p className="warning">
+                  Low inlier ratio ({Math.round((100 * featurePose.num_inliers) / featurePose.num_matches)}%) — the
+                  rotation solve is likely unstable. This usually means the reference photo covers a curved surface
+                  (e.g. a mug's label wrapping around it) rather than a flat one, or was taken from an angle that
+                  doesn't match the current view. Re-register using a reference photo of the flattest, most
+                  front-on part of the surface.
+                </p>
+              )}
             </>
           ) : (
             <p>No match ({featurePose.num_matches} candidate matches, not enough to solve a pose).</p>

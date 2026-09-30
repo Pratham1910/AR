@@ -21,6 +21,7 @@ interface Props {
 export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
   const [selectedAssetId, setSelectedAssetId] = useState("");
   const [models, setModels] = useState<Model3DInfo[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState("");
   const [mode, setMode] = useState<"view" | "overlay" | "register">("view");
   const [error, setError] = useState<string | null>(null);
   const [showUpload, setShowUpload] = useState(false);
@@ -30,14 +31,23 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
       setModels([]);
       return;
     }
-    Models3DApi.listForAsset(assetId).then(setModels).catch((err: Error) => setError(err.message));
+    Models3DApi.listForAsset(assetId)
+      .then((list) => {
+        setModels(list);
+        // Backend now returns newest-first; default to it, but let the user
+        // pick a different one explicitly when an asset has several models —
+        // silently picking models[0] with no visible indicator was the root
+        // cause of at least one asset/model mismatch bug.
+        setSelectedModelId(list[0]?.id ?? "");
+      })
+      .catch((err: Error) => setError(err.message));
   };
 
   useEffect(() => {
     refreshModels(selectedAssetId);
   }, [selectedAssetId]);
 
-  const model = models[0];
+  const model = models.find((m) => m.id === selectedModelId) ?? models[0];
 
   return (
     <div>
@@ -53,6 +63,18 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
             ))}
           </select>
         </label>
+        {models.length > 1 && (
+          <label>
+            Model
+            <select value={selectedModelId} onChange={(e) => setSelectedModelId(e.target.value)}>
+              {models.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name} ({m.storage_key}, scale={m.scale})
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <button onClick={() => setShowUpload((v) => !v)}>{showUpload ? "Hide upload" : "+ Upload 3D model"}</button>
       </div>
 

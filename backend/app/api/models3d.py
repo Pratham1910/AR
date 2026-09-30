@@ -107,6 +107,10 @@ def list_models(asset_id: uuid.UUID | None = None, db: Session = Depends(get_db)
     query = db.query(Model3D)
     if asset_id is not None:
         query = query.filter(Model3D.asset_id == asset_id)
+    # Newest first: the frontend picks models[0] when a user hasn't chosen one
+    # explicitly, and defaulting to the oldest upload was a recurring source
+    # of "which model is actually showing" confusion.
+    query = query.order_by(Model3D.created_at.desc())
     return [_to_out(m, db) for m in query.all()]
 
 
