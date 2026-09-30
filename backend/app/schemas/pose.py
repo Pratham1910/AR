@@ -26,6 +26,26 @@ class Vector2(BaseModel):
     y: float
 
 
+class RotationDeg(BaseModel):
+    """Tait-Bryan Euler angles in degrees — debug display only (Project.md's
+    debug-mode requirement), never used for the actual placement math, which
+    stays in matrix/quaternion form to avoid gimbal lock/order ambiguity."""
+
+    rx: float
+    ry: float
+    rz: float
+
+
+class PoseAxes(BaseModel):
+    """2D-projected XYZ pose gizmo, in the frame's own pixel space, for drawing
+    a debug "this is the pose I estimated" overlay (X=red, Y=green, Z=blue)."""
+
+    origin: Vector2
+    x_axis: Vector2
+    y_axis: Vector2
+    z_axis: Vector2
+
+
 class ObjectRegistrationRequest(BaseModel):
     """Markerless registration (app/services/pose/markerless.py) — approximate, position-only."""
 
@@ -84,6 +104,8 @@ class FeaturePoseResponse(BaseModel):
     calibration_source: str
     camera_vertical_fov_deg: float
     camera_aspect: float
+    rotation_deg: RotationDeg | None = None  # debug display — see RotationDeg
+    axes: PoseAxes | None = None  # debug gizmo — see PoseAxes
 
 
 class PoseResponse(BaseModel):
@@ -100,3 +122,5 @@ class PoseResponse(BaseModel):
     calibration_source: str
     camera_vertical_fov_deg: float
     camera_aspect: float
+    rotation_deg: RotationDeg | None = None  # debug display — see RotationDeg
+    axes: PoseAxes | None = None  # debug gizmo — see PoseAxes

@@ -104,6 +104,23 @@ export interface Vector2 {
   y: number;
 }
 
+// Debug display only (Project.md's debug-mode requirement) — never used for
+// the actual placement math, which stays in quaternion form.
+export interface RotationDeg {
+  rx: number;
+  ry: number;
+  rz: number;
+}
+
+// 2D-projected XYZ pose gizmo, in the frame's own pixel space — draw as
+// origin->x_axis (red), origin->y_axis (green), origin->z_axis (blue).
+export interface PoseAxes {
+  origin: Vector2;
+  x_axis: Vector2;
+  y_axis: Vector2;
+  z_axis: Vector2;
+}
+
 export interface PoseResponse {
   found: boolean;
   marker_id: number | null;
@@ -121,6 +138,8 @@ export interface PoseResponse {
   // even when position/orientation are computed correctly.
   camera_vertical_fov_deg: number;
   camera_aspect: number;
+  rotation_deg: RotationDeg | null;
+  axes: PoseAxes | null;
 }
 
 // Markerless (approximate) registration — see backend
@@ -160,4 +179,6 @@ export interface FeaturePoseResponse {
   calibration_source: string;
   camera_vertical_fov_deg: number;
   camera_aspect: number;
+  rotation_deg: RotationDeg | null;
+  axes: PoseAxes | null;
 }

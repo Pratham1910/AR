@@ -18,11 +18,13 @@ from app.schemas.pose import (
     FeaturePoseResponse,
     ObjectRegistrationRequest,
     ObjectRegistrationResponse,
+    PoseAxes,
     PoseRequest,
     PoseResponse,
     Quaternion,
     RegisterReferenceImageRequest,
     RegisterReferenceImageResponse,
+    RotationDeg,
     Vector2,
     Vector3,
 )
@@ -40,7 +42,7 @@ from app.services.pose.aruco_pose import ArucoPoseEstimator
 from app.services.pose.calibration import load_calibration
 from app.services.pose.feature_tracker import FeatureTracker, ReferencePlane, RegistrationQuality
 from app.services.pose.markerless import estimate_object_placement
-from app.services.pose.transforms import cv_pose_to_threejs
+from app.services.pose.transforms import cv_pose_to_threejs, euler_angles_deg, project_pose_axes
 from app.services.state_detection.state_engine import ComponentStateRule, StateEstimationError, StateEstimator
 from app.services.tracking.tracker import ObjectTracker
 from app.services.vision.detector import build_detector, time_inference
@@ -89,6 +91,21 @@ def decode_frame(image_base64: str) -> np.ndarray:
     if frame is None:
         raise HTTPException(status_code=400, detail="Could not decode image_base64 as an image")
     return frame
+
+
+def _debug_pose_gizmo(rvec, tvec, calibration, axis_length_m: float) -> tuple[PoseAxes, RotationDeg]:
+    """Shared by every mode that has a real rvec/tvec (marker, feature tracking) — see schemas.pose's docstrings."""
+    axes = project_pose_axes(rvec, tvec, calibration.camera_matrix, calibration.dist_coeffs, axis_length_m)
+    rx, ry, rz = euler_angles_deg(rvec)
+    return (
+        PoseAxes(
+            origin=Vector2(x=axes["origin"][0], y=axes["origin"][1]),
+            x_axis=Vector2(x=axes["x_axis"][0], y=axes["x_axis"][1]),
+            y_axis=Vector2(x=axes["y_axis"][0], y=axes["y_axis"][1]),
+            z_axis=Vector2(x=axes["z_axis"][0], y=axes["z_axis"][1]),
+        ),
+        RotationDeg(rx=rx, ry=ry, rz=rz),
+    )
 
 
 @router.post("/detect", response_model=DetectResponse)
@@ -274,6 +291,7 @@ def estimate_feature_pose(request: FeaturePoseRequest) -> FeaturePoseResponse:
         )
 
     pose = cv_pose_to_threejs(estimate.rvec, estimate.tvec)
+    axes, rotation_deg = _debug_pose_gizmo(estimate.rvec, estimate.tvec, calibration, reference.label_width_m)
     return FeaturePoseResponse(
         found=True,
         position=Vector3(x=pose.position[0], y=pose.position[1], z=pose.position[2]),
@@ -285,6 +303,8 @@ def estimate_feature_pose(request: FeaturePoseRequest) -> FeaturePoseResponse:
         calibration_source=calibration.source,
         camera_vertical_fov_deg=calibration.vertical_fov_deg(),
         camera_aspect=calibration.aspect_ratio(),
+        rotation_deg=rotation_deg,
+        axes=axes,
     )
 
 
@@ -310,6 +330,7 @@ def estimate_pose(request: PoseRequest) -> PoseResponse:
         )
 
     pose = cv_pose_to_threejs(estimate.rvec, estimate.tvec)
+    axes, rotation_deg = _debug_pose_gizmo(estimate.rvec, estimate.tvec, calibration, _settings.aruco_marker_length_m)
     return PoseResponse(
         found=True,
         marker_id=estimate.marker_id,
@@ -321,4 +342,6 @@ def estimate_pose(request: PoseRequest) -> PoseResponse:
         calibration_source=calibration.source,
         camera_vertical_fov_deg=calibration.vertical_fov_deg(),
         camera_aspect=calibration.aspect_ratio(),
+        rotation_deg=rotation_deg,
+        axes=axes,
     )

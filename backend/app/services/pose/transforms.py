@@ -10,6 +10,7 @@ Two coordinate systems meet here:
 downstream (the frontend AR overlay) works only in Three.js space.
 """
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -95,3 +96,63 @@ def cv_pose_to_threejs(rvec: np.ndarray, tvec: np.ndarray) -> Pose6DoF:
 
     quaternion = _rotation_matrix_to_quaternion(gl_rotation)
     return Pose6DoF(position=tuple(float(v) for v in gl_position), quaternion=quaternion)
+
+
+def euler_angles_deg_from_rotation_matrix(rotation_matrix: np.ndarray) -> tuple[float, float, float]:
+    """
+    Tait-Bryan (XYZ order) Euler angles in degrees, purely for human-readable
+    debug display — never used for the actual pose/placement math, which
+    stays in matrix/quaternion form throughout specifically to avoid gimbal
+    lock and Euler-order ambiguity. This exists only so a debug UI can show
+    "Rx=.., Ry=.., Rz=.." next to the position, per the platform's own
+    debug-mode requirement (show enough to visually sanity-check a pose).
+    """
+    r = rotation_matrix
+    sy = math.sqrt(r[0, 0] ** 2 + r[1, 0] ** 2)
+    singular = sy < 1e-6
+    if not singular:
+        rx = math.atan2(r[2, 1], r[2, 2])
+        ry = math.atan2(-r[2, 0], sy)
+        rz = math.atan2(r[1, 0], r[0, 0])
+    else:
+        rx = math.atan2(-r[1, 2], r[1, 1])
+        ry = math.atan2(-r[2, 0], sy)
+        rz = 0.0
+    return math.degrees(rx), math.degrees(ry), math.degrees(rz)
+
+
+def euler_angles_deg(rvec: np.ndarray) -> tuple[float, float, float]:
+    import cv2
+
+    rotation_matrix, _ = cv2.Rodrigues(rvec)
+    return euler_angles_deg_from_rotation_matrix(rotation_matrix)
+
+
+def project_pose_axes(
+    rvec: np.ndarray,
+    tvec: np.ndarray,
+    camera_matrix: np.ndarray,
+    dist_coeffs: np.ndarray,
+    axis_length_m: float,
+) -> dict[str, tuple[float, float]]:
+    """
+    Projects the pose's own origin and X/Y/Z axis endpoints into image pixel
+    space (OpenCV camera convention, the same space `corners_px`/
+    `inlier_points_px` already use), for drawing a debug "this is the pose I
+    estimated" gizmo directly on the live feed — the standard X=red, Y=green,
+    Z=blue convention.
+    """
+    import cv2
+
+    object_points = np.array(
+        [[0.0, 0.0, 0.0], [axis_length_m, 0.0, 0.0], [0.0, axis_length_m, 0.0], [0.0, 0.0, axis_length_m]],
+        dtype=np.float64,
+    )
+    projected, _ = cv2.projectPoints(object_points, rvec, tvec, camera_matrix, dist_coeffs)
+    pts = projected.reshape(4, 2)
+    return {
+        "origin": (float(pts[0][0]), float(pts[0][1])),
+        "x_axis": (float(pts[1][0]), float(pts[1][1])),
+        "y_axis": (float(pts[2][0]), float(pts[2][1])),
+        "z_axis": (float(pts[3][0]), float(pts[3][1])),
+    }

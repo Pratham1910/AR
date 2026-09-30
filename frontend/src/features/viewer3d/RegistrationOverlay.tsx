@@ -9,6 +9,7 @@ import { VisionApi } from "../../services/api";
 import type {
   FeaturePoseResponse,
   ObjectRegistrationResponse,
+  PoseAxes,
   PoseResponse,
   RegisterReferenceImageResponse,
   Vector2,
@@ -276,6 +277,34 @@ export function RegistrationOverlay({
     }
   };
 
+  /**
+   * Debug pose gizmo (Project.md's debug-mode requirement): draws the
+   * estimated pose's own X/Y/Z axes directly on the live feed, X=red,
+   * Y=green, Z=blue — call AFTER drawPolygon/drawPoints (this does not clear
+   * the canvas, so it layers on top of whatever outline was just drawn).
+   */
+  const drawAxes = (axes: PoseAxes) => {
+    const ctx = outlineCanvasRef.current?.getContext("2d");
+    if (!ctx) return;
+
+    const drawLine = (to: Vector2, color: string) => {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(axes.origin.x, axes.origin.y);
+      ctx.lineTo(to.x, to.y);
+      ctx.stroke();
+    };
+    drawLine(axes.x_axis, "#ff1744");
+    drawLine(axes.y_axis, "#00e676");
+    drawLine(axes.z_axis, "#2979ff");
+
+    ctx.fillStyle = "#ffffff";
+    ctx.beginPath();
+    ctx.arc(axes.origin.x, axes.origin.y, 4, 0, Math.PI * 2);
+    ctx.fill();
+  };
+
   const applyCameraModel = (verticalFovDeg: number, aspect: number) => {
     const camera = cameraObjectRef.current;
     if (!camera) return;
@@ -341,6 +370,7 @@ export function RegistrationOverlay({
         applyCameraModel(result.camera_vertical_fov_deg, result.camera_aspect);
         if (result.found && result.corners_px) {
           drawPolygon(result.corners_px, "#00e676", result.marker_id !== null ? `id ${result.marker_id}` : undefined);
+          if (result.axes) drawAxes(result.axes);
         } else {
           clearOutline();
         }
@@ -365,6 +395,7 @@ export function RegistrationOverlay({
         applyCameraModel(result.camera_vertical_fov_deg, result.camera_aspect);
         if (result.found && result.inlier_points_px) {
           drawPoints(result.inlier_points_px, "#ffca28", `${result.num_inliers}/${result.num_matches} matched`);
+          if (result.axes) drawAxes(result.axes);
         } else {
           clearOutline();
         }
@@ -524,6 +555,12 @@ export function RegistrationOverlay({
                 position: ({markerPose.position!.x.toFixed(3)}, {markerPose.position!.y.toFixed(3)},{" "}
                 {markerPose.position!.z.toFixed(3)}) m
               </p>
+              {markerPose.rotation_deg && (
+                <p>
+                  rotation: Rx={markerPose.rotation_deg.rx.toFixed(1)}° Ry={markerPose.rotation_deg.ry.toFixed(1)}°
+                  Rz={markerPose.rotation_deg.rz.toFixed(1)}°
+                </p>
+              )}
             </>
           ) : (
             <p>No marker detected in frame.</p>
@@ -575,6 +612,12 @@ export function RegistrationOverlay({
                 position: ({featurePose.position!.x.toFixed(3)}, {featurePose.position!.y.toFixed(3)},{" "}
                 {featurePose.position!.z.toFixed(3)}) m
               </p>
+              {featurePose.rotation_deg && (
+                <p>
+                  rotation: Rx={featurePose.rotation_deg.rx.toFixed(1)}° Ry={featurePose.rotation_deg.ry.toFixed(1)}°
+                  Rz={featurePose.rotation_deg.rz.toFixed(1)}°
+                </p>
+              )}
             </>
           ) : (
             <p>No match ({featurePose.num_matches} candidate matches, not enough to solve a pose).</p>
