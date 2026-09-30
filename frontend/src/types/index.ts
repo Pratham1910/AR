@@ -84,6 +84,28 @@ export interface Model3DInfo {
   // registration's "Object class" instead of leaving a free-typed field
   // that can silently disagree with whichever asset is actually selected.
   component_class_label: string | null;
+  // The model's own local transform relative to the tracked reference plane
+  // (marker or feature-tracking target) — see backend app/models/model3d.py.
+  // Defaults to zero offset/identity rotation (model planted directly at the
+  // tracked pose), which is only correct by coincidence; calibrate via the
+  // AR overlay's alignment controls.
+  anchor_offset_x: number;
+  anchor_offset_y: number;
+  anchor_offset_z: number;
+  anchor_rotation_x: number;
+  anchor_rotation_y: number;
+  anchor_rotation_z: number;
+  anchor_rotation_w: number;
+}
+
+export interface AnchorOffset {
+  anchor_offset_x: number;
+  anchor_offset_y: number;
+  anchor_offset_z: number;
+  anchor_rotation_x: number;
+  anchor_rotation_y: number;
+  anchor_rotation_z: number;
+  anchor_rotation_w: number;
 }
 
 export interface Vector3 {

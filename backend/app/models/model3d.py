@@ -38,6 +38,26 @@ class Model3D(Base):
     # (ThreeViewer.tsx) auto-frames relative to the model's own bounding box
     # and doesn't need it; AR overlays (RegistrationOverlay.tsx) do.
     scale: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+
+    # Anchor offset: the model's own local transform relative to the tracked
+    # reference frame (an ArUco marker's face, or a feature-tracked reference
+    # photo's plane), in the reference frame's own local coordinates.
+    # Registration/tracking gives you the pose of a FLAT PATCH on the object
+    # (a marker, or a label photo) — it does not know where that patch sits
+    # relative to the 3D model's own origin/orientation, so without this
+    # offset the model gets planted directly at the patch's pose, which is
+    # visibly wrong for anything but a perfectly flat, centrally-labeled
+    # object. This offset is calibrated once per model (nudge in the AR
+    # overlay UI until it lines up, then save) and reused every frame:
+    # model_world_pose = reference_plane_pose ∘ anchor_offset.
+    anchor_offset_x: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    anchor_offset_y: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    anchor_offset_z: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    anchor_rotation_x: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    anchor_rotation_y: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    anchor_rotation_z: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    anchor_rotation_w: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     asset: Mapped["Asset"] = relationship()

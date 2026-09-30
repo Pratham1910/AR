@@ -120,8 +120,19 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
                 in <code>.env</code>.
               </p>
               <RegistrationOverlay
+                key={model.id}
                 assetId={selectedAssetId}
+                modelId={model.id}
                 modelUrl={resolveApiUrl(model.url)}
+                initialAnchor={{
+                  anchor_offset_x: model.anchor_offset_x,
+                  anchor_offset_y: model.anchor_offset_y,
+                  anchor_offset_z: model.anchor_offset_z,
+                  anchor_rotation_x: model.anchor_rotation_x,
+                  anchor_rotation_y: model.anchor_rotation_y,
+                  anchor_rotation_z: model.anchor_rotation_z,
+                  anchor_rotation_w: model.anchor_rotation_w,
+                }}
                 modelScale={model.scale}
                 defaultTargetClassLabel={model.component_class_label}
               />

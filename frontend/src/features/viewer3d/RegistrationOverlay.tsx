@@ -5,8 +5,9 @@ import { CameraSelect } from "../../components/CameraSelect";
 import { CameraStatusBadge } from "../../components/CameraStatusBadge";
 import { useCamera } from "../../hooks/useCamera";
 import { ensureVisibleMaterials } from "./ensureVisibleMaterial";
-import { VisionApi } from "../../services/api";
+import { Models3DApi, VisionApi } from "../../services/api";
 import type {
+  AnchorOffset,
   FeaturePoseResponse,
   ObjectRegistrationResponse,
   PoseAxes,
@@ -17,6 +18,7 @@ import type {
 
 interface Props {
   assetId: string;
+  modelId: string;
   modelUrl: string;
   /**
    * Multiplier converting the GLB's own mesh units into real-world meters
@@ -37,6 +39,16 @@ interface Props {
    * live feed (a real bug this fixes).
    */
   defaultTargetClassLabel?: string | null;
+  /**
+   * The model's saved anchor offset (Model3DInfo.anchor_*) — its own local
+   * transform relative to the tracked reference plane. Tracking gives you
+   * the pose of a flat patch on the object (a marker or a photographed
+   * label), not the 3D model's own origin/orientation, so this offset is
+   * what actually pins the model onto the real object instead of onto that
+   * patch's raw pose. Defaults to zero/identity (no correction) until
+   * calibrated via the on-screen alignment controls below.
+   */
+  initialAnchor?: AnchorOffset;
 }
 
 type RegistrationMode = "marker" | "markerless" | "feature";
@@ -71,10 +83,12 @@ type RegistrationMode = "marker" | "markerless" | "feature";
  */
 export function RegistrationOverlay({
   assetId,
+  modelId,
   modelUrl,
   modelScale = 1,
   targetMarkerId,
   defaultTargetClassLabel,
+  initialAnchor,
 }: Props) {
   const {
     videoRef,
@@ -104,6 +118,76 @@ export function RegistrationOverlay({
   const targetPositionRef = useRef(new THREE.Vector3());
   const targetQuaternionRef = useRef(new THREE.Quaternion());
   const hasTargetRef = useRef(false);
+
+  // Anchor offset (see Props.initialAnchor doc): edited as position (m) +
+  // Euler degrees for intuitive nudge buttons, converted to a quaternion
+  // only when composing onto the tracked pose or saving. Mirrored into a ref
+  // so the self-rescheduling live-tracking loop (below) always reads the
+  // latest value instead of whatever was current when that effect last ran.
+  const [anchorPos, setAnchorPos] = useState({
+    x: initialAnchor?.anchor_offset_x ?? 0,
+    y: initialAnchor?.anchor_offset_y ?? 0,
+    z: initialAnchor?.anchor_offset_z ?? 0,
+  });
+  const [anchorEulerDeg, setAnchorEulerDeg] = useState(() => {
+    const q = initialAnchor
+      ? new THREE.Quaternion(
+          initialAnchor.anchor_rotation_x,
+          initialAnchor.anchor_rotation_y,
+          initialAnchor.anchor_rotation_z,
+          initialAnchor.anchor_rotation_w
+        )
+      : new THREE.Quaternion();
+    const e = new THREE.Euler().setFromQuaternion(q, "XYZ");
+    return { rx: THREE.MathUtils.radToDeg(e.x), ry: THREE.MathUtils.radToDeg(e.y), rz: THREE.MathUtils.radToDeg(e.z) };
+  });
+  const [anchorSaving, setAnchorSaving] = useState(false);
+  const [anchorSaved, setAnchorSaved] = useState(false);
+  const anchorRef = useRef({ pos: anchorPos, eulerDeg: anchorEulerDeg });
+  useEffect(() => {
+    anchorRef.current = { pos: anchorPos, eulerDeg: anchorEulerDeg };
+  }, [anchorPos, anchorEulerDeg]);
+
+  const nudgePos = (axis: "x" | "y" | "z", deltaM: number) => {
+    setAnchorPos((p) => ({ ...p, [axis]: p[axis] + deltaM }));
+    setAnchorSaved(false);
+  };
+  const nudgeRot = (axis: "rx" | "ry" | "rz", deltaDeg: number) => {
+    setAnchorEulerDeg((r) => ({ ...r, [axis]: r[axis] + deltaDeg }));
+    setAnchorSaved(false);
+  };
+  const resetAnchor = () => {
+    setAnchorPos({ x: 0, y: 0, z: 0 });
+    setAnchorEulerDeg({ rx: 0, ry: 0, rz: 0 });
+    setAnchorSaved(false);
+  };
+  const saveAnchor = async () => {
+    setAnchorSaving(true);
+    try {
+      const q = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(
+          THREE.MathUtils.degToRad(anchorEulerDeg.rx),
+          THREE.MathUtils.degToRad(anchorEulerDeg.ry),
+          THREE.MathUtils.degToRad(anchorEulerDeg.rz),
+          "XYZ"
+        )
+      );
+      await Models3DApi.updateAnchor(modelId, {
+        anchor_offset_x: anchorPos.x,
+        anchor_offset_y: anchorPos.y,
+        anchor_offset_z: anchorPos.z,
+        anchor_rotation_x: q.x,
+        anchor_rotation_y: q.y,
+        anchor_rotation_z: q.z,
+        anchor_rotation_w: q.w,
+      });
+      setAnchorSaved(true);
+    } catch (err) {
+      setApiError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAnchorSaving(false);
+    }
+  };
 
   const [mode, setMode] = useState<RegistrationMode>("markerless");
   const [targetClassLabel, setTargetClassLabel] = useState(defaultTargetClassLabel || "bottle");
@@ -326,8 +410,29 @@ export function RegistrationOverlay({
     if (!model) return;
     if (position && quaternion) {
       const wasVisible = model.visible;
-      targetPositionRef.current.set(position.x, position.y, position.z);
-      targetQuaternionRef.current.set(quaternion.x, quaternion.y, quaternion.z, quaternion.w);
+
+      // Compose the calibrated anchor offset onto the tracked reference
+      // plane's pose: tracking only knows where a flat patch (a marker, or a
+      // photographed label) is, not where the 3D model's own origin should
+      // sit relative to that patch. anchorPos is expressed in the plane's
+      // OWN local frame, so it must be rotated by the plane's orientation
+      // before being added to its world position (not just added directly).
+      const { pos, eulerDeg } = anchorRef.current;
+      const planeQuat = new THREE.Quaternion(quaternion.x, quaternion.y, quaternion.z, quaternion.w);
+      const anchorQuat = new THREE.Quaternion().setFromEuler(
+        new THREE.Euler(
+          THREE.MathUtils.degToRad(eulerDeg.rx),
+          THREE.MathUtils.degToRad(eulerDeg.ry),
+          THREE.MathUtils.degToRad(eulerDeg.rz),
+          "XYZ"
+        )
+      );
+      const offsetWorld = new THREE.Vector3(pos.x, pos.y, pos.z).applyQuaternion(planeQuat);
+      const finalPosition = new THREE.Vector3(position.x, position.y, position.z).add(offsetWorld);
+      const finalQuaternion = planeQuat.clone().multiply(anchorQuat);
+
+      targetPositionRef.current.copy(finalPosition);
+      targetQuaternionRef.current.copy(finalQuaternion);
       if (!wasVisible || !hasTargetRef.current) {
         // First sighting (or reappearing after being lost) — snap instead of
         // gliding in from wherever it last was (or the origin).
@@ -541,6 +646,47 @@ export function RegistrationOverlay({
           "Real height" value above being correct and on camera calibration; run
           `python -m app.workers.calibrate_camera` for a real one instead of the default approximation.
         </p>
+      )}
+
+      {(mode === "marker" || mode === "feature") && (
+        <div className="anchor-calibration">
+          <p className="hint">
+            The pose above is the tracked <em>reference patch's</em> pose (a marker's face, or the registered
+            photo's plane) — not necessarily where the 3D model's own origin should sit. If the model looks
+            offset, oversized-looking, or tilted relative to the real object even though tracking itself
+            looks stable, nudge it here until it lines up, then save — this is calibrated once per model,
+            not per session.
+          </p>
+          <div className="anchor-calibration-grid">
+            <div>
+              <strong>Position (m)</strong>
+              {(["x", "y", "z"] as const).map((axis) => (
+                <div key={axis} className="anchor-row">
+                  <span>{axis.toUpperCase()}: {anchorPos[axis].toFixed(3)}</span>
+                  <button onClick={() => nudgePos(axis, -0.01)}>−</button>
+                  <button onClick={() => nudgePos(axis, 0.01)}>+</button>
+                </div>
+              ))}
+            </div>
+            <div>
+              <strong>Rotation (°)</strong>
+              {(["rx", "ry", "rz"] as const).map((axis) => (
+                <div key={axis} className="anchor-row">
+                  <span>{axis.toUpperCase()}: {anchorEulerDeg[axis].toFixed(0)}</span>
+                  <button onClick={() => nudgeRot(axis, -5)}>−</button>
+                  <button onClick={() => nudgeRot(axis, 5)}>+</button>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="anchor-calibration-actions">
+            <button onClick={saveAnchor} disabled={anchorSaving}>
+              {anchorSaving ? "Saving…" : "Save alignment"}
+            </button>
+            <button onClick={resetAnchor}>Reset</button>
+            {anchorSaved && <span className="camera-status-ok">Saved</span>}
+          </div>
+        </div>
       )}
 
       {mode === "marker" && markerPose && (

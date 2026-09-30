@@ -56,8 +56,29 @@ class Model3DOut(BaseModel):
     # asset/model is actually selected (a real bug this fixes: switching
     # assets used to leave the previous asset's object class behind).
     component_class_label: str | None = None
+    # See app/models/model3d.py — the model's own local transform relative to
+    # the tracked reference plane (marker or feature-tracking target).
+    # Defaults to zero offset/identity rotation (model planted directly at
+    # the tracked pose), which is only correct by coincidence.
+    anchor_offset_x: float = 0.0
+    anchor_offset_y: float = 0.0
+    anchor_offset_z: float = 0.0
+    anchor_rotation_x: float = 0.0
+    anchor_rotation_y: float = 0.0
+    anchor_rotation_z: float = 0.0
+    anchor_rotation_w: float = 1.0
 
     model_config = {"from_attributes": True}
+
+
+class Model3DAnchorUpdate(BaseModel):
+    anchor_offset_x: float
+    anchor_offset_y: float
+    anchor_offset_z: float
+    anchor_rotation_x: float
+    anchor_rotation_y: float
+    anchor_rotation_z: float
+    anchor_rotation_w: float
 
 
 def _to_out(model: Model3D, db: Session) -> Model3DOut:
@@ -75,6 +96,13 @@ def _to_out(model: Model3D, db: Session) -> Model3DOut:
         scale=model.scale,
         url=f"/static/models/{model.storage_key}",
         component_class_label=component_class_label,
+        anchor_offset_x=model.anchor_offset_x,
+        anchor_offset_y=model.anchor_offset_y,
+        anchor_offset_z=model.anchor_offset_z,
+        anchor_rotation_x=model.anchor_rotation_x,
+        anchor_rotation_y=model.anchor_rotation_y,
+        anchor_rotation_z=model.anchor_rotation_z,
+        anchor_rotation_w=model.anchor_rotation_w,
     )
 
 
@@ -136,6 +164,29 @@ def register_model(payload: Model3DCreate, db: Session = Depends(get_db)) -> Mod
         scale=payload.scale,
     )
     db.add(model)
+    db.commit()
+    db.refresh(model)
+    return _to_out(model, db)
+
+
+@router.patch("/{model_id}/anchor", response_model=Model3DOut)
+def update_anchor(model_id: uuid.UUID, payload: Model3DAnchorUpdate, db: Session = Depends(get_db)) -> Model3DOut:
+    """
+    Saves the model's calibrated anchor offset (see app/models/model3d.py) —
+    called once the user has nudged the AR overlay into visual alignment
+    with the physical object, so the same offset is reused on every future
+    tracking session instead of re-calibrating from scratch each time.
+    """
+    model = db.get(Model3D, model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    model.anchor_offset_x = payload.anchor_offset_x
+    model.anchor_offset_y = payload.anchor_offset_y
+    model.anchor_offset_z = payload.anchor_offset_z
+    model.anchor_rotation_x = payload.anchor_rotation_x
+    model.anchor_rotation_y = payload.anchor_rotation_y
+    model.anchor_rotation_z = payload.anchor_rotation_z
+    model.anchor_rotation_w = payload.anchor_rotation_w
     db.commit()
     db.refresh(model)
     return _to_out(model, db)

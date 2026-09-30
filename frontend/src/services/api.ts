@@ -1,5 +1,6 @@
 import axios from "axios";
 import type {
+  AnchorOffset,
   Asset,
   FeaturePoseResponse,
   InspectionRun,
@@ -78,6 +79,9 @@ export const Models3DApi = {
     // No explicit Content-Type here — axios sets the multipart boundary itself from the FormData.
     return api.post<Model3DInfo>("/api/models3d/upload", form).then((r) => r.data);
   },
+
+  updateAnchor: (modelId: string, anchor: AnchorOffset) =>
+    api.patch<Model3DInfo>(`/api/models3d/${modelId}/anchor`, anchor).then((r) => r.data),
 };
 
 export const VisionApi = {
