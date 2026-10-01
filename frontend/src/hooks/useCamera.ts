@@ -19,6 +19,44 @@ export interface CameraDeviceOption {
  * real webcam, or a virtual camera from other software) — that's what
  * `devices`/`selectDevice` are for.
  */
+const SAVED_DEVICE_KEY = "tvasta.cameraDeviceId";
+// Virtual cameras from other software: they fail with "Could not start video
+// source" unless their app is running, so they're tried last when falling back.
+const VIRTUAL_CAMERA = /droidcam|obs|virtual|meta quest|oculus|snap camera|manycam|xsplit|broadcast/i;
+
+const readSavedDevice = (): string | null => {
+  try {
+    return localStorage.getItem(SAVED_DEVICE_KEY);
+  } catch {
+    return null;
+  }
+};
+const saveDevice = (deviceId: string) => {
+  try {
+    localStorage.setItem(SAVED_DEVICE_KEY, deviceId);
+  } catch {
+    // private window / blocked storage: just won't be remembered
+  }
+};
+
+const openStream = (deviceId?: string) =>
+  navigator.mediaDevices.getUserMedia({
+    video: deviceId ? { deviceId: { exact: deviceId }, width: 1280, height: 720 } : { width: 1280, height: 720 },
+  });
+
+const describeCameraError = (err: unknown): string => {
+  const name = err instanceof DOMException ? err.name : "";
+  if (name === "NotReadableError") {
+    return (
+      "Could not start this camera — it's in use by another app, or it's a virtual camera " +
+      "(DroidCam, Meta Quest, OBS…) whose app isn't running. Pick another camera."
+    );
+  }
+  if (name === "NotAllowedError") return "Camera permission was denied — allow it in the browser's site settings.";
+  if (name === "OverconstrainedError") return "That camera is no longer available — pick another one.";
+  return err instanceof Error ? err.message : String(err);
+};
+
 export function useCamera() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -49,21 +87,45 @@ export function useCamera() {
     }
   }, []);
 
+  /**
+   * With `autoFallback` (on mount), a camera that fails to start is skipped
+   * and the others are tried, real webcams before virtual ones — so a
+   * default that changed to e.g. DroidCam doesn't leave the page with no
+   * video. An explicit pick from the dropdown never falls back silently.
+   */
   const startStream = useCallback(
-    async (deviceId?: string) => {
+    async (deviceId?: string, autoFallback = false) => {
       setStatus("requesting");
       setError(null);
       try {
-        const constraints: MediaStreamConstraints = {
-          video: deviceId ? { deviceId: { exact: deviceId }, width: 1280, height: 720 } : { width: 1280, height: 720 },
-        };
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        let stream: MediaStream;
+        try {
+          stream = await openStream(deviceId);
+        } catch (firstError) {
+          if (!autoFallback) throw firstError;
+          const candidates = (await refreshDeviceList())
+            .filter((d) => d.deviceId && d.deviceId !== deviceId)
+            .sort((a, b) => Number(VIRTUAL_CAMERA.test(a.label)) - Number(VIRTUAL_CAMERA.test(b.label)));
+          let opened: MediaStream | null = null;
+          for (const candidate of candidates) {
+            try {
+              opened = await openStream(candidate.deviceId);
+              break;
+            } catch {
+              // try the next camera
+            }
+          }
+          if (!opened) throw firstError;
+          stream = opened;
+        }
         stopCurrentStream();
         streamRef.current = stream;
 
         const [track] = stream.getVideoTracks();
+        const actualDeviceId = track?.getSettings().deviceId ?? deviceId ?? null;
         setDeviceLabel(track?.label || "camera");
-        setSelectedDeviceId(track?.getSettings().deviceId ?? deviceId ?? null);
+        setSelectedDeviceId(actualDeviceId);
+        if (actualDeviceId) saveDevice(actualDeviceId);
 
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
@@ -76,8 +138,10 @@ export function useCamera() {
         // granted at least once, so (re-)enumerate after a successful grant.
         await refreshDeviceList();
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(describeCameraError(err));
         setStatus("error");
+        // Device list (with labels) still matters here: it's how the user picks a working camera.
+        await refreshDeviceList();
       }
     },
     [refreshDeviceList, stopCurrentStream]
@@ -92,7 +156,9 @@ export function useCamera() {
     };
     video?.addEventListener("loadedmetadata", handleLoadedMetadata);
 
-    void startStream();
+    // Start on the last camera that actually streamed, not the OS default
+    // (which other software, e.g. DroidCam, can silently take over).
+    void startStream(readSavedDevice() ?? undefined, true);
 
     const handleDeviceChange = () => void refreshDeviceList();
     navigator.mediaDevices.addEventListener?.("devicechange", handleDeviceChange);

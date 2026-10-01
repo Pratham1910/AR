@@ -138,10 +138,32 @@ class RegisterObjectResponse(BaseModel):
     vertex_count: int
 
 
+def _gpu_problem() -> str | None:
+    """None if the GPU is usable, else what's wrong and how to fix it."""
+    if device.type != "cuda":
+        return (
+            "No CUDA GPU visible inside WSL (after an NVIDIA driver update WSL reports "
+            "'GPU access blocked by the operating system' until Windows is restarted or "
+            "`wsl --shutdown` is run), so MegaPose would run on the CPU, far too slow to track. "
+            "Fix the GPU, then restart this service."
+        )
+    try:
+        torch.ones(1, device=device).sum().item()
+    except RuntimeError as exc:
+        return f"GPU error ({exc}); restart the pose service (pose_service/start.sh)"
+    return None
+
+
 @app.get("/health")
 def health() -> dict:
+    # Actually touch the GPU: after an NVIDIA driver update a running service
+    # keeps reporting cuda=True but every real request fails with "CUDA
+    # error: unknown error" until it's restarted.
+    gpu_error = _gpu_problem()
+    gpu_ok = gpu_error is None
     return {
-        "ok": True,
+        "ok": gpu_ok,
+        "gpu_error": gpu_error,
         "cuda": torch.cuda.is_available(),
         "device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
         "model": MODEL_NAME,
@@ -223,6 +245,9 @@ class EstimateResponse(BaseModel):
 
 @app.post("/estimate", response_model=EstimateResponse)
 def estimate(req: EstimateRequest) -> EstimateResponse:
+    gpu_problem = _gpu_problem()
+    if gpu_problem:
+        raise HTTPException(status_code=503, detail=gpu_problem)
     if req.label not in _labels or _estimator is None:
         raise HTTPException(status_code=404, detail=f"Object {req.label!r} not registered")
     if req.bbox is None and req.prev_pose is None:
