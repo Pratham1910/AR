@@ -108,6 +108,32 @@ def test_service_error_detail_is_surfaced():
         client.full_search("m1", b"jpeg", np.eye(3), [1, 1, 5, 5])
 
 
+def _textured_frame() -> Frame:
+    rng = np.random.default_rng(0)
+    gray = rng.integers(100, 140, (480, 640)).astype(np.uint8)
+    gray[160:320, 240:360] = np.kron(rng.integers(0, 255, (16, 12)), np.ones((10, 10))).astype(np.uint8)
+    return Frame(np.dstack([gray] * 3), CameraCalibration.approximate(640, 480))
+
+
+@pytest.mark.parametrize(
+    "projected, score, expected",
+    [
+        ([240, 160, 360, 320], 0.11, 1.0),  # model covers the object exactly; low appearance score is ignored
+        # Model lying sideways across it: 6000 px^2 overlap / (19200 + 10000 - 6000) union.
+        ([200, 215, 400, 265], 0.41, 6000 / 23200),
+    ],
+)
+def test_megapose_confidence_is_overlap_with_the_object_not_appearance_score(projected, score, expected):
+    service = FakeService(
+        [{"found": True, "pose": _pose(0.4), "score": score, "mode": "coarse+refine", "elapsed_ms": 900, "projected_bbox": projected}]
+    )
+    tracker = MegaPoseTracker(_client(service), "m1", refine_iterations=2)
+    detection = SegmentedObject(class_label="cup", confidence=0.8, bbox=BoundingBox(x1=240, y1=160, x2=360, y2=320), polygon=[])
+    m = tracker.initialize(_textured_frame(), detection)
+    assert m.confidence == pytest.approx(expected, abs=0.02)
+    assert m.extra["confidence_source"] == "overlap" and m.extra["pose_score"] == score
+
+
 def test_megapose_tracker_refines_from_the_last_accepted_pose_only():
     service = FakeService(
         [

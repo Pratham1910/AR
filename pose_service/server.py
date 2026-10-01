@@ -69,6 +69,7 @@ _lock = threading.Lock()  # one GPU pipeline; serialize requests
 _estimator = None
 _model_info = None
 _labels: set[str] = set()
+_vertices: dict[str, np.ndarray] = {}  # per label, for projecting the posed model into the image
 log = logging.getLogger("uvicorn.error")  # shows up in the service's console/log
 
 
@@ -103,12 +104,13 @@ def _rebuild_estimator() -> None:
     """(Re)load MegaPose bound to every registered mesh. MegaPose binds its
     renderer to a fixed object set at load time, so registering a new object
     means rebuilding — acceptable since it only happens once per new model."""
-    global _estimator, _model_info, _labels
+    global _estimator, _model_info, _labels, _vertices
     objects = [
         RigidObject(label=p.stem, mesh_path=p, mesh_units="m")
         for p in sorted(MESH_DIR.glob("*.ply"))
     ]
     _labels = {o.label for o in objects}
+    _vertices = {p.stem: np.asarray(trimesh.load(p, force="mesh").vertices) for p in MESH_DIR.glob("*.ply")}
     if not objects:
         _estimator = None
         return
@@ -233,6 +235,9 @@ class EstimateRequest(BaseModel):
     bbox: list[float] | None = None  # [x1, y1, x2, y2]; required unless prev_pose given
     prev_pose: list[list[float]] | None = None  # 4x4 T_camera_object from the previous frame
     n_refiner_iterations: int | None = None
+    # Full search only: refine this many of the coarse model's best rotation
+    # guesses and keep the highest-scoring (HappyPose's "multi-hypothesis").
+    n_pose_hypotheses: int | None = None
 
 
 class EstimateResponse(BaseModel):
@@ -241,6 +246,11 @@ class EstimateResponse(BaseModel):
     score: float | None = None  # MegaPose's pose score (higher = better match)
     mode: str  # "coarse+refine" (full search) or "refine" (tracking from prev_pose)
     elapsed_ms: float
+    # [x1, y1, x2, y2] of the mesh drawn at `pose` in this image. MegaPose's
+    # appearance score proved unreliable for untextured meshes (a correct
+    # upright bottle scored 0.11, a wrong sideways one 0.41), so callers
+    # judge a pose by how well this box overlaps the real object instead.
+    projected_bbox: list[float] | None = None
 
 
 @app.post("/estimate", response_model=EstimateResponse)
@@ -275,6 +285,8 @@ def estimate(req: EstimateRequest) -> EstimateResponse:
             output, extra = _estimator.run_inference_pipeline(observation, coarse_estimates=coarse, **params)
         else:
             mode = "coarse+refine"
+            if req.n_pose_hypotheses is not None:
+                params["n_pose_hypotheses"] = req.n_pose_hypotheses
             detections = PandasTensorCollection(
                 infos=infos,
                 bboxes=torch.as_tensor(np.asarray([req.bbox], dtype=np.float32)),
@@ -291,10 +303,22 @@ def estimate(req: EstimateRequest) -> EstimateResponse:
     if len(output) == 0:
         return EstimateResponse(found=False, mode=mode, elapsed_ms=elapsed_ms)
 
+    pose = output.poses[0].numpy().astype(float)
+    projected_bbox = None
+    vertices = _vertices.get(req.label)
+    if vertices is not None:
+        cam = vertices @ pose[:3, :3].T + pose[:3, 3]
+        in_front = cam[:, 2] > 1e-3
+        if in_front.any():
+            px = cam[in_front] @ K.astype(float).T
+            px = px[:, :2] / px[:, 2:3]
+            projected_bbox = [float(px[:, 0].min()), float(px[:, 1].min()), float(px[:, 0].max()), float(px[:, 1].max())]
+
     return EstimateResponse(
         found=True,
-        pose=output.poses[0].numpy().astype(float).tolist(),
+        pose=pose.tolist(),
         score=float(score) if score is not None else None,
         mode=mode,
         elapsed_ms=elapsed_ms,
+        projected_bbox=projected_bbox,
     )

@@ -24,9 +24,10 @@ class PoseServiceUnavailable(RuntimeError):
 @dataclass
 class PoseServiceResult:
     t_camera_object: np.ndarray | None  # 4x4, OpenCV camera convention, meters
-    score: float  # MegaPose pose score, 0 when nothing usable came back
+    score: float  # MegaPose appearance score, 0 when nothing usable came back
     mode: str  # "coarse+refine" or "refine"
     elapsed_ms: float
+    projected_bbox: tuple[float, float, float, float] | None = None  # the posed mesh's image-space box
 
 
 class ModelPoseClient:
@@ -78,7 +79,8 @@ class ModelPoseClient:
         if pose is not None and not 0.02 < pose[2, 3] < 5.0:
             pose = None
         score = float(data["score"]) if pose is not None and data.get("score") is not None else 0.0
-        return PoseServiceResult(pose, score, data["mode"], float(data["elapsed_ms"]))
+        box = data.get("projected_bbox") if pose is not None else None
+        return PoseServiceResult(pose, score, data["mode"], float(data["elapsed_ms"]), tuple(box) if box else None)
 
     def full_search(self, label: str, image_jpeg: bytes, camera_matrix: np.ndarray, bbox: list[float]) -> PoseServiceResult:
         """Initial pose: coarse rotation search + refinement inside the detector's box."""

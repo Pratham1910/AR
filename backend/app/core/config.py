@@ -79,8 +79,9 @@ class Settings(BaseSettings):
     ar_lost_timeout_ms: float = 1500.0  # LOST this long without recovery -> hide model, SEARCHING
     # Confidence thresholds are per tracker, since their scales differ:
     # optical flow = share of points agreeing with the fitted motion (1.0
-    # when stationary); MegaPose = its pose score (measured 1.0 on a clean
-    # render, ~0.74 on a real webcam lock, ~0.2 with the object absent).
+    # when stationary); model-based = overlap (IoU) of the posed model's
+    # image box with the object's box (YOLO, then optical flow) — measured on
+    # a real frame: 0.96 for a correct pose, 0.19 for a wrong sideways one.
     ar_flow_good_confidence: float = 0.7
     ar_flow_lost_confidence: float = 0.4
     ar_model_good_confidence: float = 0.7

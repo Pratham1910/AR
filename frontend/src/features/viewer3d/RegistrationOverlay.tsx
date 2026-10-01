@@ -913,6 +913,9 @@ export function RegistrationOverlay({
                 <p>
                   Tracking confidence: <strong>{(arResult.object.confidence * 100).toFixed(0)}%</strong>{" "}
                   <span className="hint">
+                    {mode === "model" ? "model ↔ real object overlap" : "share of tracked points still agreeing"}
+                  </span>{" "}
+                  <span className="hint">
                     (good ≥ {(arResult.good_confidence * 100).toFixed(0)}%, lost &lt;{" "}
                     {(arResult.lost_confidence * 100).toFixed(0)}%)
                   </span>

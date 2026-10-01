@@ -134,6 +134,13 @@ camera session (`app/services/tracking/ar_session.py`):
   model hides and the session returns to SEARCHING.
 - Per-tracker confidence thresholds are configurable (`AR_FLOW_*`,
   `AR_MODEL_*`). Rendering stays continuous, smoothed toward each new pose.
+- Model-based confidence is geometric: overlap (IoU) of the posed mesh's
+  image box with the object's box (YOLO at lock, optical flow while
+  tracking). MegaPose's own appearance score ranked poses backwards for an
+  untextured model on a real frame of the user's flask (correct upright
+  pose 0.11, wrong sideways pose 0.41; overlap 0.96 vs 0.19). A model whose
+  shape doesn't match the object (bottle.glb vs the 24cm flask) is now
+  refused instead of shown sideways.
 - **Verified** with Phase-3.md's 12-step sequence as a unit test (detector
   call count unchanged across 150 tracking frames), and end-to-end on a real
   frame with real YOLO: detector ran once for 30 frames of motion + zoom;
