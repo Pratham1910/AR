@@ -5,6 +5,7 @@ through /api/inspection/*.
 """
 
 import base64
+import re
 import time
 import uuid
 from pathlib import Path
@@ -42,6 +43,7 @@ from app.schemas.pose import (
 from app.schemas.vision import (
     DetectRequest,
     DetectResponse,
+    SaveFrameRequest,
     SegmentedObject,
     SegmentRequest,
     SegmentResponse,
@@ -580,3 +582,16 @@ def ar_session_frame(request: ARFrameRequest, db: Session = Depends(get_db)) -> 
 @router.delete("/ar-session/{session_id}", status_code=204)
 def end_ar_session(session_id: str) -> None:
     _ar_sessions.pop(session_id, None)
+
+
+@router.post("/debug-frame")
+def save_debug_frame(request: SaveFrameRequest) -> dict:
+    """Stores the exact camera frame (full resolution, no overlay) under a
+    label, for measuring/calibrating checks offline (e.g. cap on vs off)."""
+    label = re.sub(r"[^A-Za-z0-9_-]+", "-", request.label.strip()).strip("-") or "frame"
+    frame = decode_frame(request.image_base64)  # validates it's an image
+    directory = Path(_settings.debug_frames_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{label}_{time.strftime('%Y%m%d-%H%M%S')}_{int(time.time() * 1000) % 1000:03d}.jpg"
+    cv2.imwrite(str(path), frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    return {"saved": path.name, "width": frame.shape[1], "height": frame.shape[0]}

@@ -58,6 +58,9 @@ class Settings(BaseSettings):
     # upgrade) — registered reference planes are persisted here, one file
     # pair (.npz + .json) per asset_id.
     reference_images_dir: str = "../data/reference_images"
+    # Raw camera frames saved from the AR page ("Save frame") for offline
+    # analysis/calibration, e.g. labelled cap-on / cap-off. Not committed.
+    debug_frames_dir: str = "../data/debug_frames"
 
     # Model-based (CAD) 6DoF pose — MegaPose, served by pose_service/ running
     # in WSL2 with CUDA (Windows localhost is forwarded into WSL2).

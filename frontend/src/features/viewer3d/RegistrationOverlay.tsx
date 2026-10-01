@@ -242,6 +242,19 @@ export function RegistrationOverlay({
   const counterSamplesRef = useRef<{ t: number; detections: number; tracks: number }[]>([]);
   const renderFramesRef = useRef(0);
   const [busy, setBusy] = useState(false);
+  // "Save frame": keeps the raw camera frame (no overlay) under a label for offline analysis.
+  const [frameLabel, setFrameLabel] = useState("cap-on");
+  const [frameSaved, setFrameSaved] = useState<string | null>(null);
+  const saveFrame = async () => {
+    const frame = captureFrameBase64();
+    if (!frame) return;
+    try {
+      const saved = await VisionApi.saveFrame(frame, frameLabel);
+      setFrameSaved(`Saved ${saved.saved} (${saved.width}×${saved.height})`);
+    } catch (err) {
+      setApiError(apiErrorMessage(err));
+    }
+  };
   const [liveTracking, setLiveTracking] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
   const [renderStyle, setRenderStyle] = useState<RenderStyle>("solid");
@@ -879,6 +892,13 @@ export function RegistrationOverlay({
             ? "Live tracking (detect once, then track every frame)"
             : "Live tracking (as fast as detection responds, smoothed)"}
         </label>
+        <span className="save-frame" title="Saves the raw camera frame (full resolution, without any overlay) to data/debug_frames/ for analysis">
+          <input value={frameLabel} onChange={(e) => setFrameLabel(e.target.value)} placeholder="label" />
+          <button onClick={() => void saveFrame()} disabled={!ready}>
+            Save frame
+          </button>
+          {frameSaved && <span className="hint">{frameSaved}</span>}
+        </span>
         <span className="view-style-toggle" title="How the 3D model is drawn — X-Ray and Wireframe let you see the real object through it to judge alignment">
           View:
           {(

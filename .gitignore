@@ -48,3 +48,4 @@ docker/volumes/
 
 ## Soft-deleted 3D models (DELETE /api/models3d/{id} moves files here)
 data/models/.deleted/
+data/debug_frames/

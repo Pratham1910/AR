@@ -35,6 +35,13 @@ class SegmentedObject(BaseModel):
     polygon: list[Vector2]  # in the captured frame's own pixel space
 
 
+class SaveFrameRequest(BaseModel):
+    """A raw camera frame to keep for offline analysis/calibration."""
+
+    image_base64: str
+    label: str  # e.g. "cap-on", "cap-off"
+
+
 class DetectRequest(BaseModel):
     image_base64: str
     frame_ref: str | None = None

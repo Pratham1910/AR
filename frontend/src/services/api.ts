@@ -150,6 +150,15 @@ export const VisionApi = {
       })
       .then((r) => r.data),
 
+  // Keeps the raw camera frame (full resolution, no overlay) for offline analysis.
+  saveFrame: (imageBase64: string, label: string) =>
+    api
+      .post<{ saved: string; width: number; height: number }>("/api/vision/debug-frame", {
+        image_base64: imageBase64,
+        label,
+      })
+      .then((r) => r.data),
+
   // Drops the session's tracking state; the next frame starts SEARCHING.
   endArSession: (sessionId: string) => api.delete(`/api/vision/ar-session/${sessionId}`).then(() => undefined),
 };

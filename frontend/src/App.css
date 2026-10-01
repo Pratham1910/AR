@@ -194,6 +194,16 @@
   white-space: pre-wrap;
 }
 
+.save-frame {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.save-frame input {
+  width: 6rem;
+}
+
 .view-style-toggle {
   display: inline-flex;
   align-items: center;
