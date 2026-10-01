@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     # Per-part presence calibrations (e.g. what a bottle's cap region looks
     # like on vs off), one JSON per model part. Not committed.
     part_calibration_dir: str = "../data/part_calibration"
+    # Procedures authored in Vishwa (.procedure.json), one per 3D model.
+    procedures_dir: str = "../data/procedures"
 
     # Model-based (CAD) 6DoF pose — MegaPose, served by pose_service/ running
     # in WSL2 with CUDA (Windows localhost is forwarded into WSL2).

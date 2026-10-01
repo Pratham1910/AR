@@ -12,9 +12,11 @@ import type {
   PresenceCalibrationResult,
   PoseResponse,
   Procedure,
+  ProcedureSummary,
   RegisterReferenceImageResponse,
   StepValidationResponse,
 } from "../types";
+import type { ProcedurePackage } from "../features/viewer3d/procedure";
 
 const baseURL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
 
@@ -105,6 +107,18 @@ export const Models3DApi = {
     api
       .put<Model3DPart[]>(`/api/models3d/${modelId}/parts/${nodeIndex}`, { display_name: displayName })
       .then((r) => r.data),
+
+  // Procedure authored in Vishwa (.procedure.json), one per model.
+  procedure: (modelId: string) =>
+    api.get<ProcedurePackage>(`/api/models3d/${modelId}/procedure`).then((r) => r.data),
+
+  procedureSummary: (modelId: string) =>
+    api.get<ProcedureSummary>(`/api/models3d/${modelId}/procedure/summary`).then((r) => r.data),
+
+  uploadProcedure: (modelId: string, json: unknown) =>
+    api.put<ProcedureSummary>(`/api/models3d/${modelId}/procedure`, json).then((r) => r.data),
+
+  removeProcedure: (modelId: string) => api.delete(`/api/models3d/${modelId}/procedure`).then(() => undefined),
 };
 
 // The server's `detail` message when there is one (e.g. "'bot' is not a class

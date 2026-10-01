@@ -5,6 +5,7 @@ an Asset/Component, so the frontend viewer can discover it by asset instead
 of hard-coding a filename.
 """
 
+import json
 import re
 import uuid
 from pathlib import Path
@@ -29,6 +30,7 @@ from app.services.model3d.glb_inspect import (
     compute_scale_for_real_height,
     list_glb_parts,
 )
+from app.services.model3d.vishwa_procedure import ProcedureFormatError, normalize_package, summarize
 
 router = APIRouter(prefix="/api/models3d", tags=["3d"])
 _settings = get_settings()
@@ -438,6 +440,72 @@ def calibrate_part_presence(
         verdict=verdict,
         frames_without_object=missing,
     )
+
+
+class ProcedureSummaryOut(BaseModel):
+    procedure_id: str
+    title: str
+    steps: int
+    actions: int
+    target_parts: list[str]  # parts the animations move / highlight
+    vision_parts: list[str]  # parts whose presence the camera checks per step
+    # Named in the procedure but not found among this model's parts (by name
+    # given in the Parts panel, or GLB node name) — those animations won't play.
+    unmatched_parts: list[str]
+
+
+def _procedure_path(model_id: uuid.UUID) -> Path:
+    return Path(_settings.procedures_dir) / f"{model_id}.procedure.json"
+
+
+def _procedure_summary(db: Session, model: Model3D, package: dict) -> ProcedureSummaryOut:
+    summary = summarize(package)
+    known = {name for p in _parts_out(db, model) for name in (p.node_name, p.display_name)}
+    used = summary.target_parts + [p for p in summary.vision_parts if p not in summary.target_parts]
+    return ProcedureSummaryOut(**vars(summary), unmatched_parts=[p for p in used if p not in known])
+
+
+@router.put("/{model_id}/procedure", response_model=ProcedureSummaryOut)
+def upload_procedure(model_id: uuid.UUID, payload: dict, db: Session = Depends(get_db)) -> ProcedureSummaryOut:
+    """
+    Attach a procedure exported from Vishwa (.procedure.json) to this model,
+    replacing any previous one. Its part names are matched to the model's
+    parts by the names given in the Parts panel (or the GLB node names).
+    """
+    model = db.get(Model3D, model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    try:
+        package = normalize_package(payload)
+    except ProcedureFormatError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    path = _procedure_path(model.id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(package, indent=2), encoding="utf-8")
+    return _procedure_summary(db, model, package)
+
+
+@router.get("/{model_id}/procedure")
+def get_procedure(model_id: uuid.UUID) -> dict:
+    """The model's procedure package as uploaded ({"schemaVersion", "procedure"})."""
+    path = _procedure_path(model_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="No procedure for this model")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@router.get("/{model_id}/procedure/summary", response_model=ProcedureSummaryOut)
+def get_procedure_summary(model_id: uuid.UUID, db: Session = Depends(get_db)) -> ProcedureSummaryOut:
+    model = db.get(Model3D, model_id)
+    path = _procedure_path(model_id)
+    if model is None or not path.exists():
+        raise HTTPException(status_code=404, detail="No procedure for this model")
+    return _procedure_summary(db, model, json.loads(path.read_text(encoding="utf-8")))
+
+
+@router.delete("/{model_id}/procedure", status_code=204)
+def delete_procedure(model_id: uuid.UUID) -> None:
+    _procedure_path(model_id).unlink(missing_ok=True)
 
 
 @router.patch("/{model_id}/anchor", response_model=Model3DOut)

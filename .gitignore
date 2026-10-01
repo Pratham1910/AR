@@ -50,3 +50,4 @@ docker/volumes/
 data/models/.deleted/
 data/debug_frames/
 data/part_calibration/
+data/procedures/

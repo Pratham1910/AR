@@ -134,7 +134,15 @@
   min-width: 0;
 }
 
-.parts-panel {
+.side-panels {
+  flex: 0 0 300px;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.parts-panel,
+.procedure-panel {
   flex: 0 0 300px;
   padding: 0.75rem;
   border: 1px solid #ddd;
@@ -418,4 +426,61 @@ button.danger {
   flex-direction: column;
   gap: 0.25rem;
   font-size: 0.9rem;
+}
+
+.procedure-panel h4 {
+  margin: 0 0 0.5rem;
+}
+
+.file-button {
+  display: inline-block;
+  padding: 0.25rem 0.6rem;
+  border: 1px solid #999;
+  border-radius: 4px;
+  cursor: pointer;
+  background: #f5f5f5;
+}
+
+.file-button input {
+  display: none;
+}
+
+.procedure-steps {
+  padding-left: 1.2rem;
+  margin: 0.5rem 0;
+}
+
+.procedure-steps li {
+  cursor: pointer;
+  padding: 0.15rem 0.25rem;
+  list-style: none;
+}
+
+.procedure-steps li.current {
+  background: rgba(21, 101, 192, 0.12);
+  font-weight: 600;
+}
+
+.procedure-step {
+  margin: 0.5rem 0;
+  padding: 0.5rem;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.03);
+}
+
+.procedure-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 1.05rem;
+}
+
+.procedure-done {
+  color: #2e7d32;
+  font-weight: 700;
+  margin: 0.35rem 0 0;
+}
+
+.procedure-panel .parts-actions {
+  flex-wrap: wrap;
 }

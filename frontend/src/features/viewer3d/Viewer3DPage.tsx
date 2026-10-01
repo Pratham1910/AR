@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Models3DApi, resolveApiUrl } from "../../services/api";
 import type { Asset, Model3DInfo, Model3DPart } from "../../types";
 import { PartsPanel } from "./PartsPanel";
+import { ProcedurePanel } from "./ProcedurePanel";
+import { ProcedureHost } from "./procedure";
 import { EMPTY_PART_VIEW, type PartView } from "./parts";
 import { ThreeViewer } from "./ThreeViewer";
 import { SimpleCameraOverlay } from "./SimpleCameraOverlay";
@@ -58,6 +60,8 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
   const [parts, setParts] = useState<Model3DPart[]>([]);
   const [partView, setPartView] = useState<PartView>(EMPTY_PART_VIEW);
   const modelId = model?.id;
+  // Links the procedure panel to whichever view is drawing the model.
+  const procedureHost = useMemo(() => new ProcedureHost(), []);
   useEffect(() => {
     setParts([]);
     setPartView(EMPTY_PART_VIEW);
@@ -141,6 +145,7 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
               modelUrl={resolveApiUrl(model.url)}
               partView={partView}
               onPartClick={(nodeIndex) => setPartView((v) => ({ ...v, highlight: nodeIndex }))}
+              procedureHost={procedureHost}
             />
           )}
           {mode === "overlay" && <SimpleCameraOverlay modelUrl={resolveApiUrl(model.url)} partView={partView} />}
@@ -169,19 +174,31 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
                 defaultTargetClassLabel={model.component_class_label}
                 partView={partView}
                 parts={parts}
+                procedureHost={procedureHost}
               />
             </>
           )}
           </div>
-          {parts.length > 1 && (
-            <PartsPanel
-              modelId={model.id}
-              parts={parts}
-              view={partView}
-              onViewChange={setPartView}
-              onPartsChange={setParts}
-            />
-          )}
+          <div className="side-panels">
+            {parts.length > 1 && (
+              <PartsPanel
+                modelId={model.id}
+                parts={parts}
+                view={partView}
+                onViewChange={setPartView}
+                onPartsChange={setParts}
+              />
+            )}
+            {mode !== "overlay" && (
+              <ProcedurePanel
+                key={model.id}
+                modelId={model.id}
+                parts={parts}
+                host={procedureHost}
+                cameraChecks={mode === "register"}
+              />
+            )}
+          </div>
           </div>
         </>
       )}

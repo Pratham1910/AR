@@ -7,6 +7,7 @@ import { useCamera } from "../../hooks/useCamera";
 import { ensureVisibleMaterials } from "./ensureVisibleMaterial";
 import { applyRenderStyle, type RenderStyle } from "./renderStyle";
 import { applyPartView, EMPTY_PART_VIEW, indexParts, type PartView } from "./parts";
+import type { ProcedureHost } from "./procedure";
 import { Models3DApi, VisionApi, apiErrorMessage } from "../../services/api";
 import { ClassSelect } from "../../components/ClassSelect";
 import type {
@@ -58,6 +59,8 @@ interface Props {
   partView?: PartView;
   /** The model's assembly parts, offered as "Track by" choices in model-based mode. */
   parts?: Model3DPart[];
+  /** Plays an attached procedure on the overlaid model and receives the camera's part checks. */
+  procedureHost?: ProcedureHost;
 }
 
 type RegistrationMode = "marker" | "markerless" | "feature" | "model";
@@ -100,6 +103,7 @@ export function RegistrationOverlay({
   initialAnchor,
   partView = EMPTY_PART_VIEW,
   parts = [],
+  procedureHost,
 }: Props) {
   // Model-based only: match just this part (e.g. the body, which looks the
   // same with the cap on or off); the whole assembly is still rendered.
@@ -333,6 +337,7 @@ export function RegistrationOverlay({
         applyRenderStyle(group, renderStyleRef.current);
         partsRef.current = indexParts(gltf);
         applyPartView(partsRef.current, partViewRef.current);
+        procedureHost?.attach(partsRef.current);
         modelObjectRef.current = group;
         scene.add(group);
         setModelStatus("loaded");
@@ -359,6 +364,7 @@ export function RegistrationOverlay({
         model.quaternion.slerp(targetQuaternionRef.current, INTERPOLATION);
       }
 
+      procedureHost?.tick?.(performance.now());
       const started = performance.now();
       renderer.render(scene, camera);
       renderMsRef.current += performance.now() - started;
@@ -368,11 +374,12 @@ export function RegistrationOverlay({
 
     return () => {
       cancelAnimationFrame(frameId);
+      procedureHost?.detach(partsRef.current);
       resizeObserver.disconnect();
       renderer.dispose();
       container.removeChild(renderer.domElement);
     };
-  }, [modelUrl, modelScale]);
+  }, [modelUrl, modelScale, procedureHost]);
 
   const clearOutline = () => {
     const ctx = outlineCanvasRef.current?.getContext("2d");
@@ -610,6 +617,7 @@ export function RegistrationOverlay({
 
   const applyArResult = (result: ARFrameResponse, roundTripMs: number) => {
     setArResult(result);
+    procedureHost?.publishChecks(result.part_checks ?? []);
     setFrameMs(roundTripMs);
     applyCameraIntrinsics(result.intrinsics);
     if (result.events.length) setArEvents((events) => [...events, ...result.events].slice(-12));

@@ -4,12 +4,14 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { ensureVisibleMaterials } from "./ensureVisibleMaterial";
 import { applyPartView, EMPTY_PART_VIEW, indexParts, partOf, type PartView } from "./parts";
+import type { ProcedureHost } from "./procedure";
 
 interface Props {
   modelUrl: string;
   height?: number;
   partView?: PartView;
   onPartClick?: (nodeIndex: number | null) => void; // click a part in 3D to select it
+  procedureHost?: ProcedureHost; // plays an attached procedure's animations on this model
 }
 
 /**
@@ -19,7 +21,7 @@ interface Props {
  * so the same scene-setup pattern is reused for the AR overlay, which needs
  * direct control over the camera/object matrices from OpenCV pose output.
  */
-export function ThreeViewer({ modelUrl, height = 480, partView = EMPTY_PART_VIEW, onPartClick }: Props) {
+export function ThreeViewer({ modelUrl, height = 480, partView = EMPTY_PART_VIEW, onPartClick, procedureHost }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nodeNames, setNodeNames] = useState<string[]>([]);
@@ -68,6 +70,7 @@ export function ThreeViewer({ modelUrl, height = 480, partView = EMPTY_PART_VIEW
         scene.add(gltf.scene);
         partsRef.current = indexParts(gltf);
         applyPartView(partsRef.current, partViewRef.current);
+        procedureHost?.attach(partsRef.current);
 
         // Frame the camera on the loaded model's bounding box, and surface
         // its node names — useful for confirming target.componentId ->
@@ -95,6 +98,7 @@ export function ThreeViewer({ modelUrl, height = 480, partView = EMPTY_PART_VIEW
     const animate = () => {
       frameId = requestAnimationFrame(animate);
       controls.update();
+      procedureHost?.tick?.(performance.now());
       renderer.render(scene, camera);
     };
     animate();
@@ -126,6 +130,7 @@ export function ThreeViewer({ modelUrl, height = 480, partView = EMPTY_PART_VIEW
     return () => {
       disposed = true;
       cancelAnimationFrame(frameId);
+      procedureHost?.detach(partsRef.current);
       window.removeEventListener("resize", handleResize);
       renderer.domElement.removeEventListener("pointerdown", onPointerDown);
       renderer.domElement.removeEventListener("pointerup", onPointerUp);
@@ -133,7 +138,7 @@ export function ThreeViewer({ modelUrl, height = 480, partView = EMPTY_PART_VIEW
       renderer.dispose();
       container.removeChild(renderer.domElement);
     };
-  }, [modelUrl, height]);
+  }, [modelUrl, height, procedureHost]);
 
   return (
     <div>

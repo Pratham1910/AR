@@ -207,6 +207,16 @@ export interface TrackedObject {
 }
 
 // Is a calibrated part (e.g. the cap) still on the tracked object?
+export interface ProcedureSummary {
+  procedure_id: string;
+  title: string;
+  steps: number;
+  actions: number;
+  target_parts: string[]; // parts the animations move / highlight
+  vision_parts: string[]; // parts whose presence the camera checks per step
+  unmatched_parts: string[]; // named in the procedure but not found among the model's parts
+}
+
 export interface PartCheck {
   node_index: number;
   part_name: string;
