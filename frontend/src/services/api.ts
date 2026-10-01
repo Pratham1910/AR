@@ -7,6 +7,7 @@ import type {
   FeaturePoseResponse,
   InspectionRun,
   Model3DInfo,
+  Model3DPart,
   ObserveResponse,
   PoseResponse,
   Procedure,
@@ -88,6 +89,13 @@ export const Models3DApi = {
     api.patch<Model3DInfo>(`/api/models3d/${modelId}`, settings).then((r) => r.data),
 
   remove: (modelId: string) => api.delete(`/api/models3d/${modelId}`).then(() => undefined),
+
+  parts: (modelId: string) => api.get<Model3DPart[]>(`/api/models3d/${modelId}/parts`).then((r) => r.data),
+
+  renamePart: (modelId: string, nodeIndex: number, displayName: string) =>
+    api
+      .put<Model3DPart[]>(`/api/models3d/${modelId}/parts/${nodeIndex}`, { display_name: displayName })
+      .then((r) => r.data),
 };
 
 // The server's `detail` message when there is one (e.g. "'bot' is not a class

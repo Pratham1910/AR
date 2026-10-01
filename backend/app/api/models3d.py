@@ -20,7 +20,12 @@ from app.models.asset import Asset, Component
 from app.models.model3d import Model3D
 from app.api.vision import forget_model_pose, normalize_class_label
 from app.services.model3d.fbx_convert import BlenderNotFound, FbxConversionError, convert_fbx_to_glb
-from app.services.model3d.glb_inspect import GlbParseError, compute_glb_bounds, compute_scale_for_real_height
+from app.services.model3d.glb_inspect import (
+    GlbParseError,
+    compute_glb_bounds,
+    compute_scale_for_real_height,
+    list_glb_parts,
+)
 
 router = APIRouter(prefix="/api/models3d", tags=["3d"])
 _settings = get_settings()
@@ -240,6 +245,96 @@ def update_model_settings(model_id: uuid.UUID, payload: Model3DSettingsUpdate, d
     db.commit()
     db.refresh(model)
     return _to_out(model, db)
+
+
+class Model3DPartOut(BaseModel):
+    node_index: int  # stable id; the frontend maps it via GLTFLoader's parser.associations
+    node_name: str  # as authored in the GLB (Three.js shows it sanitized, e.g. "Cylinder001")
+    display_name: str  # the user's name for it ("Cap"), or the node name until named
+    component_id: uuid.UUID | None  # the Component this part is linked to, once named
+    size_m: list[float]  # [width, height, depth] in meters (Model3D.scale applied)
+    center_m: list[float]  # in the assembly's frame, meters
+
+
+class Model3DPartRename(BaseModel):
+    display_name: str
+
+
+def _part_components(db: Session, model: Model3D) -> dict[str, Component]:
+    """Part Components (cad_node_id = GLB node name) under this model's object."""
+    query = db.query(Component).filter(Component.asset_id == model.asset_id, Component.cad_node_id.isnot(None))
+    if model.component_id is not None:
+        query = query.filter(Component.parent_id == model.component_id)
+    return {c.cad_node_id: c for c in query.all()}
+
+
+def _parts_out(db: Session, model: Model3D) -> list[Model3DPartOut]:
+    try:
+        parts = list_glb_parts(_glb_path(model).read_bytes())
+    except (OSError, GlbParseError) as exc:
+        raise HTTPException(status_code=400, detail=f"Could not read this model's .glb: {exc}") from exc
+    named = _part_components(db, model)
+    s = model.scale
+    out = []
+    for part in parts:
+        b, component = part.bounds, named.get(part.name)
+        out.append(
+            Model3DPartOut(
+                node_index=part.node_index,
+                node_name=part.name,
+                display_name=component.name if component else part.name,
+                component_id=component.id if component else None,
+                size_m=[b.width * s, b.height * s, b.depth * s],
+                center_m=[(lo + hi) / 2 * s for lo, hi in zip(b.min, b.max)],
+            )
+        )
+    return out
+
+
+@router.get("/{model_id}/parts", response_model=list[Model3DPartOut])
+def list_model_parts(model_id: uuid.UUID, db: Session = Depends(get_db)) -> list[Model3DPartOut]:
+    """The assembly's parts: every mesh-carrying node of the GLB (e.g. body, cap, ring)."""
+    model = db.get(Model3D, model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    return _parts_out(db, model)
+
+
+@router.put("/{model_id}/parts/{node_index}", response_model=list[Model3DPartOut])
+def rename_model_part(
+    model_id: uuid.UUID, node_index: int, payload: Model3DPartRename, db: Session = Depends(get_db)
+) -> list[Model3DPartOut]:
+    """
+    Names a part ("Cylinder.001" -> "Cap"). The name is stored as a Component
+    linked to the GLB node (Component.cad_node_id) and, when the model has a
+    detection component, as its child — so procedure steps can refer to the
+    part like any other component.
+    """
+    model = db.get(Model3D, model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    display_name = payload.display_name.strip()
+    if not display_name:
+        raise HTTPException(status_code=400, detail="Name can't be empty")
+    part = next((p for p in list_glb_parts(_glb_path(model).read_bytes()) if p.node_index == node_index), None)
+    if part is None:
+        raise HTTPException(status_code=404, detail=f"No part with node index {node_index} in this model")
+
+    component = _part_components(db, model).get(part.name)
+    if component is None:
+        component = Component(
+            asset_id=model.asset_id,
+            parent_id=model.component_id,
+            component_id_str=f"PART-{uuid.uuid4().hex[:8]}",
+            name=display_name,
+            class_label="part",  # parts aren't detector classes; they're located through the tracked object
+            cad_node_id=part.name,
+        )
+        db.add(component)
+    else:
+        component.name = display_name
+    db.commit()
+    return _parts_out(db, model)
 
 
 @router.patch("/{model_id}/anchor", response_model=Model3DOut)

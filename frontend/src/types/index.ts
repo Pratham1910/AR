@@ -101,6 +101,16 @@ export interface Model3DInfo {
   anchor_rotation_w: number;
 }
 
+// One part of an assembly GLB (backend GET /api/models3d/{id}/parts).
+export interface Model3DPart {
+  node_index: number; // stable id; matched in Three.js via GLTFLoader's parser.associations
+  node_name: string; // as authored in the GLB
+  display_name: string; // the user's name for it ("Cap"), or node_name until named
+  component_id: string | null;
+  size_m: [number, number, number]; // width, height, depth in meters
+  center_m: [number, number, number];
+}
+
 export interface AnchorOffset {
   anchor_offset_x: number;
   anchor_offset_y: number;

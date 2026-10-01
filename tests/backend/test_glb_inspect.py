@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from app.services.model3d.glb_inspect import GlbParseError, compute_glb_bounds, compute_scale_for_real_height
+from app.services.model3d.glb_inspect import (
+    GlbParseError,
+    compute_glb_bounds,
+    compute_scale_for_real_height,
+    list_glb_parts,
+)
 
 BOTTLE_GLB_PATH = Path(__file__).resolve().parents[2] / "data" / "models" / "bottle.glb"
 
@@ -76,6 +81,27 @@ def test_bounds_apply_column_major_node_matrix():
     bounds = compute_glb_bounds(_glb_from_json(doc))
     assert bounds.min == pytest.approx((-0.5, 4.5, -0.5))
     assert bounds.max == pytest.approx((0.5, 5.5, 0.5))
+
+
+def test_list_parts_gives_each_mesh_node_its_own_world_bounds():
+    """Two-part assembly: a 'Body' at the origin and a 'Cap' moved up 0.6
+    and scaled to half size — each part's box must reflect its own node
+    transform, and together they make up the overall bounds."""
+    doc = {
+        **_UNIT_CUBE,
+        "nodes": [
+            {"name": "Body", "mesh": 0},
+            {"name": "Cap", "mesh": 0, "translation": [0, 0.6, 0], "scale": [0.5, 0.5, 0.5]},
+        ],
+        "scenes": [{"nodes": [0, 1]}],
+    }
+    data = _glb_from_json(doc)
+    parts = list_glb_parts(data)
+    assert [(p.node_index, p.name) for p in parts] == [(0, "Body"), (1, "Cap")]
+    assert parts[0].bounds.min == pytest.approx((-0.5, -0.5, -0.5))
+    assert parts[1].bounds.min == pytest.approx((-0.25, 0.35, -0.25))
+    assert parts[1].bounds.max == pytest.approx((0.25, 0.85, 0.25))
+    assert compute_glb_bounds(data).max == pytest.approx((0.5, 0.85, 0.5))
 
 
 def test_non_glb_data_raises():

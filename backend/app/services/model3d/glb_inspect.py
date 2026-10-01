@@ -42,6 +42,15 @@ class GlbBounds:
         return self.max[2] - self.min[2]
 
 
+@dataclass
+class GlbPart:
+    """One mesh-carrying node of an assembly GLB (e.g. a bottle's body or cap)."""
+
+    node_index: int  # stable id; Three.js's GLTFLoader exposes it via parser.associations
+    name: str  # the node's name as authored (Three.js sanitizes it, e.g. "Cylinder.001" -> "Cylinder001")
+    bounds: GlbBounds  # in the file's own units, assembly (world) frame
+
+
 def compute_glb_bounds(data: bytes) -> GlbBounds:
     """
     Parses a binary .glb file's JSON chunk and aggregates the min/max of
@@ -52,6 +61,37 @@ def compute_glb_bounds(data: bytes) -> GlbBounds:
     covers every file this platform currently produces/consumes (Blender's
     default glTF export, and everything in data/models/).
     """
+    points = np.concatenate([c for _, c in _world_corners(data)])
+    return GlbBounds(
+        min=tuple(float(v) for v in points.min(axis=0)),
+        max=tuple(float(v) for v in points.max(axis=0)),
+    )
+
+
+def list_glb_parts(data: bytes) -> list[GlbPart]:
+    """Every mesh-carrying node with its own bounds — the assembly's parts."""
+    by_node: dict[int, list[np.ndarray]] = {}
+    for node_index, corners in _world_corners(data):
+        if node_index is not None:
+            by_node.setdefault(node_index, []).append(corners)
+    nodes = _json_chunk(data).get("nodes", [])
+    parts = []
+    for node_index, corner_sets in sorted(by_node.items()):
+        points = np.concatenate(corner_sets)
+        parts.append(
+            GlbPart(
+                node_index=node_index,
+                name=nodes[node_index].get("name") or f"node_{node_index}",
+                bounds=GlbBounds(
+                    min=tuple(float(v) for v in points.min(axis=0)),
+                    max=tuple(float(v) for v in points.max(axis=0)),
+                ),
+            )
+        )
+    return parts
+
+
+def _json_chunk(data: bytes) -> dict:
     if len(data) < 12 or data[0:4] != b"glTF":
         raise GlbParseError("Not a binary .glb file (missing 'glTF' magic header)")
 
@@ -71,7 +111,13 @@ def compute_glb_bounds(data: bytes) -> GlbBounds:
 
     if json_chunk is None:
         raise GlbParseError("No JSON chunk found in .glb file")
+    return json_chunk
 
+
+def _world_corners(data: bytes) -> list[tuple[int | None, np.ndarray]]:
+    """Each primitive's bounding-box corners in assembly coordinates, tagged
+    with the node that carries it (None when there's no scene graph)."""
+    json_chunk = _json_chunk(data)
     accessors = json_chunk.get("accessors", [])
     meshes = json_chunk.get("meshes", [])
 
@@ -94,7 +140,7 @@ def compute_glb_bounds(data: bytes) -> GlbBounds:
     # (Blender's FBX->glTF path does) instead of baking it into vertices.
     # Each primitive's accessor box is transformed corner-by-corner, the same
     # thing Three.js's Box3.setFromObject() does.
-    corners: list[np.ndarray] = []
+    corners: list[tuple[int | None, np.ndarray]] = []
     nodes = json_chunk.get("nodes", [])
     scenes = json_chunk.get("scenes", [])
     roots = scenes[json_chunk.get("scene", 0)].get("nodes", []) if scenes else []
@@ -105,7 +151,7 @@ def compute_glb_bounds(data: bytes) -> GlbBounds:
         if "mesh" in node:
             for lo, hi in mesh_boxes(node["mesh"]):
                 box = np.array([[x, y, z, 1.0] for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])])
-                corners.append((box @ world.T)[:, :3])
+                corners.append((node_index, (box @ world.T)[:, :3]))
         for child in node.get("children", []):
             visit(child, world)
 
@@ -115,16 +161,11 @@ def compute_glb_bounds(data: bytes) -> GlbBounds:
     if not corners:  # no scene graph referencing the meshes: fall back to raw accessor bounds
         for mesh_index in range(len(meshes)):
             for lo, hi in mesh_boxes(mesh_index):
-                corners.append(np.stack([lo, hi]))
+                corners.append((None, np.stack([lo, hi])))
 
     if not corners:
         raise GlbParseError("No POSITION accessor in this .glb has min/max bounds")
-
-    points = np.concatenate(corners)
-    return GlbBounds(
-        min=tuple(float(v) for v in points.min(axis=0)),
-        max=tuple(float(v) for v in points.max(axis=0)),
-    )
+    return corners
 
 
 def _node_matrix(node: dict) -> np.ndarray:

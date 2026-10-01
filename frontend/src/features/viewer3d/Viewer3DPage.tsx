@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Models3DApi, resolveApiUrl } from "../../services/api";
-import type { Asset, Model3DInfo } from "../../types";
+import type { Asset, Model3DInfo, Model3DPart } from "../../types";
+import { PartsPanel } from "./PartsPanel";
+import { EMPTY_PART_VIEW, type PartView } from "./parts";
 import { ThreeViewer } from "./ThreeViewer";
 import { SimpleCameraOverlay } from "./SimpleCameraOverlay";
 import { RegistrationOverlay } from "./RegistrationOverlay";
@@ -50,6 +52,20 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
   }, [selectedAssetId]);
 
   const model = models.find((m) => m.id === selectedModelId) ?? models[0];
+
+  // The selected model's assembly parts (body, cap, …) and which are shown /
+  // highlighted — shared by all three views, reset when the model changes.
+  const [parts, setParts] = useState<Model3DPart[]>([]);
+  const [partView, setPartView] = useState<PartView>(EMPTY_PART_VIEW);
+  const modelId = model?.id;
+  useEffect(() => {
+    setParts([]);
+    setPartView(EMPTY_PART_VIEW);
+    if (!modelId) return;
+    Models3DApi.parts(modelId)
+      .then(setParts)
+      .catch(() => setParts([])); // a single-part model simply has no parts panel
+  }, [modelId]);
 
   return (
     <div>
@@ -118,8 +134,16 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
             </button>
           </div>
 
-          {mode === "view" && <ThreeViewer modelUrl={resolveApiUrl(model.url)} />}
-          {mode === "overlay" && <SimpleCameraOverlay modelUrl={resolveApiUrl(model.url)} />}
+          <div className="viewer-with-parts">
+          <div className="viewer-main">
+          {mode === "view" && (
+            <ThreeViewer
+              modelUrl={resolveApiUrl(model.url)}
+              partView={partView}
+              onPartClick={(nodeIndex) => setPartView((v) => ({ ...v, highlight: nodeIndex }))}
+            />
+          )}
+          {mode === "overlay" && <SimpleCameraOverlay modelUrl={resolveApiUrl(model.url)} partView={partView} />}
           {mode === "register" && (
             <>
               <p className="hint">
@@ -143,9 +167,21 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
                 }}
                 modelScale={model.scale}
                 defaultTargetClassLabel={model.component_class_label}
+                partView={partView}
               />
             </>
           )}
+          </div>
+          {parts.length > 1 && (
+            <PartsPanel
+              modelId={model.id}
+              parts={parts}
+              view={partView}
+              onViewChange={setPartView}
+              onPartsChange={setParts}
+            />
+          )}
+          </div>
         </>
       )}
     </div>

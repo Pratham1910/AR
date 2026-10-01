@@ -6,6 +6,7 @@ import { CameraStatusBadge } from "../../components/CameraStatusBadge";
 import { useCamera } from "../../hooks/useCamera";
 import { ensureVisibleMaterials } from "./ensureVisibleMaterial";
 import { applyRenderStyle, type RenderStyle } from "./renderStyle";
+import { applyPartView, EMPTY_PART_VIEW, indexParts, type PartView } from "./parts";
 import { Models3DApi, VisionApi, apiErrorMessage } from "../../services/api";
 import { ClassSelect } from "../../components/ClassSelect";
 import type {
@@ -52,6 +53,8 @@ interface Props {
    * calibrated via the on-screen alignment controls below.
    */
   initialAnchor?: AnchorOffset;
+  /** Assembly parts to hide / highlight (e.g. show only the cap on the real bottle). */
+  partView?: PartView;
 }
 
 type RegistrationMode = "marker" | "markerless" | "feature" | "model";
@@ -92,7 +95,14 @@ export function RegistrationOverlay({
   targetMarkerId,
   defaultTargetClassLabel,
   initialAnchor,
+  partView = EMPTY_PART_VIEW,
 }: Props) {
+  const partsRef = useRef<Map<number, THREE.Object3D>>(new Map());
+  const partViewRef = useRef(partView);
+  useEffect(() => {
+    partViewRef.current = partView;
+    applyPartView(partsRef.current, partView);
+  }, [partView]);
   const {
     videoRef,
     canvasRef,
@@ -301,6 +311,8 @@ export function RegistrationOverlay({
         group.visible = false; // hidden until a pose is found
         group.add(gltf.scene);
         applyRenderStyle(group, renderStyleRef.current);
+        partsRef.current = indexParts(gltf);
+        applyPartView(partsRef.current, partViewRef.current);
         modelObjectRef.current = group;
         scene.add(group);
         setModelStatus("loaded");

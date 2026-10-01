@@ -6,9 +6,11 @@ import { CameraSelect } from "../../components/CameraSelect";
 import { CameraStatusBadge } from "../../components/CameraStatusBadge";
 import { useCamera } from "../../hooks/useCamera";
 import { ensureVisibleMaterials } from "./ensureVisibleMaterial";
+import { applyPartView, EMPTY_PART_VIEW, indexParts, type PartView } from "./parts";
 
 interface Props {
   modelUrl: string;
+  partView?: PartView;
 }
 
 /**
@@ -21,7 +23,13 @@ interface Props {
  * physical object is and does not try to align to it — see
  * RegistrationOverlay.tsx for the modes that do that.
  */
-export function SimpleCameraOverlay({ modelUrl }: Props) {
+export function SimpleCameraOverlay({ modelUrl, partView = EMPTY_PART_VIEW }: Props) {
+  const partsRef = useRef<Map<number, THREE.Object3D>>(new Map());
+  const partViewRef = useRef(partView);
+  useEffect(() => {
+    partViewRef.current = partView;
+    applyPartView(partsRef.current, partView);
+  }, [partView]);
   const {
     videoRef,
     ready,
@@ -63,6 +71,8 @@ export function SimpleCameraOverlay({ modelUrl }: Props) {
     loader.load(modelUrl, (gltf) => {
       ensureVisibleMaterials(gltf.scene);
       scene.add(gltf.scene);
+      partsRef.current = indexParts(gltf);
+      applyPartView(partsRef.current, partViewRef.current);
 
       // Auto-frame on the model's own bounding box (same approach as
       // ThreeViewer.tsx) — since there's no real-world registration here,

@@ -3,10 +3,13 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { ensureVisibleMaterials } from "./ensureVisibleMaterial";
+import { applyPartView, EMPTY_PART_VIEW, indexParts, partOf, type PartView } from "./parts";
 
 interface Props {
   modelUrl: string;
   height?: number;
+  partView?: PartView;
+  onPartClick?: (nodeIndex: number | null) => void; // click a part in 3D to select it
 }
 
 /**
@@ -16,10 +19,19 @@ interface Props {
  * so the same scene-setup pattern is reused for the AR overlay, which needs
  * direct control over the camera/object matrices from OpenCV pose output.
  */
-export function ThreeViewer({ modelUrl, height = 480 }: Props) {
+export function ThreeViewer({ modelUrl, height = 480, partView = EMPTY_PART_VIEW, onPartClick }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [nodeNames, setNodeNames] = useState<string[]>([]);
+  const partsRef = useRef<Map<number, THREE.Object3D>>(new Map());
+  const partViewRef = useRef(partView);
+  const onPartClickRef = useRef(onPartClick);
+  onPartClickRef.current = onPartClick;
+
+  useEffect(() => {
+    partViewRef.current = partView;
+    applyPartView(partsRef.current, partView);
+  }, [partView]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -54,6 +66,8 @@ export function ThreeViewer({ modelUrl, height = 480 }: Props) {
         if (disposed) return;
         ensureVisibleMaterials(gltf.scene);
         scene.add(gltf.scene);
+        partsRef.current = indexParts(gltf);
+        applyPartView(partsRef.current, partViewRef.current);
 
         // Frame the camera on the loaded model's bounding box, and surface
         // its node names — useful for confirming target.componentId ->
@@ -85,6 +99,23 @@ export function ThreeViewer({ modelUrl, height = 480 }: Props) {
     };
     animate();
 
+    // Click (not drag) a part to select it; clicking empty space clears.
+    const raycaster = new THREE.Raycaster();
+    let downAt: { x: number; y: number } | null = null;
+    const onPointerDown = (e: PointerEvent) => (downAt = { x: e.clientX, y: e.clientY });
+    const onPointerUp = (e: PointerEvent) => {
+      if (!downAt || Math.hypot(e.clientX - downAt.x, e.clientY - downAt.y) > 4) return; // that was an orbit drag
+      const rect = renderer.domElement.getBoundingClientRect();
+      const ndc = new THREE.Vector2(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1);
+      raycaster.setFromCamera(ndc, camera);
+      const hit = raycaster
+        .intersectObjects(scene.children, true)
+        .find((h) => (h.object as THREE.Mesh).isMesh && h.object.visible);
+      onPartClickRef.current?.(hit ? partOf(hit.object, partsRef.current) : null);
+    };
+    renderer.domElement.addEventListener("pointerdown", onPointerDown);
+    renderer.domElement.addEventListener("pointerup", onPointerUp);
+
     const handleResize = () => {
       camera.aspect = container.clientWidth / height;
       camera.updateProjectionMatrix();
@@ -96,6 +127,8 @@ export function ThreeViewer({ modelUrl, height = 480 }: Props) {
       disposed = true;
       cancelAnimationFrame(frameId);
       window.removeEventListener("resize", handleResize);
+      renderer.domElement.removeEventListener("pointerdown", onPointerDown);
+      renderer.domElement.removeEventListener("pointerup", onPointerUp);
       controls.dispose();
       renderer.dispose();
       container.removeChild(renderer.domElement);
@@ -107,7 +140,7 @@ export function ThreeViewer({ modelUrl, height = 480 }: Props) {
       <div ref={containerRef} style={{ width: "100%", height }} />
       {error && <p className="error">Failed to load model: {error}</p>}
       {nodeNames.length > 0 && (
-        <p className="node-names">Scene nodes: {nodeNames.join(", ")}</p>
+        <p className="node-names">Scene nodes: {nodeNames.join(", ")} · click a part to select it</p>
       )}
     </div>
   );
