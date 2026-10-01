@@ -255,6 +255,7 @@ export interface ARFrameResponse {
   };
   events: string[];
   part_checks: PartCheck[];
+  calibrated_parts: string[]; // parts with a presence calibration, sent in every state
   good_confidence: number;
   lost_confidence: number;
   intrinsics: CameraIntrinsics;

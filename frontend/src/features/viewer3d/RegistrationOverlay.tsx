@@ -672,7 +672,7 @@ export function RegistrationOverlay({
     // (layered on top of the outline, like the axes).
     const ctx = outlineCanvasRef.current?.getContext("2d");
     if (ctx) {
-      for (const check of result.part_checks) {
+      for (const check of result.part_checks ?? []) {
         const [x1, y1, x2, y2] = check.region_px;
         const color = check.state === "present" ? "#00e676" : check.state === "absent" ? "#ff1744" : "#ffca28";
         ctx.strokeStyle = color;
@@ -881,6 +881,27 @@ export function RegistrationOverlay({
           style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}
         />
         <canvas ref={canvasRef} style={{ display: "none" }} />
+        {(mode === "markerless" || mode === "model") && (arResult?.calibrated_parts ?? []).length > 0 && (
+          <div className="part-badges">
+            {arResult!.calibrated_parts.map((name) => {
+              const check = (arResult!.part_checks ?? []).find((c) => c.part_name === name);
+              const cls = check ? `part-badge part-badge-${check.state}` : "part-badge part-badge-waiting";
+              const text = !check
+                ? `⏳ ${name}: waiting for tracking`
+                : check.state === "present"
+                  ? `✅ ${name}: present`
+                  : check.state === "absent"
+                    ? `❌ ${name}: REMOVED`
+                    : `❓ ${name}: unsure`;
+              return (
+                <div key={name} className={cls}>
+                  {text}
+                  {check && <span> {(check.confidence * 100).toFixed(0)}%</span>}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <CameraStatusBadge status={cameraStatus} deviceLabel={deviceLabel} resolution={resolution} error={cameraError} />
@@ -1056,7 +1077,7 @@ export function RegistrationOverlay({
                   </span>
                 </p>
               )}
-              {arResult.part_checks.map((check) => (
+              {(arResult.part_checks ?? []).map((check) => (
                 <p key={check.node_index} className={`part-check part-${check.state}`}>
                   {check.state === "present" ? "✅" : check.state === "absent" ? "❌" : "❓"} {check.part_name}:{" "}
                   <strong>{check.state === "absent" ? "removed" : check.state}</strong>{" "}

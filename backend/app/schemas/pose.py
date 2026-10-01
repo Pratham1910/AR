@@ -209,6 +209,9 @@ class ARFrameResponse(BaseModel):
     events: list[str]  # [SEARCHING]/[DETECTION]/[POSE]/[TRACKER]/[RECOVERY] lines from this frame
     # Calibrated parts' presence on the tracked object (only while TRACKING).
     part_checks: list[PartCheckOut] = []
+    # Names of this model's parts that have a presence calibration, sent in
+    # every state, so the page can show "Cap: waiting for tracking".
+    calibrated_parts: list[str] = []
     good_confidence: float
     lost_confidence: float
     intrinsics: CameraIntrinsics

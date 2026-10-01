@@ -553,8 +553,9 @@ def ar_session_frame(request: ARFrameRequest, db: Session = Depends(get_db)) -> 
     # object box is current; measured in the frame the backend received,
     # which never contains the browser's overlay.
     part_checks: list[PartCheckOut] = []
-    if result.state == TrackingState.TRACKING and obj is not None and obj.bbox is not None and request.model_id:
-        for cal in part_calibrations(request.model_id):
+    calibrations = part_calibrations(request.model_id) if request.model_id else []
+    if result.state == TrackingState.TRACKING and obj is not None and obj.bbox is not None:
+        for cal in calibrations:
             brightness = region_brightness(frame_bgr, cal.region, obj.bbox)
             if brightness is None:
                 continue
@@ -614,6 +615,7 @@ def ar_session_frame(request: ARFrameRequest, db: Session = Depends(get_db)) -> 
         ),
         events=result.events,
         part_checks=part_checks,
+        calibrated_parts=[cal.part_name for cal in calibrations],
         good_confidence=session.config.good_confidence,
         lost_confidence=session.config.lost_confidence,
         intrinsics=CameraIntrinsics(
