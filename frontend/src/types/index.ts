@@ -206,6 +206,28 @@ export interface TrackedObject {
   velocity_px_s: Vector2 | null;
 }
 
+// Is a calibrated part (e.g. the cap) still on the tracked object?
+export interface PartCheck {
+  node_index: number;
+  part_name: string;
+  state: "present" | "absent" | "uncertain";
+  confidence: number;
+  brightness: number;
+  region_px: [number, number, number, number];
+}
+
+export interface PresenceCalibrationResult {
+  node_index: number;
+  part_name: string;
+  present_mean: number;
+  absent_mean: number;
+  present_samples: number;
+  absent_samples: number;
+  separation: number;
+  verdict: string;
+  frames_without_object: string[];
+}
+
 export interface ARFrameResponse {
   state: TrackingState;
   // Draw the model: tracking, or holding the last valid pose while lost / re-acquiring.
@@ -232,6 +254,7 @@ export interface ARFrameResponse {
     frames_since_detection: number | null;
   };
   events: string[];
+  part_checks: PartCheck[];
   good_confidence: number;
   lost_confidence: number;
   intrinsics: CameraIntrinsics;

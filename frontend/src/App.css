@@ -165,6 +165,19 @@
   width: 7rem;
 }
 
+.presence-calibration {
+  margin-top: 0.75rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid #ddd;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.presence-calibration input {
+  width: 6rem;
+}
+
 .parts-actions {
   display: flex;
   gap: 0.5rem;
@@ -192,6 +205,23 @@
   background: rgba(0, 0, 0, 0.04);
   border-radius: 4px;
   white-space: pre-wrap;
+}
+
+.part-check {
+  font-size: 1.1rem;
+  margin: 0.25rem 0;
+}
+
+.part-absent strong {
+  color: #c62828;
+}
+
+.part-present strong {
+  color: #2e7d32;
+}
+
+.part-uncertain strong {
+  color: #f9a825;
 }
 
 .save-frame {

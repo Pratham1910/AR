@@ -668,6 +668,21 @@ export function RegistrationOverlay({
       }
     }
     if (result.visible && result.axes) drawAxes(result.axes);
+    // The exact region each part check measured, colored by its verdict
+    // (layered on top of the outline, like the axes).
+    const ctx = outlineCanvasRef.current?.getContext("2d");
+    if (ctx) {
+      for (const check of result.part_checks) {
+        const [x1, y1, x2, y2] = check.region_px;
+        const color = check.state === "present" ? "#00e676" : check.state === "absent" ? "#ff1744" : "#ffca28";
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 3;
+        ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+        ctx.fillStyle = color;
+        ctx.font = "bold 18px sans-serif";
+        ctx.fillText(`${check.part_name}: ${check.state}`, x2 + 6, (y1 + y2) / 2 + 6);
+      }
+    }
 
     // Hidden only once the session gives up (SEARCHING); while LOST the
     // backend keeps returning the last valid pose, so the model stays put
@@ -708,7 +723,8 @@ export function RegistrationOverlay({
           mode,
           frame,
           targetClassLabel,
-          mode === "model" ? { modelId, trackPart } : { realWorldHeightM }
+          // model_id in markerless mode only enables the model's calibrated part checks.
+          mode === "model" ? { modelId, trackPart } : { realWorldHeightM, modelId }
         );
         applyArResult(result, performance.now() - frameStarted);
       } else {
@@ -1040,6 +1056,15 @@ export function RegistrationOverlay({
                   </span>
                 </p>
               )}
+              {arResult.part_checks.map((check) => (
+                <p key={check.node_index} className={`part-check part-${check.state}`}>
+                  {check.state === "present" ? "✅" : check.state === "absent" ? "❌" : "❓"} {check.part_name}:{" "}
+                  <strong>{check.state === "absent" ? "removed" : check.state}</strong>{" "}
+                  <span className="hint">
+                    ({(check.confidence * 100).toFixed(0)}% sure, region brightness {check.brightness.toFixed(0)})
+                  </span>
+                </p>
+              ))}
               <div className="ar-stats">
                 <span>Object ID</span>
                 <strong>{arResult.object?.object_id ?? "—"}</strong>

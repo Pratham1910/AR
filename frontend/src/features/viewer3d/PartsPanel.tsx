@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Models3DApi, apiErrorMessage } from "../../services/api";
-import type { Model3DPart } from "../../types";
+import type { Model3DPart, PresenceCalibrationResult } from "../../types";
 import type { PartView } from "./parts";
 
 interface Props {
@@ -19,6 +19,25 @@ interface Props {
 export function PartsPanel({ modelId, parts, view, onViewChange, onPartsChange }: Props) {
   const [names, setNames] = useState<Record<number, string>>({});
   const [error, setError] = useState<string | null>(null);
+  // Presence check calibration for the selected part, from frames saved with "Save frame".
+  const [presentLabel, setPresentLabel] = useState("cap-on");
+  const [absentLabel, setAbsentLabel] = useState("cap-off");
+  const [calibrating, setCalibrating] = useState(false);
+  const [calibration, setCalibration] = useState<PresenceCalibrationResult | null>(null);
+  const selected = parts.find((p) => p.node_index === view.highlight) ?? null;
+
+  const calibrate = async () => {
+    if (!selected) return;
+    setCalibrating(true);
+    setError(null);
+    try {
+      setCalibration(await Models3DApi.calibratePresence(modelId, selected.node_index, presentLabel, absentLabel));
+    } catch (err) {
+      setError(apiErrorMessage(err));
+    } finally {
+      setCalibrating(false);
+    }
+  };
 
   useEffect(() => {
     setNames(Object.fromEntries(parts.map((p) => [p.node_index, p.display_name])));
@@ -94,6 +113,37 @@ export function PartsPanel({ modelId, parts, view, onViewChange, onPartsChange }
       <div className="parts-actions">
         <button onClick={() => onViewChange({ hidden: [], highlight: null })}>Show all</button>
         <span className="hint">Click a row (or the part in the 3D view) to highlight it.</span>
+      </div>
+
+      <div className="presence-calibration">
+        <strong>Presence check{selected ? `: ${selected.display_name}` : ""}</strong>
+        {!selected ? (
+          <p className="hint">Select a part above to calibrate "is it still on?" for it.</p>
+        ) : (
+          <>
+            <p className="hint">
+              Uses frames saved with "Save frame" on the AR page, labelled with the part on and off.
+            </p>
+            <label>
+              On label <input value={presentLabel} onChange={(e) => setPresentLabel(e.target.value)} />
+            </label>
+            <label>
+              Off label <input value={absentLabel} onChange={(e) => setAbsentLabel(e.target.value)} />
+            </label>
+            <button onClick={() => void calibrate()} disabled={calibrating}>
+              {calibrating ? "Calibrating…" : "Calibrate"}
+            </button>
+          </>
+        )}
+        {calibration && (
+          <p className={calibration.separation >= 3 ? "camera-status-ok" : "warning"}>
+            {calibration.part_name}: on ≈ {calibration.present_mean.toFixed(0)}, off ≈{" "}
+            {calibration.absent_mean.toFixed(0)} brightness ({calibration.present_samples} on /{" "}
+            {calibration.absent_samples} off frames) — {calibration.verdict}.
+            {calibration.frames_without_object.length > 0 &&
+              ` ${calibration.frames_without_object.length} frame(s) skipped: object not found.`}
+          </p>
+        )}
       </div>
       {error && <p className="error">{error}</p>}
     </div>

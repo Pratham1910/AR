@@ -9,6 +9,8 @@ import re
 import uuid
 from pathlib import Path
 
+import cv2
+import numpy as np
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel
@@ -18,7 +20,8 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.asset import Asset, Component
 from app.models.model3d import Model3D
-from app.api.vision import forget_model_pose, normalize_class_label
+from app.api.vision import find_object, forget_model_pose, normalize_class_label
+from app.services.vision.part_presence import PartRegion, PresenceCalibration, region_brightness
 from app.services.model3d.fbx_convert import BlenderNotFound, FbxConversionError, convert_fbx_to_glb
 from app.services.model3d.glb_inspect import (
     GlbParseError,
@@ -335,6 +338,106 @@ def rename_model_part(
         component.name = display_name
     db.commit()
     return _parts_out(db, model)
+
+
+class PresenceCalibrationRequest(BaseModel):
+    present_label: str = "cap-on"  # saved frames ("Save frame" on the AR page) with the part on
+    absent_label: str = "cap-off"  # ... and with it removed
+
+
+class PresenceCalibrationOut(BaseModel):
+    node_index: int
+    part_name: str
+    present_mean: float  # mean brightness of the part's region with the part on
+    absent_mean: float
+    present_samples: int
+    absent_samples: int
+    separation: float  # gap / spread; >3 = clearly separable
+    verdict: str
+    frames_without_object: list[str]  # frames where the object itself wasn't found (not used)
+
+
+def _frames(label: str) -> list[Path]:
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "-", label.strip()).strip("-")
+    return sorted(Path(_settings.debug_frames_dir).glob(f"{safe}_*.jpg"))
+
+
+@router.post("/{model_id}/parts/{node_index}/presence-calibration", response_model=PresenceCalibrationOut)
+def calibrate_part_presence(
+    model_id: uuid.UUID, node_index: int, payload: PresenceCalibrationRequest, db: Session = Depends(get_db)
+) -> PresenceCalibrationOut:
+    """
+    Learns what a part's region looks like present vs absent from labelled
+    raw frames (data/debug_frames/<label>_*.jpg), so the live AR session can
+    report e.g. "Cap: removed". The region comes from the assembly geometry
+    (where the part sits on the object); the object is found with the
+    detector in each frame. Re-run after saving more frames.
+    """
+    model = db.get(Model3D, model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    component = db.get(Component, model.component_id) if model.component_id else None
+    if component is None:
+        raise HTTPException(status_code=400, detail="Set this model's detection class first (model settings)")
+    parts = list_glb_parts(_glb_path(model).read_bytes())
+    part = next((p for p in parts if p.node_index == node_index), None)
+    if part is None:
+        raise HTTPException(status_code=404, detail=f"No part with node index {node_index} in this model")
+
+    region = PartRegion.from_parts(part, parts)
+    samples: dict[str, list[float]] = {"present": [], "absent": []}
+    missing: list[str] = []
+    for state, label in (("present", payload.present_label), ("absent", payload.absent_label)):
+        for path in _frames(label):
+            frame = cv2.imread(str(path))
+            # A lower threshold than live detection: these frames are known to
+            # contain the object (the stock detector rates the user's flask ~0.5).
+            obj = find_object(frame, component.class_label, threshold=0.25) if frame is not None else None
+            brightness = region_brightness(frame, region, obj.bbox) if obj is not None else None
+            if brightness is None:
+                missing.append(path.name)
+            else:
+                samples[state].append(brightness)
+    for state, label in (("present", payload.present_label), ("absent", payload.absent_label)):
+        if not samples[state]:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No usable '{label}' frames (object not found in any). Save some with 'Save frame' first.",
+            )
+
+    present, absent = np.array(samples["present"]), np.array(samples["absent"])
+    named = _part_components(db, model).get(part.name)
+    calibration = PresenceCalibration(
+        region=region,
+        present_mean=float(present.mean()),
+        absent_mean=float(absent.mean()),
+        present_samples=len(present),
+        absent_samples=len(absent),
+        present_std=float(present.std()),
+        absent_std=float(absent.std()),
+        node_index=part.node_index,
+        part_name=named.name if named else part.name,
+    )
+    calibration.save(Path(_settings.part_calibration_dir) / f"{model.id}__node{part.node_index}.json")
+    sep = calibration.separation
+    verdict = (
+        "clearly separable"
+        if sep >= 3
+        else "separable, but close: save more frames from different angles/lighting"
+        if sep >= 1.5
+        else "not reliably separable by brightness for this part"
+    )
+    return PresenceCalibrationOut(
+        node_index=part.node_index,
+        part_name=calibration.part_name,
+        present_mean=calibration.present_mean,
+        absent_mean=calibration.absent_mean,
+        present_samples=calibration.present_samples,
+        absent_samples=calibration.absent_samples,
+        separation=sep,
+        verdict=verdict,
+        frames_without_object=missing,
+    )
 
 
 @router.patch("/{model_id}/anchor", response_model=Model3DOut)

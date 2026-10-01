@@ -120,7 +120,9 @@ class ARFrameRequest(BaseModel):
     mode: Literal["markerless", "model"]  # optical-flow tracking vs MegaPose model-based tracking
     image_base64: str
     class_label: str  # what the detector looks for (must be a detectable class)
-    model_id: str | None = None  # required for "model"
+    # Required for "model"; optional for "markerless", where it only enables
+    # the model's calibrated part checks (e.g. "is the cap still on?").
+    model_id: str | None = None
     real_world_height_m: float | None = None  # required for "markerless" (depth from apparent size)
     # "model" only: match just this assembly part (glTF node index, e.g. a
     # bottle's body, which looks the same with or without its cap); the whole
@@ -176,6 +178,17 @@ class CameraIntrinsics(BaseModel):
     height: int
 
 
+class PartCheckOut(BaseModel):
+    """Is a calibrated part (e.g. the cap) still on the tracked object?"""
+
+    node_index: int
+    part_name: str
+    state: Literal["present", "absent", "uncertain"]
+    confidence: float  # 0 at the present/absent midpoint, 1 at a calibrated mean
+    brightness: float  # measured mean HSV value of the part's region
+    region_px: list[int]  # [x1, y1, x2, y2] that was measured, for drawing
+
+
 class ARFrameResponse(BaseModel):
     state: Literal["SEARCHING", "INITIALIZING", "TRACKING", "LOST", "RECOVERING"]
     visible: bool  # draw the model: tracking, or holding the last valid pose while lost/re-acquiring
@@ -194,6 +207,8 @@ class ARFrameResponse(BaseModel):
     timings_ms: ARTimings
     counters: ARCounters
     events: list[str]  # [SEARCHING]/[DETECTION]/[POSE]/[TRACKER]/[RECOVERY] lines from this frame
+    # Calibrated parts' presence on the tracked object (only while TRACKING).
+    part_checks: list[PartCheckOut] = []
     good_confidence: float
     lost_confidence: float
     intrinsics: CameraIntrinsics

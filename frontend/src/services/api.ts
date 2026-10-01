@@ -9,6 +9,7 @@ import type {
   Model3DInfo,
   Model3DPart,
   ObserveResponse,
+  PresenceCalibrationResult,
   PoseResponse,
   Procedure,
   RegisterReferenceImageResponse,
@@ -91,6 +92,14 @@ export const Models3DApi = {
   remove: (modelId: string) => api.delete(`/api/models3d/${modelId}`).then(() => undefined),
 
   parts: (modelId: string) => api.get<Model3DPart[]>(`/api/models3d/${modelId}/parts`).then((r) => r.data),
+
+  calibratePresence: (modelId: string, nodeIndex: number, presentLabel: string, absentLabel: string) =>
+    api
+      .post<PresenceCalibrationResult>(`/api/models3d/${modelId}/parts/${nodeIndex}/presence-calibration`, {
+        present_label: presentLabel,
+        absent_label: absentLabel,
+      })
+      .then((r) => r.data),
 
   renamePart: (modelId: string, nodeIndex: number, displayName: string) =>
     api

@@ -61,6 +61,9 @@ class Settings(BaseSettings):
     # Raw camera frames saved from the AR page ("Save frame") for offline
     # analysis/calibration, e.g. labelled cap-on / cap-off. Not committed.
     debug_frames_dir: str = "../data/debug_frames"
+    # Per-part presence calibrations (e.g. what a bottle's cap region looks
+    # like on vs off), one JSON per model part. Not committed.
+    part_calibration_dir: str = "../data/part_calibration"
 
     # Model-based (CAD) 6DoF pose — MegaPose, served by pose_service/ running
     # in WSL2 with CUDA (Windows localhost is forwarded into WSL2).

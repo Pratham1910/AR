@@ -25,6 +25,7 @@ from app.schemas.pose import (
     ARTimings,
     CameraIntrinsics,
     DetectionOut,
+    PartCheckOut,
     FeaturePoseRequest,
     FeaturePoseResponse,
     ObjectRegistrationRequest,
@@ -60,11 +61,12 @@ from app.services.model3d.glb_inspect import list_glb_parts
 from app.services.pose.model_pose_client import ModelPoseClient, PoseServiceUnavailable
 from app.services.pose.transforms import cv_pose_to_threejs, euler_angles_deg, project_pose_axes
 from app.services.state_detection.state_engine import ComponentStateRule, StateEstimationError, StateEstimator
-from app.services.tracking.ar_session import ARSession, ARTrackingConfig, euler_xyz_deg
+from app.services.tracking.ar_session import ARSession, ARTrackingConfig, TrackingState, euler_xyz_deg
 from app.services.tracking.pose_filter import PoseFilterConfig
 from app.services.tracking.tracker import ObjectTracker
 from app.services.tracking.trackers import FlowPoseTracker, Frame, MegaPoseTracker
 from app.services.vision.detector import build_detector, time_inference
+from app.services.vision.part_presence import PresenceCalibration, region_brightness
 from app.services.vision.segmentation import Segmenter, build_segmenter
 
 router = APIRouter(prefix="/api/vision", tags=["vision"])
@@ -407,15 +409,38 @@ _AR_MAX_SESSIONS = 16
 _ar_sessions: dict[str, tuple[tuple, ARSession]] = {}  # session_id -> (config key, session)
 
 
+def find_object(frame_bgr: np.ndarray, class_label: str, threshold: float | None = None) -> SegmentedObject | None:
+    """The most confident detection of `class_label` in the frame, if any."""
+    objects = _get_segmenter().segment(frame_bgr, threshold or _settings.segmentation_confidence_threshold)
+    matches = [o for o in objects if o.class_label == class_label]
+    return max(matches, key=lambda o: o.confidence) if matches else None
+
+
 def _ar_detector(class_label: str):
-    """The expensive step, called by ARSession only while SEARCHING/LOST."""
+    """The expensive step, called by ARSession only while SEARCHING/RECOVERING."""
 
     def detect(frame: Frame) -> SegmentedObject | None:
-        objects = _get_segmenter().segment(frame.bgr, _settings.segmentation_confidence_threshold)
-        matches = [o for o in objects if o.class_label == class_label]
-        return max(matches, key=lambda o: o.confidence) if matches else None
+        return find_object(frame.bgr, class_label)
 
     return detect
+
+
+_calibration_cache: dict[Path, tuple[float, PresenceCalibration]] = {}
+
+
+def part_calibrations(model_id: str) -> list[PresenceCalibration]:
+    """Presence calibrations saved for this model's parts (cached by file mtime)."""
+    found = []
+    for path in sorted(Path(_settings.part_calibration_dir).glob(f"{model_id}__node*.json")):
+        mtime = path.stat().st_mtime
+        cached = _calibration_cache.get(path)
+        if cached is None or cached[0] != mtime:
+            calibration = PresenceCalibration.load(path)
+            if calibration is None:
+                continue
+            _calibration_cache[path] = cached = (mtime, calibration)
+        found.append(cached[1])
+    return found
 
 
 def _ar_model(request: ARFrameRequest, db: Session) -> Model3D:
@@ -524,6 +549,27 @@ def ar_session_frame(request: ARFrameRequest, db: Session = Depends(get_db)) -> 
             rvec, _ = cv2.Rodrigues(t_co[:3, :3])
             axes, _ = _debug_pose_gizmo(rvec.reshape(3), t_co[:3, 3], calibration, axis_length_m=0.05)
 
+    # Part presence (e.g. "is the cap still on?"): only while TRACKING, so the
+    # object box is current; measured in the frame the backend received,
+    # which never contains the browser's overlay.
+    part_checks: list[PartCheckOut] = []
+    if result.state == TrackingState.TRACKING and obj is not None and obj.bbox is not None and request.model_id:
+        for cal in part_calibrations(request.model_id):
+            brightness = region_brightness(frame_bgr, cal.region, obj.bbox)
+            if brightness is None:
+                continue
+            state, confidence = cal.classify(brightness)
+            part_checks.append(
+                PartCheckOut(
+                    node_index=cal.node_index,
+                    part_name=cal.part_name,
+                    state=state,
+                    confidence=confidence,
+                    brightness=brightness,
+                    region_px=list(cal.region.pixels(obj.bbox)),
+                )
+            )
+
     k = calibration.camera_matrix
     detection = result.detection
     return ARFrameResponse(
@@ -567,6 +613,7 @@ def ar_session_frame(request: ARFrameRequest, db: Session = Depends(get_db)) -> 
             frames_since_detection=session.frames_since_detection,
         ),
         events=result.events,
+        part_checks=part_checks,
         good_confidence=session.config.good_confidence,
         lost_confidence=session.config.lost_confidence,
         intrinsics=CameraIntrinsics(
