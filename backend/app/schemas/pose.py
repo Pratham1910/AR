@@ -122,6 +122,10 @@ class ARFrameRequest(BaseModel):
     class_label: str  # what the detector looks for (must be a detectable class)
     model_id: str | None = None  # required for "model"
     real_world_height_m: float | None = None  # required for "markerless" (depth from apparent size)
+    # "model" only: match just this assembly part (glTF node index, e.g. a
+    # bottle's body, which looks the same with or without its cap); the whole
+    # assembly is still posed and rendered. None = match the whole model.
+    track_part: int | None = None
 
 
 class TrackedObjectOut(BaseModel):

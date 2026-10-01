@@ -129,15 +129,22 @@ def _startup() -> None:
 
 
 class RegisterObjectRequest(BaseModel):
-    label: str  # the backend's Model3D id
+    label: str  # the backend's Model3D id (plus a part suffix when tracking one part)
     glb_base64: str
     scale: float  # GLB units -> meters (Model3D.scale)
+    # Only these GLB nodes (e.g. ["Cylinder"] = a bottle's body), or the whole model if omitted.
+    node_names: list[str] | None = None
 
 
 class RegisterObjectResponse(BaseModel):
     label: str
     extents_m: list[float]
     vertex_count: int
+    # Center of the registered mesh relative to the whole assembly's center
+    # (meters, assembly/glTF frame). MegaPose returns poses of the mesh as
+    # registered (recentered on itself); the assembly's pose is that pose
+    # composed with this offset. [0, 0, 0] for whole models.
+    offset_m: list[float] = [0.0, 0.0, 0.0]
 
 
 def _gpu_problem() -> str | None:
@@ -173,39 +180,65 @@ def health() -> dict:
     }
 
 
+def _scene_mesh(loaded, node_names: list[str] | None) -> trimesh.Trimesh | None:
+    """The GLB's geometry in world coordinates (node transforms baked in, as
+    Three.js's Box3.setFromObject sees it) — all of it, or only the named nodes."""
+    if not isinstance(loaded, trimesh.Scene):
+        return loaded if node_names is None else None
+    pieces = []
+    for node in loaded.graph.nodes_geometry:
+        if node_names is not None and node not in node_names:
+            continue
+        transform, geometry = loaded.graph[node]
+        piece = loaded.geometry[geometry].copy()
+        piece.apply_transform(transform)
+        pieces.append(piece)
+    return trimesh.util.concatenate(pieces) if pieces else None
+
+
 @app.post("/objects", response_model=RegisterObjectResponse)
 def register_object(req: RegisterObjectRequest) -> RegisterObjectResponse:
     data = base64.b64decode(req.glb_base64)
-    key = _registration_key(data, req.scale)
+    key = _registration_key(data, req.scale) | {"node_names": req.node_names}
     mesh_path, meta_path = _mesh_path(req.label), _meta_path(req.label)
     # The backend re-sends every model after each of ITS restarts. Reloading
     # MegaPose for an identical mesh took seconds and stalled all tracking,
-    # so an unchanged (same GLB bytes, same scale) registration is a no-op.
+    # so an unchanged (same GLB bytes, scale, parts) registration is a no-op.
     if req.label in _labels and mesh_path.exists() and meta_path.exists():
-        if json.loads(meta_path.read_text()) == key:
+        meta = json.loads(meta_path.read_text())
+        if {k: meta.get(k) for k in key} == key:
             existing = trimesh.load(mesh_path, force="mesh")
             return RegisterObjectResponse(
-                label=req.label, extents_m=[float(v) for v in existing.extents], vertex_count=len(existing.vertices)
+                label=req.label,
+                extents_m=[float(v) for v in existing.extents],
+                vertex_count=len(existing.vertices),
+                offset_m=meta.get("offset_m", [0.0, 0.0, 0.0]),
             )
 
     loaded = trimesh.load(io.BytesIO(data), file_type="glb", force="scene")
-    # dump(concatenate=True) bakes node transforms into world coordinates,
-    # matching Box3.setFromObject() on the Three.js side.
-    mesh = loaded.dump(concatenate=True) if isinstance(loaded, trimesh.Scene) else loaded
-    if not isinstance(mesh, trimesh.Trimesh) or len(mesh.vertices) == 0:
+    assembly = _scene_mesh(loaded, None)
+    if not isinstance(assembly, trimesh.Trimesh) or len(assembly.vertices) == 0:
         raise HTTPException(status_code=400, detail="GLB contains no triangle mesh")
+    lo, hi = assembly.bounds * req.scale
+    assembly_center = (lo + hi) / 2.0  # what the frontend recenters the rendered model on
 
+    mesh = _scene_mesh(loaded, req.node_names)
+    if mesh is None or len(mesh.vertices) == 0:
+        raise HTTPException(status_code=400, detail=f"No geometry for parts {req.node_names}")
     mesh = mesh.copy()
     mesh.apply_scale(req.scale)
-    # Recenter on the FULL-detail bounds (what the frontend renders and
-    # recenters on), then simplify, so the two frames stay identical.
+    # Recenter on the FULL-detail bounds of what MegaPose will match, then
+    # simplify. For a part, its center sits at `offset` from the assembly's
+    # center; the caller converts the part's pose back to the assembly frame.
     lo, hi = mesh.bounds
-    mesh.apply_translation(-(lo + hi) / 2.0)
+    center = (lo + hi) / 2.0
+    mesh.apply_translation(-center)
     mesh = _simplified(mesh)
+    offset = [float(v) for v in center - assembly_center]
 
     MESH_DIR.mkdir(parents=True, exist_ok=True)
     mesh.export(mesh_path)
-    meta_path.write_text(json.dumps(key))
+    meta_path.write_text(json.dumps(key | {"offset_m": offset}))
     log.info("registering %s (%d faces): reloading MegaPose", req.label[:8], len(mesh.faces))
     with _lock:
         _rebuild_estimator()
@@ -213,6 +246,7 @@ def register_object(req: RegisterObjectRequest) -> RegisterObjectResponse:
         label=req.label,
         extents_m=[float(v) for v in mesh.extents],
         vertex_count=len(mesh.vertices),
+        offset_m=offset,
     )
 
 

@@ -54,6 +54,7 @@ from app.services.pose.aruco_pose import ArucoPoseEstimator
 from app.services.pose.calibration import load_calibration
 from app.services.pose.feature_tracker import FeatureTracker, ReferencePlane, RegistrationQuality
 from app.services.pose.markerless import estimate_object_placement
+from app.services.model3d.glb_inspect import list_glb_parts
 from app.services.pose.model_pose_client import ModelPoseClient, PoseServiceUnavailable
 from app.services.pose.transforms import cv_pose_to_threejs, euler_angles_deg, project_pose_axes
 from app.services.state_detection.state_engine import ComponentStateRule, StateEstimationError, StateEstimator
@@ -447,8 +448,16 @@ def _build_ar_session(request: ARFrameRequest, class_label: str, model: Model3D 
         tracker = FlowPoseTracker(request.real_world_height_m)
     else:
         glb_path = Path(_settings.models_3d_dir) / model.storage_key
+        label, node_names = str(model.id), None
         try:
-            _model_pose_client.ensure_registered(str(model.id), glb_path.read_bytes, model.scale)
+            if request.track_part is not None:
+                part = next(
+                    (p for p in list_glb_parts(glb_path.read_bytes()) if p.node_index == request.track_part), None
+                )
+                if part is None:
+                    raise HTTPException(status_code=400, detail=f"This model has no part {request.track_part}")
+                label, node_names = f"{model.id}__node{part.node_index}", [part.name]
+            offset = _model_pose_client.ensure_registered(label, glb_path.read_bytes, model.scale, node_names)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"GLB file missing: {glb_path}") from exc
         except PoseServiceUnavailable as exc:
@@ -458,7 +467,7 @@ def _build_ar_session(request: ARFrameRequest, class_label: str, model: Model3D 
             lost_confidence=_settings.ar_model_lost_confidence,
             **common,
         )
-        tracker = MegaPoseTracker(_model_pose_client, str(model.id), _settings.model_pose_track_iterations)
+        tracker = MegaPoseTracker(_model_pose_client, label, _settings.model_pose_track_iterations, part_offset=offset)
     return ARSession(class_label, _ar_detector(class_label), tracker, config)
 
 
@@ -478,7 +487,7 @@ def ar_session_frame(request: ARFrameRequest, db: Session = Depends(get_db)) -> 
         if not request.model_id:
             raise HTTPException(status_code=400, detail="model_id is required for model-based tracking")
         model = _ar_model(request, db)
-        key: tuple = ("model", class_label, str(model.id), model.scale)
+        key: tuple = ("model", class_label, str(model.id), model.scale, request.track_part)
     else:
         if not request.real_world_height_m or request.real_world_height_m <= 0:
             raise HTTPException(status_code=400, detail="real_world_height_m is required for markerless tracking")

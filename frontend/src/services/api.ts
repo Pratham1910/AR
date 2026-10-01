@@ -136,7 +136,7 @@ export const VisionApi = {
     mode: ARMode,
     imageBase64: string,
     classLabel: string,
-    options: { modelId?: string; realWorldHeightM?: number }
+    options: { modelId?: string; realWorldHeightM?: number; trackPart?: number | null }
   ) =>
     api
       .post<ARFrameResponse>("/api/vision/ar-session/frame", {
@@ -146,6 +146,7 @@ export const VisionApi = {
         class_label: classLabel,
         model_id: options.modelId,
         real_world_height_m: options.realWorldHeightM,
+        track_part: options.trackPart ?? null,
       })
       .then((r) => r.data),
 

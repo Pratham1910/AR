@@ -29,7 +29,10 @@ class FakeService:
         if request.method == "DELETE":
             return httpx.Response(200, json={"deleted": True})
         if request.url.path == "/objects":
-            return httpx.Response(200, json={"label": body["label"], "extents_m": [0.1, 0.1, 0.1], "vertex_count": 3})
+            offset = [0.0, 0.05, 0.0] if body.get("node_names") else [0.0, 0.0, 0.0]
+            return httpx.Response(
+                200, json={"label": body["label"], "extents_m": [0.1, 0.1, 0.1], "vertex_count": 3, "offset_m": offset}
+            )
         return httpx.Response(200, json=self.responses.pop(0))
 
 
@@ -73,6 +76,47 @@ def test_mesh_is_reregistered_only_when_scale_changes_and_read_lazily():
     client.ensure_registered("m1", read, 0.0137)  # corrected real-world size
     assert [p for _, p, _ in service.requests].count("/objects") == 2
     assert len(reads) == 2
+
+
+def test_part_registration_sends_node_names_and_returns_the_parts_offset():
+    service = FakeService()
+    client = _client(service)
+    assert client.ensure_registered("m1", lambda: b"glb", 0.01) == pytest.approx([0, 0, 0])
+    offset = client.ensure_registered("m1__node0", lambda: b"glb", 0.01, ["Cylinder"])
+    assert offset == pytest.approx([0.0, 0.05, 0.0])
+    assert service.requests[-1][2]["node_names"] == ["Cylinder"]
+    # Cached: same part again is no new upload, but still gives the offset.
+    assert client.ensure_registered("m1__node0", lambda: b"glb", 0.01, ["Cylinder"]) == pytest.approx([0, 0.05, 0])
+    assert [p for _, p, _ in service.requests].count("/objects") == 2
+    client.forget("m1")  # deleting the model also drops its part registrations
+    assert {p for m, p, _ in service.requests if m == "DELETE"} == {"/objects/m1", "/objects/m1__node0"}
+
+
+def test_part_pose_is_converted_to_the_assembly_pose_and_refined_in_the_part_frame():
+    """Body tracked, assembly rendered. The body mesh's center is 5 cm above
+    the assembly's center (offset (0, 0.05, 0)). MegaPose returns the body
+    rotated 90deg about the camera's Z at (0, 0, 0.5): x_cam = R (p - offset) + t,
+    so the assembly origin is at t - R @ offset = (0.05, 0, 0.5) (R maps +Y to -X)."""
+    rz90 = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+    body = np.eye(4)
+    body[:3, :3] = rz90
+    body[:3, 3] = [0.0, 0.0, 0.5]
+    service = FakeService(
+        [
+            {"found": True, "pose": body.tolist(), "score": 0.9, "mode": "coarse+refine", "elapsed_ms": 900},
+            {"found": True, "pose": body.tolist(), "score": 0.9, "mode": "refine", "elapsed_ms": 200},
+        ]
+    )
+    tracker = MegaPoseTracker(_client(service), "m1__node0", refine_iterations=2, part_offset=np.array([0.0, 0.05, 0.0]))
+    frame = Frame(np.zeros((480, 640, 3), dtype=np.uint8), CameraCalibration.approximate(640, 480))
+    detection = SegmentedObject(class_label="bottle", confidence=0.8, bbox=BoundingBox(x1=1, y1=1, x2=5, y2=5), polygon=[])
+
+    m = tracker.initialize(frame, detection)
+    assert m.extra["t_camera_object"][:3, 3] == pytest.approx([0.05, 0.0, 0.5])  # assembly, OpenCV frame
+    assert m.position == pytest.approx((0.05, 0.0, -0.5))  # renderer frame: C = diag(1, -1, -1)
+    tracker.commit(m)
+    tracker.update(frame)
+    assert service.requests[-1][2]["prev_pose"] == body.tolist()  # refines the BODY's pose, not the assembly's
 
 
 def test_forget_deletes_mesh_and_tolerates_a_stopped_service():

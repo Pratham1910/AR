@@ -33,7 +33,8 @@ class PoseServiceResult:
 class ModelPoseClient:
     def __init__(self, base_url: str, timeout_s: float, transport: httpx.BaseTransport | None = None):
         self._client = httpx.Client(base_url=base_url, timeout=timeout_s, transport=transport)
-        self._registered_scale: dict[str, float] = {}
+        # label -> (scale, node names, offset of the registered mesh from the assembly center)
+        self._registered: dict[str, tuple[float, tuple[str, ...] | None, np.ndarray]] = {}
 
     def _post(self, path: str, payload: dict) -> dict:
         try:
@@ -51,25 +52,39 @@ class ModelPoseClient:
             raise PoseServiceUnavailable(f"Pose service error {response.status_code}: {detail}")
         return response.json()
 
-    def ensure_registered(self, label: str, read_glb: Callable[[], bytes], scale: float) -> None:
-        """`read_glb` is only called when the mesh actually has to be sent —
-        this runs on every tracking frame, so the GLB isn't re-read each time."""
-        if self._registered_scale.get(label) == scale:
-            return
-        self._post(
-            "/objects",
-            {"label": label, "glb_base64": base64.b64encode(read_glb()).decode("ascii"), "scale": scale},
-        )
-        self._registered_scale[label] = scale
+    def ensure_registered(
+        self, label: str, read_glb: Callable[[], bytes], scale: float, node_names: list[str] | None = None
+    ) -> np.ndarray:
+        """
+        Makes sure the service has this mesh — the whole model, or only the
+        named GLB nodes (one part of an assembly). Returns the registered
+        mesh's center relative to the assembly's center (meters, glTF frame):
+        zero for a whole model, the part's offset otherwise. `read_glb` is only
+        called when the mesh actually has to be sent.
+        """
+        names = tuple(node_names) if node_names else None
+        cached = self._registered.get(label)
+        if cached is not None and cached[0] == scale and cached[1] == names:
+            return cached[2]
+        payload = {"label": label, "glb_base64": base64.b64encode(read_glb()).decode("ascii"), "scale": scale}
+        if names:
+            payload["node_names"] = list(names)
+        data = self._post("/objects", payload)
+        offset = np.asarray(data.get("offset_m", [0.0, 0.0, 0.0]), dtype=float)
+        self._registered[label] = (scale, names, offset)
+        return offset
 
     def forget(self, label: str) -> None:
-        """Model deleted: drop local state and ask the service to drop its mesh.
-        Best effort — if the service isn't running there's nothing to clean."""
-        self._registered_scale.pop(label, None)
-        try:
-            self._client.delete(f"/objects/{label}")
-        except httpx.HTTPError:
-            pass
+        """Model deleted: drop local state and ask the service to drop its
+        mesh(es), including per-part registrations. Best effort — if the
+        service isn't running there's nothing to clean."""
+        labels = [label] + [k for k in self._registered if k.startswith(f"{label}__")]
+        for name in labels:
+            self._registered.pop(name, None)
+            try:
+                self._client.delete(f"/objects/{name}")
+            except httpx.HTTPError:
+                pass
 
     def _estimate(self, payload: dict) -> PoseServiceResult:
         data = self._post("/estimate", payload)

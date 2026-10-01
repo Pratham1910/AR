@@ -106,17 +106,34 @@ class MegaPoseTracker:
 
     can_recover = True  # refining from the last good pose can re-lock after a brief occlusion
 
-    def __init__(self, client: ModelPoseClient, label: str, refine_iterations: int):
+    def __init__(
+        self,
+        client: ModelPoseClient,
+        label: str,
+        refine_iterations: int,
+        part_offset: np.ndarray | None = None,
+    ):
         self.client = client
         self.label = label
         self.refine_iterations = refine_iterations
-        self._reference: np.ndarray | None = None  # last accepted T_camera_object
+        # When tracking one part of an assembly (e.g. a bottle's body, which
+        # looks the same with or without its cap), MegaPose matches only that
+        # part's mesh, recentered on itself. part_offset = that center relative
+        # to the assembly's center; it converts the part's pose into the pose
+        # of the whole assembly, which is what gets rendered.
+        self.part_offset = np.zeros(3) if part_offset is None else np.asarray(part_offset, dtype=float)
+        self._reference: np.ndarray | None = None  # last accepted pose of the matched mesh (part frame)
         self._flow = FlowBoxTracker()
         self._flow_ready = False  # following the object right now
         self._flow_usable = False  # the object had enough texture to follow at all
 
-    @staticmethod
-    def _measurement(result: PoseServiceResult, object_box: BoundingBox | None, polygon=None) -> Measurement:
+    def _assembly_pose(self, t_camera_mesh: np.ndarray) -> np.ndarray:
+        # x_cam = R (p_asm - offset) + t  =>  assembly pose is [R | t - R offset].
+        t = np.array(t_camera_mesh, dtype=float)
+        t[:3, 3] = t[:3, 3] - t[:3, :3] @ self.part_offset
+        return t
+
+    def _measurement(self, result: PoseServiceResult, object_box: BoundingBox | None, polygon=None) -> Measurement:
         extra = {"pose_service_ms": result.elapsed_ms, "pose_score": result.score}
         if result.t_camera_object is None:
             return Measurement(confidence=0.0, extra=extra)
@@ -126,8 +143,10 @@ class MegaPoseTracker:
         else:
             confidence = result.score
             extra["confidence_source"] = "pose score"
-        pose = cv_model_pose_to_threejs(result.t_camera_object)
-        extra["t_camera_object"] = result.t_camera_object
+        t_assembly = self._assembly_pose(result.t_camera_object)
+        pose = cv_model_pose_to_threejs(t_assembly)
+        extra["t_camera_object"] = t_assembly  # what's rendered (and the debug gizmo)
+        extra["t_camera_mesh"] = result.t_camera_object  # what MegaPose refines from next frame
         return Measurement(
             confidence=confidence,
             position=pose.position,
@@ -164,6 +183,6 @@ class MegaPoseTracker:
         return self._measurement(result, object_box, polygon)
 
     def commit(self, measurement: Measurement) -> None:
-        t_co = measurement.extra.get("t_camera_object")
-        if t_co is not None:
-            self._reference = t_co
+        t_mesh = measurement.extra.get("t_camera_mesh")
+        if t_mesh is not None:
+            self._reference = t_mesh

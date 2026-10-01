@@ -168,6 +168,7 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
                 modelScale={model.scale}
                 defaultTargetClassLabel={model.component_class_label}
                 partView={partView}
+                parts={parts}
               />
             </>
           )}

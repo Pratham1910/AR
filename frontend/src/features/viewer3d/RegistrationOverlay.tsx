@@ -13,6 +13,7 @@ import type {
   AnchorOffset,
   ARFrameResponse,
   CameraIntrinsics,
+  Model3DPart,
   FeaturePoseResponse,
   PoseAxes,
   PoseResponse,
@@ -55,6 +56,8 @@ interface Props {
   initialAnchor?: AnchorOffset;
   /** Assembly parts to hide / highlight (e.g. show only the cap on the real bottle). */
   partView?: PartView;
+  /** The model's assembly parts, offered as "Track by" choices in model-based mode. */
+  parts?: Model3DPart[];
 }
 
 type RegistrationMode = "marker" | "markerless" | "feature" | "model";
@@ -96,7 +99,11 @@ export function RegistrationOverlay({
   defaultTargetClassLabel,
   initialAnchor,
   partView = EMPTY_PART_VIEW,
+  parts = [],
 }: Props) {
+  // Model-based only: match just this part (e.g. the body, which looks the
+  // same with the cap on or off); the whole assembly is still rendered.
+  const [trackPart, setTrackPart] = useState<number | null>(null);
   const partsRef = useRef<Map<number, THREE.Object3D>>(new Map());
   const partViewRef = useRef(partView);
   useEffect(() => {
@@ -569,7 +576,7 @@ export function RegistrationOverlay({
     setArResult(null);
     setArEvents([]);
     counterSamplesRef.current = [];
-  }, [mode, targetClassLabel, realWorldHeightM]);
+  }, [mode, targetClassLabel, realWorldHeightM, trackPart]);
 
   // End the backend session when this view goes away (switching model/asset remounts it).
   useEffect(() => {
@@ -688,7 +695,7 @@ export function RegistrationOverlay({
           mode,
           frame,
           targetClassLabel,
-          mode === "model" ? { modelId } : { realWorldHeightM }
+          mode === "model" ? { modelId, trackPart } : { realWorldHeightM }
         );
         applyArResult(result, performance.now() - frameStarted);
       } else {
@@ -733,7 +740,7 @@ export function RegistrationOverlay({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveTracking, mode, targetClassLabel, realWorldHeightM]);
+  }, [liveTracking, mode, targetClassLabel, realWorldHeightM, trackPart]);
 
   return (
     <div>
@@ -758,6 +765,22 @@ export function RegistrationOverlay({
             Object class
             <ClassSelect value={targetClassLabel} onChange={setTargetClassLabel} />
           </label>
+          {parts.length > 1 && (
+            <label title="Match only this part's shape; the whole assembly is still drawn. Pick a part that stays on the object (e.g. the body), so tracking holds when other parts are removed.">
+              Track by
+              <select
+                value={trackPart ?? ""}
+                onChange={(e) => setTrackPart(e.target.value === "" ? null : Number(e.target.value))}
+              >
+                <option value="">Whole object</option>
+                {parts.map((p) => (
+                  <option key={p.node_index} value={p.node_index}>
+                    {p.display_name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <button onClick={() => void resetTracking()}>Reset tracking</button>
         </div>
       )}
