@@ -1,12 +1,12 @@
 import axios from "axios";
 import type {
   AnchorOffset,
+  ARFrameResponse,
+  ARMode,
   Asset,
   FeaturePoseResponse,
   InspectionRun,
   Model3DInfo,
-  ModelPoseResponse,
-  ObjectRegistrationResponse,
   ObserveResponse,
   PoseResponse,
   Procedure,
@@ -107,15 +107,6 @@ export const VisionApi = {
       .post<PoseResponse>("/api/vision/pose", { image_base64: imageBase64, target_marker_id: targetMarkerId })
       .then((r) => r.data),
 
-  registerObject: (imageBase64: string, targetClassLabel: string, realWorldHeightM: number) =>
-    api
-      .post<ObjectRegistrationResponse>("/api/vision/object-registration", {
-        image_base64: imageBase64,
-        target_class_label: targetClassLabel,
-        real_world_height_m: realWorldHeightM,
-      })
-      .then((r) => r.data),
-
   registerReferenceImage: (assetId: string, imageBase64: string, labelWidthM: number, labelHeightM: number) =>
     api
       .post<RegisterReferenceImageResponse>("/api/vision/reference-image", {
@@ -131,14 +122,25 @@ export const VisionApi = {
       .post<FeaturePoseResponse>("/api/vision/feature-pose", { asset_id: assetId, image_base64: imageBase64 })
       .then((r) => r.data),
 
-  estimateModelPose: (modelId: string, imageBase64: string, sessionId: string, classLabel: string, reset = false) =>
+  // One frame through the session's SEARCHING/TRACKING/LOST state machine.
+  arFrame: (
+    sessionId: string,
+    mode: ARMode,
+    imageBase64: string,
+    classLabel: string,
+    options: { modelId?: string; realWorldHeightM?: number }
+  ) =>
     api
-      .post<ModelPoseResponse>("/api/vision/model-pose", {
-        model_id: modelId,
-        image_base64: imageBase64,
+      .post<ARFrameResponse>("/api/vision/ar-session/frame", {
         session_id: sessionId,
+        mode,
+        image_base64: imageBase64,
         class_label: classLabel,
-        reset,
+        model_id: options.modelId,
+        real_world_height_m: options.realWorldHeightM,
       })
       .then((r) => r.data),
+
+  // Drops the session's tracking state; the next frame starts SEARCHING.
+  endArSession: (sessionId: string) => api.delete(`/api/vision/ar-session/${sessionId}`).then(() => undefined),
 };

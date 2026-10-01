@@ -10,9 +10,8 @@ import { Models3DApi, VisionApi, apiErrorMessage } from "../../services/api";
 import { ClassSelect } from "../../components/ClassSelect";
 import type {
   AnchorOffset,
+  ARFrameResponse,
   FeaturePoseResponse,
-  ModelPoseResponse,
-  ObjectRegistrationResponse,
   PoseAxes,
   PoseResponse,
   RegisterReferenceImageResponse,
@@ -209,13 +208,17 @@ export function RegistrationOverlay({
   const [registering, setRegistering] = useState(false);
 
   const [markerPose, setMarkerPose] = useState<PoseResponse | null>(null);
-  const [objectPose, setObjectPose] = useState<ObjectRegistrationResponse | null>(null);
   const [featurePose, setFeaturePose] = useState<FeaturePoseResponse | null>(null);
-  const [modelPose, setModelPose] = useState<ModelPoseResponse | null>(null);
-  // One MegaPose tracking state per mounted overlay, so two tabs/cameras
-  // don't refine from each other's previous pose.
+  // Markerless + model-based modes go through the backend's detect-once /
+  // track state machine (one session per mounted overlay, so two tabs or
+  // cameras never share tracking state).
   const sessionIdRef = useRef(`s-${Math.random().toString(36).slice(2)}`);
-  const resetModelTrackRef = useRef(false);
+  const [arResult, setArResult] = useState<ARFrameResponse | null>(null);
+  const [arEvents, setArEvents] = useState<string[]>([]);
+  // Detector runs / tracker runs per second, from the session's counters.
+  const [rates, setRates] = useState({ detect: 0, track: 0, render: 0 });
+  const counterSamplesRef = useRef<{ t: number; detections: number; tracks: number }[]>([]);
+  const renderFramesRef = useRef(0);
   const [busy, setBusy] = useState(false);
   const [liveTracking, setLiveTracking] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
@@ -315,6 +318,7 @@ export function RegistrationOverlay({
       }
 
       renderer.render(scene, camera);
+      renderFramesRef.current += 1;
     };
     animate();
 
@@ -494,6 +498,95 @@ export function RegistrationOverlay({
     }
   };
 
+  // Rendering FPS is sampled from the animation loop, independent of how
+  // often tracking results arrive (the model is re-rendered, smoothed, every frame).
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const frames = renderFramesRef.current;
+      renderFramesRef.current = 0;
+      setRates((r) => ({ ...r, render: frames }));
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // The backend starts a fresh session when mode/class/height changes; drop
+  // the previous session's numbers here too so they're never shown as current.
+  useEffect(() => {
+    setArResult(null);
+    setArEvents([]);
+    counterSamplesRef.current = [];
+  }, [mode, targetClassLabel, realWorldHeightM]);
+
+  // End the backend session when this view goes away (switching model/asset remounts it).
+  useEffect(() => {
+    const sessionId = sessionIdRef.current;
+    return () => {
+      void VisionApi.endArSession(sessionId).catch(() => undefined);
+    };
+  }, []);
+
+  const resetTracking = async () => {
+    await VisionApi.endArSession(sessionIdRef.current).catch(() => undefined);
+    counterSamplesRef.current = [];
+    setArResult(null);
+    setArEvents((events) => [...events, "[UI] Tracking reset — searching again"].slice(-12));
+    applyModelTransform(null, null);
+    clearOutline();
+  };
+
+  const applyArResult = (result: ARFrameResponse) => {
+    setArResult(result);
+    applyCameraModel(result.camera_vertical_fov_deg, result.camera_aspect);
+    if (result.events.length) setArEvents((events) => [...events, ...result.events].slice(-12));
+
+    // Detection vs tracking rate, over the last ~2 seconds of responses.
+    const now = performance.now();
+    const samples = counterSamplesRef.current;
+    samples.push({ t: now, detections: result.counters.detection_runs, tracks: result.counters.tracking_frames });
+    while (samples.length > 2 && now - samples[0].t > 2000) samples.shift();
+    const first = samples[0];
+    const seconds = (now - first.t) / 1000;
+    if (seconds > 0.25) {
+      setRates((r) => ({
+        ...r,
+        detect: Math.max(0, result.counters.detection_runs - first.detections) / seconds,
+        track: Math.max(0, result.counters.tracking_frames - first.tracks) / seconds,
+      }));
+    }
+
+    clearOutline();
+    const obj = result.object;
+    if (obj && result.visible) {
+      const color = result.state === "LOST" ? "#ff7043" : result.monitoring ? "#ffca28" : "#00e676";
+      const label = `${result.state === "LOST" ? "lost" : "tracking"} ${obj.class_label} #${obj.object_id} ${(obj.confidence * 100).toFixed(0)}%`;
+      if (obj.polygon && obj.polygon.length >= 3) {
+        drawPolygon(obj.polygon, color, label);
+      } else if (obj.bbox) {
+        const [x1, y1, x2, y2] = obj.bbox;
+        drawPolygon(
+          [
+            { x: x1, y: y1 },
+            { x: x2, y: y1 },
+            { x: x2, y: y2 },
+            { x: x1, y: y2 },
+          ],
+          color,
+          label
+        );
+      }
+    }
+    if (result.visible && result.axes) drawAxes(result.axes);
+
+    // Hidden only once the session gives up (SEARCHING); while LOST the
+    // backend keeps returning the last valid pose, so the model stays put
+    // instead of flickering on a missed frame.
+    if (result.visible) {
+      applyModelTransform(result.position, result.quaternion, mode !== "model");
+    } else {
+      applyModelTransform(null, null);
+    }
+  };
+
   const detectAndAlign = async () => {
     if ((mode === "markerless" || mode === "model") && !targetClassLabel) {
       setApiError("Pick an object class first — it's what the camera looks for.");
@@ -516,42 +609,15 @@ export function RegistrationOverlay({
           clearOutline();
         }
         applyModelTransform(result.position, result.quaternion);
-      } else if (mode === "markerless") {
-        const result = await VisionApi.registerObject(frame, targetClassLabel, realWorldHeightM);
-        setObjectPose(result);
-        applyCameraModel(result.camera_vertical_fov_deg, result.camera_aspect);
-        if (result.found && result.polygon) {
-          drawPolygon(
-            result.polygon,
-            "#29b6f6",
-            `${result.class_label} ${result.confidence ? (result.confidence * 100).toFixed(0) + "%" : ""}`
-          );
-        } else {
-          clearOutline();
-        }
-        applyModelTransform(result.position, result.quaternion);
-      } else if (mode === "model") {
-        const reset = resetModelTrackRef.current;
-        resetModelTrackRef.current = false;
-        const result = await VisionApi.estimateModelPose(modelId, frame, sessionIdRef.current, targetClassLabel, reset);
-        setModelPose(result);
-        applyCameraModel(result.camera_vertical_fov_deg, result.camera_aspect);
-        clearOutline();
-        if (result.bbox) {
-          const [x1, y1, x2, y2] = result.bbox;
-          drawPolygon(
-            [
-              { x: x1, y: y1 },
-              { x: x2, y: y1 },
-              { x: x2, y: y2 },
-              { x: x1, y: y2 },
-            ],
-            "#ab47bc",
-            `${result.class_label} (full search)`
-          );
-        }
-        if (result.found && result.axes) drawAxes(result.axes);
-        applyModelTransform(result.position, result.quaternion, false);
+      } else if (mode === "markerless" || mode === "model") {
+        const result = await VisionApi.arFrame(
+          sessionIdRef.current,
+          mode,
+          frame,
+          targetClassLabel,
+          mode === "model" ? { modelId } : { realWorldHeightM }
+        );
+        applyArResult(result);
       } else {
         const result = await VisionApi.estimateFeaturePose(assetId, frame);
         setFeaturePose(result);
@@ -575,17 +641,17 @@ export function RegistrationOverlay({
     if (!liveTracking) return;
     let cancelled = false;
 
-    // Self-rescheduling rather than a fixed setInterval: each detection is a
-    // full camera -> backend -> response round trip, so a fixed interval
-    // either wastes time waiting when the backend was already fast, or
-    // stacks up overlapping requests when it's slow. This runs exactly as
-    // fast as the backend can actually keep up, with only a small minimum
-    // gap (50ms) so an instant response doesn't spin needlessly.
+    // Self-rescheduling rather than a fixed setInterval: each frame is a
+    // camera -> backend -> response round trip, so a fixed interval either
+    // wastes time when the backend is fast or stacks up requests when it's
+    // slow. While TRACKING the backend only runs the (cheap) tracker, so this
+    // sends frames as fast as it answers; the detector's own rate cap while
+    // SEARCHING/LOST lives in the backend state machine, not here.
     const loop = async () => {
       while (!cancelled) {
         await detectAndAlign();
         if (cancelled) break;
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await new Promise((resolve) => setTimeout(resolve, 10));
       }
     };
     void loop();
@@ -619,15 +685,7 @@ export function RegistrationOverlay({
             Object class
             <ClassSelect value={targetClassLabel} onChange={setTargetClassLabel} />
           </label>
-          <button
-            onClick={() => {
-              resetModelTrackRef.current = true;
-              if (!liveTracking) void detectAndAlign();
-            }}
-            disabled={busy || !ready}
-          >
-            Re-detect (full search)
-          </button>
+          <button onClick={() => void resetTracking()}>Reset tracking</button>
         </div>
       )}
 
@@ -647,6 +705,7 @@ export function RegistrationOverlay({
               onChange={(e) => setRealWorldHeightM(Number(e.target.value))}
             />
           </label>
+          <button onClick={() => void resetTracking()}>Reset tracking</button>
         </div>
       )}
 
@@ -709,12 +768,20 @@ export function RegistrationOverlay({
       )}
 
       <div className="registration-controls">
-        <button onClick={detectAndAlign} disabled={busy || !ready}>
-          {busy ? "Detecting…" : "Detect & Align"}
+        <button onClick={detectAndAlign} disabled={busy || !ready || liveTracking}>
+          {mode === "markerless" || mode === "model"
+            ? arResult?.state === "TRACKING"
+              ? "Track one frame"
+              : "Detect & track one frame"
+            : busy
+              ? "Detecting…"
+              : "Detect & Align"}
         </button>
         <label>
           <input type="checkbox" checked={liveTracking} onChange={(e) => setLiveTracking(e.target.checked)} />
-          Live tracking (as fast as detection responds, smoothed)
+          {mode === "markerless" || mode === "model"
+            ? "Live tracking (detect once, then track every frame)"
+            : "Live tracking (as fast as detection responds, smoothed)"}
         </label>
         <span className="view-style-toggle" title="How the 3D model is drawn — X-Ray and Wireframe let you see the real object through it to judge alignment">
           View:
@@ -812,30 +879,6 @@ export function RegistrationOverlay({
         </div>
       )}
 
-      {mode === "markerless" && objectPose && (
-        <div className={`pose-status ${objectPose.found ? "pose-found" : "pose-not-found"}`}>
-          {objectPose.found ? (
-            <>
-              <p>
-                {objectPose.class_label} found — confidence{" "}
-                {objectPose.confidence !== null ? (objectPose.confidence * 100).toFixed(0) : "?"}%
-              </p>
-              <p>
-                approx. position: ({objectPose.position!.x.toFixed(3)}, {objectPose.position!.y.toFixed(3)},{" "}
-                {objectPose.position!.z.toFixed(3)}) m
-              </p>
-            </>
-          ) : (
-            <p>No "{targetClassLabel}" detected in frame.</p>
-          )}
-          {objectPose.calibration_is_approximate && (
-            <p className="warning">
-              Using an approximate default camera calibration ({objectPose.calibration_source}).
-            </p>
-          )}
-        </div>
-      )}
-
       {mode === "feature" && !registration && (
         <p className="warning">Register a reference image of the object's labeled/textured surface first.</p>
       )}
@@ -843,39 +886,66 @@ export function RegistrationOverlay({
       {mode === "model" && (
         <p className="hint">
           Matches this 3D model's own shape against the camera image (MegaPose on the GPU pose service), so the
-          model lands on the real object itself — no marker, reference photo, or alignment offset. The first
-          lock runs a full search inside the detected box (~1s); after that each frame only refines from the
-          last pose. Needs the pose service running in WSL (see <code>pose_service/README.md</code>), and the
-          model's real-world size must be correct, since distance is inferred from it.
+          model lands on the real object itself — no marker, reference photo, or alignment offset. The object
+          is detected once (YOLO + a full pose search, ~1s); after that only the tracker runs, refining from the
+          last pose every frame, and the detector runs again only if tracking is lost. Needs the pose service
+          running in WSL (see <code>pose_service/README.md</code>), and the model's real-world size must be
+          correct, since distance is inferred from it.
         </p>
       )}
 
-      {mode === "model" && modelPose && (
-        <div className={`pose-status ${modelPose.found ? "pose-found" : "pose-not-found"}`}>
-          {modelPose.found ? (
+      {(mode === "markerless" || mode === "model") && (arResult || arEvents.length > 0) && (
+        <div
+          className={`pose-status ${
+            arResult?.state === "TRACKING" ? "pose-found" : arResult?.state === "LOST" ? "pose-lost" : "pose-not-found"
+          }`}
+        >
+          {arResult && (
             <>
-              <p>
-                Locked ({modelPose.mode === "refine" ? "tracking" : "full search"}) — score{" "}
-                {modelPose.score?.toFixed(2) ?? "n/a"}, {modelPose.elapsed_ms.toFixed(0)} ms
+              <p className="tracking-state">
+                {arResult.state === "SEARCHING" && `Searching for ${targetClassLabel || "object"}...`}
+                {arResult.state === "TRACKING" &&
+                  `Tracking ${arResult.object?.class_label} (object ID ${arResult.object?.object_id})` +
+                    (arResult.monitoring ? " — low confidence, monitoring" : "")}
+                {arResult.state === "LOST" && "Object lost — searching... (model held at last pose)"}
               </p>
-              <p>
-                position: ({modelPose.position!.x.toFixed(3)}, {modelPose.position!.y.toFixed(3)},{" "}
-                {modelPose.position!.z.toFixed(3)}) m
-              </p>
-              {modelPose.rotation_deg && (
+              {arResult.object && (
                 <p>
-                  rotation: Rx={modelPose.rotation_deg.rx.toFixed(1)}° Ry={modelPose.rotation_deg.ry.toFixed(1)}° Rz=
-                  {modelPose.rotation_deg.rz.toFixed(1)}°
+                  Tracking confidence: <strong>{(arResult.object.confidence * 100).toFixed(0)}%</strong>{" "}
+                  <span className="hint">
+                    (good ≥ {(arResult.good_confidence * 100).toFixed(0)}%, lost &lt;{" "}
+                    {(arResult.lost_confidence * 100).toFixed(0)}%)
+                  </span>
                 </p>
               )}
+              <p>
+                Detector runs: <strong>{arResult.counters.detection_runs}</strong> (found{" "}
+                {arResult.counters.detections_found}) · Tracking frames: <strong>{arResult.counters.tracking_frames}</strong>
+                {arResult.object && <> · Object ID: {arResult.object.object_id}</>}
+              </p>
+              <p>
+                Detection {rates.detect.toFixed(1)}/s · Tracking {rates.track.toFixed(1)}/s · Rendering {rates.render} fps
+                <span className="hint">
+                  {" "}
+                  (this frame: {arResult.detector_ran ? `detector ${arResult.detect_ms.toFixed(0)} ms` : "no detector"}
+                  {arResult.tracker_ran ? `, tracker ${arResult.track_ms.toFixed(0)} ms` : ""})
+                </span>
+              </p>
+              {arResult.position && (
+                <p>
+                  {arResult.approximate ? "approx. position" : "position"}: ({arResult.position.x.toFixed(3)},{" "}
+                  {arResult.position.y.toFixed(3)}, {arResult.position.z.toFixed(3)}) m
+                  {arResult.rotation_deg &&
+                    ` · rotation Rx=${arResult.rotation_deg.rx.toFixed(1)}° Ry=${arResult.rotation_deg.ry.toFixed(1)}° Rz=${arResult.rotation_deg.rz.toFixed(1)}°`}
+                </p>
+              )}
+              {arResult.calibration_is_approximate && (
+                <p className="hint">Using an approximate default camera calibration ({arResult.calibration_source}).</p>
+              )}
             </>
-          ) : modelPose.mode === "no_detection" ? (
-            <p>No "{modelPose.class_label}" detected in frame — point the camera at the object.</p>
-          ) : (
-            <p>
-              Lost / poor match (score {modelPose.score?.toFixed(2) ?? "n/a"}) — next frame will re-detect and
-              search again.
-            </p>
+          )}
+          {arEvents.length > 0 && (
+            <pre className="tracking-log">{arEvents.join("\n")}</pre>
           )}
         </div>
       )}

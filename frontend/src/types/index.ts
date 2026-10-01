@@ -167,38 +167,44 @@ export interface PoseResponse {
   axes: PoseAxes | null;
 }
 
-// Model-based (CAD) 6DoF — MegaPose matches the model's own mesh (backend
-// /api/vision/model-pose, served by pose_service/ in WSL). The pose is the
-// MODEL's own pose, so it's applied directly with no anchor offset.
-export interface ModelPoseResponse {
-  found: boolean;
-  mode: "coarse+refine" | "refine" | "no_detection";
-  score: number | null;
-  class_label: string | null;
+// Live AR session (backend /api/vision/ar-session/frame,
+// app/services/tracking/ar_session.py): detect once, then track. The detector
+// only runs while SEARCHING/LOST; while TRACKING only the tracker runs —
+// optical flow ("markerless") or the MegaPose refiner ("model").
+export type ARMode = "markerless" | "model";
+export type TrackingState = "SEARCHING" | "TRACKING" | "LOST";
+
+export interface TrackedObject {
+  object_id: number;
+  class_label: string;
+  confidence: number;
+  first_seen_frame: number;
+  last_seen_frame: number;
   bbox: [number, number, number, number] | null;
+  polygon: Vector2[] | null;
+  velocity_px_s: Vector2 | null;
+}
+
+export interface ARFrameResponse {
+  state: TrackingState;
+  // Draw the model: TRACKING, or LOST within the grace period (held at the last valid pose).
+  visible: boolean;
+  monitoring: boolean; // TRACKING but confidence below good_confidence
+  object: TrackedObject | null;
+  // "model": the model's own pose (no anchor offset). "markerless": approximate, position only.
   position: Vector3 | null;
   quaternion: QuaternionXYZW | null;
   rotation_deg: RotationDeg | null;
   axes: PoseAxes | null;
-  elapsed_ms: number;
-  calibration_is_approximate: boolean;
-  calibration_source: string;
-  camera_vertical_fov_deg: number;
-  camera_aspect: number;
-}
-
-// Markerless (approximate) registration — see backend
-// app/services/pose/markerless.py for exactly what is and isn't estimated
-// (position only from apparent size, no orientation).
-export interface ObjectRegistrationResponse {
-  found: boolean;
-  class_label: string | null;
-  confidence: number | null;
-  bbox: [number, number, number, number] | null;
-  polygon: Vector2[] | null;
-  position: Vector3 | null;
-  quaternion: QuaternionXYZW | null;
   approximate: boolean;
+  detector_ran: boolean;
+  tracker_ran: boolean;
+  detect_ms: number;
+  track_ms: number;
+  counters: { frame_index: number; detection_runs: number; detections_found: number; tracking_frames: number };
+  events: string[];
+  good_confidence: number;
+  lost_confidence: number;
   calibration_is_approximate: boolean;
   calibration_source: string;
   camera_vertical_fov_deg: number;

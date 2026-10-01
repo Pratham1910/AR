@@ -1,5 +1,7 @@
 """Pose estimation API schemas (Project.md #24-#26, #63)."""
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -108,36 +110,58 @@ class FeaturePoseResponse(BaseModel):
     axes: PoseAxes | None = None  # debug gizmo — see PoseAxes
 
 
-class ModelPoseRequest(BaseModel):
-    """Model-based (CAD) 6DoF pose: MegaPose matches the Model3D's own mesh."""
+class ARFrameRequest(BaseModel):
+    """One camera frame for a live AR session (app/services/tracking/ar_session.py).
+    The detector runs only while SEARCHING/LOST; while TRACKING only the tracker does."""
 
     model_config = {"protected_namespaces": ()}
 
-    model_id: str
+    session_id: str  # one state machine per camera/session
+    mode: Literal["markerless", "model"]  # optical-flow tracking vs MegaPose model-based tracking
     image_base64: str
-    session_id: str = "default"  # one tracking state per camera/session
-    reset: bool = False  # drop the current track and do a full search this frame
-    # YOLO class used to find the object for a full search. Defaults to the
-    # model's linked Component.class_label; required if the model has none.
-    class_label: str | None = None
+    class_label: str  # what the detector looks for (must be a detectable class)
+    model_id: str | None = None  # required for "model"
+    real_world_height_m: float | None = None  # required for "markerless" (depth from apparent size)
 
 
-class ModelPoseResponse(BaseModel):
-    found: bool
-    # "coarse+refine" = full search from a fresh YOLO box (slow, ~1s);
-    # "refine" = tracking from the previous frame's pose (fast);
-    # "no_detection" = no track and YOLO didn't find the object's class.
-    mode: str
-    score: float | None = None  # MegaPose pose score; low = poor match, track is dropped
-    class_label: str | None = None
-    bbox: list[float] | None = None  # YOLO box used for a full search, if one ran this frame
-    # The pose of the MODEL ITSELF (its recentered mesh frame) — apply
-    # directly, no anchor offset needed, unlike marker/feature modes.
+class TrackedObjectOut(BaseModel):
+    object_id: int
+    class_label: str
+    confidence: float
+    first_seen_frame: int
+    last_seen_frame: int
+    bbox: list[float] | None = None  # [x1, y1, x2, y2] in the frame's own pixel space
+    polygon: list[Vector2] | None = None
+    velocity_px_s: Vector2 | None = None
+
+
+class ARCounters(BaseModel):
+    frame_index: int
+    detection_runs: int  # detector calls (SEARCHING/LOST only)
+    detections_found: int
+    tracking_frames: int  # tracker calls
+
+
+class ARFrameResponse(BaseModel):
+    state: Literal["SEARCHING", "TRACKING", "LOST"]
+    visible: bool  # draw the model: TRACKING, or LOST within the grace period at the last valid pose
+    monitoring: bool  # TRACKING but confidence below the "good" threshold
+    object: TrackedObjectOut | None = None
+    # The model's own pose for "model" mode (apply directly, no anchor offset);
+    # an approximate, position-only placement for "markerless".
     position: Vector3 | None = None
     quaternion: Quaternion | None = None
     rotation_deg: RotationDeg | None = None
     axes: PoseAxes | None = None
-    elapsed_ms: float = 0.0
+    approximate: bool  # True for markerless (no orientation)
+    detector_ran: bool
+    tracker_ran: bool
+    detect_ms: float
+    track_ms: float
+    counters: ARCounters
+    events: list[str]  # [DETECTION]/[POSE]/[TRACKER]/[RECOVERY] lines from this frame
+    good_confidence: float
+    lost_confidence: float
     calibration_is_approximate: bool
     calibration_source: str
     camera_vertical_fov_deg: float

@@ -66,17 +66,25 @@ class Settings(BaseSettings):
     # 19ms), which hit every time the connection to the pose service idled.
     pose_service_url: str = "http://127.0.0.1:8765"
     pose_service_timeout_s: float = 30.0  # first lock + first-ever mesh registration can take seconds
-    # Below this MegaPose pose score the track is dropped and the next frame
-    # does a full YOLO + coarse search again instead of refining a wrong pose.
-    model_pose_min_score: float = 0.5
     # Refiner iterations when tracking from the previous frame's pose (the
     # first lock uses MegaPose's default of 5). Measured on an RTX 4090: 2
     # iterations ~220ms at the same ~3-4mm accuracy as 5 (~380ms), since
     # frame-to-frame motion starts the refiner close to the answer.
     model_pose_track_iterations: int = 2
-    # Consecutive low-score frames tolerated while tracking before falling
-    # back to YOLO + full search (~1s); see ModelPoseClient.estimate.
-    model_pose_max_misses: int = 2
+
+    # Live AR state machine (app/services/tracking/ar_session.py): detect
+    # once, track continuously, re-detect only when tracking is lost.
+    ar_detect_interval_ms: float = 150.0  # detector rate cap while SEARCHING/LOST
+    ar_grace_frames: int = 2  # low-confidence frames in a row that keep TRACKING (last pose held)
+    ar_lost_timeout_ms: float = 1500.0  # LOST this long without recovery -> hide model, SEARCHING
+    # Confidence thresholds are per tracker, since their scales differ:
+    # optical flow = share of points agreeing with the fitted motion (1.0
+    # when stationary); MegaPose = its pose score (measured 1.0 on a clean
+    # render, ~0.74 on a real webcam lock, ~0.2 with the object absent).
+    ar_flow_good_confidence: float = 0.7
+    ar_flow_lost_confidence: float = 0.4
+    ar_model_good_confidence: float = 0.7
+    ar_model_lost_confidence: float = 0.5
 
     # Auth / RBAC (Project.md #45, Phase 8). Deliberately minimal for now —
     # email-only login, no password/SSO (not requested, and a materially

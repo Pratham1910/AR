@@ -4,7 +4,10 @@ import httpx
 import numpy as np
 import pytest
 
+from app.schemas.vision import BoundingBox, SegmentedObject
+from app.services.pose.calibration import CameraCalibration
 from app.services.pose.model_pose_client import ModelPoseClient, PoseServiceUnavailable
+from app.services.tracking.trackers import Frame, MegaPoseTracker
 
 
 def _pose(z: float) -> list[list[float]]:
@@ -16,13 +19,15 @@ def _pose(z: float) -> list[list[float]]:
 class FakeService:
     """Stands in for pose_service: records requests, returns queued responses."""
 
-    def __init__(self, responses: list[dict]):
-        self.responses = list(responses)
-        self.requests: list[tuple[str, dict]] = []
+    def __init__(self, responses: list[dict] | None = None):
+        self.responses = list(responses or [])
+        self.requests: list[tuple[str, str, dict]] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        self.requests.append((request.url.path, body))
+        body = json.loads(request.content) if request.content else {}
+        self.requests.append((request.method, request.url.path, body))
+        if request.method == "DELETE":
+            return httpx.Response(200, json={"deleted": True})
         if request.url.path == "/objects":
             return httpx.Response(200, json={"label": body["label"], "extents_m": [0.1, 0.1, 0.1], "vertex_count": 3})
         return httpx.Response(200, json=self.responses.pop(0))
@@ -32,101 +37,52 @@ def _client(service: FakeService) -> ModelPoseClient:
     return ModelPoseClient("http://pose", 5.0, transport=httpx.MockTransport(service))
 
 
-def _estimate(client: ModelPoseClient, bbox=(10.0, 10.0, 50.0, 50.0)):
-    return client.estimate("m1", "s1", b"jpeg", np.eye(3), list(bbox) if bbox else None, min_score=0.5, track_iterations=2)
+def test_full_search_sends_the_detector_box_and_returns_pose_and_score():
+    service = FakeService([{"found": True, "pose": _pose(0.4), "score": 0.9, "mode": "coarse+refine", "elapsed_ms": 900}])
+    result = _client(service).full_search("m1", b"jpeg", np.eye(3), [10.0, 10.0, 50.0, 50.0])
+    _, path, body = service.requests[0]
+    assert path == "/estimate" and body["bbox"] == [10.0, 10.0, 50.0, 50.0] and "prev_pose" not in body
+    assert result.score == 0.9 and result.t_camera_object[2, 3] == 0.4
 
 
-def test_first_frame_does_full_search_then_tracks_from_previous_pose():
-    service = FakeService(
-        [
-            {"found": True, "pose": _pose(0.4), "score": 0.9, "mode": "coarse+refine", "elapsed_ms": 900},
-            {"found": True, "pose": _pose(0.41), "score": 0.95, "mode": "refine", "elapsed_ms": 200},
-        ]
-    )
-    client = _client(service)
-
-    first = _estimate(client)
-    assert first.found and first.mode == "coarse+refine"
-    assert service.requests[0][1]["bbox"] == [10.0, 10.0, 50.0, 50.0]
-    assert service.requests[0][1]["prev_pose"] is None
-
-    second = _estimate(client, bbox=None)
-    assert second.found
-    sent = service.requests[1][1]
-    assert sent["bbox"] is None
-    assert sent["prev_pose"] == _pose(0.4)  # refines from the last good pose
-    assert sent["n_refiner_iterations"] == 2
-
-
-def test_low_score_drops_the_track_so_next_frame_needs_a_fresh_detection():
-    service = FakeService([{"found": True, "pose": _pose(0.4), "score": 0.2, "mode": "coarse+refine", "elapsed_ms": 900}])
-    client = _client(service)
-
-    result = _estimate(client)
-    assert not result.found and result.t_camera_object is None
-    assert not client.has_track("m1", "s1")
-    # No track and no detection box -> nothing to do, no request sent.
-    assert _estimate(client, bbox=None).mode == "no_detection"
-    assert len(service.requests) == 1
-
-
-def test_brief_low_scores_keep_tracking_from_the_last_good_pose():
-    good = {"found": True, "pose": _pose(0.4), "score": 0.9, "mode": "coarse+refine", "elapsed_ms": 900}
-    blurry = {"found": True, "pose": _pose(0.9), "score": 0.2, "mode": "refine", "elapsed_ms": 200}
-    service = FakeService([good, blurry, blurry, blurry])
-    client = _client(service)
-
-    def track():
-        return client.estimate("m1", "s1", b"jpeg", np.eye(3), None, min_score=0.5, track_iterations=2, max_misses=2)
-
-    assert client.estimate("m1", "s1", b"jpeg", np.eye(3), [1, 1, 5, 5], 0.5, 2, max_misses=2).found
-    for _ in range(2):  # two blurry frames: not shown, but still tracking...
-        assert not track().found
-        assert client.has_track("m1", "s1")
-    # ...and each retry refined from the last GOOD pose, not the blurry one.
-    assert [body["prev_pose"] for _, body in service.requests[1:3]] == [_pose(0.4), _pose(0.4)]
-    assert not track().found  # third in a row: give up, next frame re-detects
-    assert not client.has_track("m1", "s1")
+def test_refine_sends_previous_pose_and_iterations_and_no_box():
+    service = FakeService([{"found": True, "pose": _pose(0.41), "score": 0.95, "mode": "refine", "elapsed_ms": 200}])
+    _client(service).refine("m1", b"jpeg", np.eye(3), np.asarray(_pose(0.4)), iterations=2)
+    body = service.requests[0][2]
+    assert body["prev_pose"] == _pose(0.4) and body["n_refiner_iterations"] == 2 and "bbox" not in body
 
 
 @pytest.mark.parametrize("z", [-0.3, 0.0, 7.0])
-def test_implausible_depth_is_rejected_even_with_high_score(z):
+def test_implausible_depth_is_a_failed_solve_whatever_its_score(z):
     service = FakeService([{"found": True, "pose": _pose(z), "score": 1.0, "mode": "coarse+refine", "elapsed_ms": 900}])
+    result = _client(service).full_search("m1", b"jpeg", np.eye(3), [1, 1, 5, 5])
+    assert result.t_camera_object is None and result.score == 0.0
+
+
+def test_mesh_is_reregistered_only_when_scale_changes_and_read_lazily():
+    service = FakeService()
     client = _client(service)
-    assert not _estimate(client).found
-    assert not client.has_track("m1", "s1")
+    reads = []
+
+    def read():
+        reads.append(1)
+        return b"glb"
+
+    client.ensure_registered("m1", read, 0.01)
+    client.ensure_registered("m1", read, 0.01)  # same scale: no second upload, file not re-read
+    client.ensure_registered("m1", read, 0.0137)  # corrected real-world size
+    assert [p for _, p, _ in service.requests].count("/objects") == 2
+    assert len(reads) == 2
 
 
-def test_mesh_is_reregistered_when_scale_changes_and_tracks_reset():
-    service = FakeService([{"found": True, "pose": _pose(0.4), "score": 0.9, "mode": "coarse+refine", "elapsed_ms": 900}])
+def test_forget_deletes_mesh_and_tolerates_a_stopped_service():
+    service = FakeService()
     client = _client(service)
-
     client.ensure_registered("m1", lambda: b"glb", 0.01)
-    client.ensure_registered("m1", lambda: b"glb", 0.01)  # same scale: no second upload
-    _estimate(client)
-    assert client.has_track("m1", "s1")
-
-    client.ensure_registered("m1", lambda: b"glb", 0.0137)  # corrected real-world size
-    assert [path for path, _ in service.requests].count("/objects") == 2
-    assert not client.has_track("m1", "s1")  # old pose was solved against the wrong-sized mesh
-
-
-def test_forget_drops_mesh_and_tracks_and_tolerates_a_stopped_service():
-    service = FakeService([{"found": True, "pose": _pose(0.4), "score": 0.9, "mode": "coarse+refine", "elapsed_ms": 900}])
-    deletes: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.method == "DELETE":
-            deletes.append(request.url.path)
-            return httpx.Response(200, json={"deleted": True})
-        return service(request)
-
-    client = ModelPoseClient("http://pose", 5.0, transport=httpx.MockTransport(handler))
-    client.ensure_registered("m1", lambda: b"glb", 0.01)
-    _estimate(client)
     client.forget("m1")
-    assert deletes == ["/objects/m1"]
-    assert not client.has_track("m1", "s1")
+    assert ("DELETE", "/objects/m1", {}) in service.requests
+    client.ensure_registered("m1", lambda: b"glb", 0.01)  # forgotten -> registers again
+    assert [p for _, p, _ in service.requests].count("/objects") == 2
 
     def refuse(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("connection refused", request=request)
@@ -140,4 +96,34 @@ def test_unreachable_service_raises_clear_error():
 
     client = ModelPoseClient("http://pose", 5.0, transport=httpx.MockTransport(refuse))
     with pytest.raises(PoseServiceUnavailable, match="not reachable"):
-        _estimate(client)
+        client.full_search("m1", b"jpeg", np.eye(3), [1, 1, 5, 5])
+
+
+def test_service_error_detail_is_surfaced():
+    def gpu_down(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"detail": "No CUDA GPU visible inside WSL"})
+
+    client = ModelPoseClient("http://pose", 5.0, transport=httpx.MockTransport(gpu_down))
+    with pytest.raises(PoseServiceUnavailable, match="503: No CUDA GPU visible inside WSL"):
+        client.full_search("m1", b"jpeg", np.eye(3), [1, 1, 5, 5])
+
+
+def test_megapose_tracker_refines_from_the_last_accepted_pose_only():
+    service = FakeService(
+        [
+            {"found": True, "pose": _pose(0.40), "score": 0.9, "mode": "coarse+refine", "elapsed_ms": 900},
+            {"found": True, "pose": _pose(0.90), "score": 0.1, "mode": "refine", "elapsed_ms": 200},
+            {"found": True, "pose": _pose(0.41), "score": 0.9, "mode": "refine", "elapsed_ms": 200},
+        ]
+    )
+    tracker = MegaPoseTracker(_client(service), "m1", refine_iterations=2)
+    frame = Frame(np.zeros((480, 640, 3), dtype=np.uint8), CameraCalibration.approximate(640, 480))
+    detection = SegmentedObject(class_label="cup", confidence=0.8, bbox=BoundingBox(x1=1, y1=1, x2=5, y2=5), polygon=[])
+
+    first = tracker.initialize(frame, detection)
+    assert first.confidence == 0.9 and first.position == pytest.approx((0.0, 0.0, -0.40))
+    tracker.commit(first)  # the session accepted it
+    tracker.update(frame)  # low score: the session would NOT commit this one
+    tracker.update(frame)
+    assert service.requests[1][2]["prev_pose"] == _pose(0.40)
+    assert service.requests[2][2]["prev_pose"] == _pose(0.40)  # not the rejected 0.90

@@ -114,6 +114,25 @@
   border: 1px solid #ddd;
 }
 
+.pose-status.pose-lost {
+  border-color: #ff7043;
+}
+
+.tracking-state {
+  font-weight: 600;
+}
+
+.tracking-log {
+  margin: 0.5rem 0 0;
+  padding: 0.5rem;
+  max-height: 12rem;
+  overflow-y: auto;
+  font-size: 0.8rem;
+  background: rgba(0, 0, 0, 0.04);
+  border-radius: 4px;
+  white-space: pre-wrap;
+}
+
 .view-style-toggle {
   display: inline-flex;
   align-items: center;

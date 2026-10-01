@@ -115,6 +115,30 @@ Model-based mode closes that gap:
   by the browser). Untextured GLBs match on silhouette/shape only, and a mug
   with its handle hidden has an ambiguous spin angle.
 
+## Live AR: detect once, then track (Phase-3.md)
+
+Markerless and model-based AR used to be tracking-by-detection: markerless
+ran YOLO on every frame and rebuilt the pose from scratch, and model-based
+hid its state and re-ran YOLO on every frame after a loss.
+`POST /api/vision/ar-session/frame` now runs one explicit state machine per
+camera session (`app/services/tracking/ar_session.py`):
+
+- SEARCHING: YOLO, rate-capped (`AR_DETECT_INTERVAL_MS`); found -> initial
+  pose -> tracker initialized -> TRACKING, with a persistent object ID.
+- TRACKING: only the tracker runs — Lucas-Kanade optical flow inside the
+  detected outline for markerless (`flow_tracker.py`; scale change carries
+  depth), the MegaPose refiner from the last accepted pose for model-based.
+  Up to `AR_GRACE_FRAMES` low-confidence frames hold the last pose.
+- LOST: model held at the last valid pose; recovery via the tracker
+  (MegaPose) or the rate-capped detector; after `AR_LOST_TIMEOUT_MS` the
+  model hides and the session returns to SEARCHING.
+- Per-tracker confidence thresholds are configurable (`AR_FLOW_*`,
+  `AR_MODEL_*`). Rendering stays continuous, smoothed toward each new pose.
+- **Verified** with Phase-3.md's 12-step sequence as a unit test (detector
+  call count unchanged across 150 tracking frames), and end-to-end on a real
+  frame with real YOLO: detector ran once for 30 frames of motion + zoom;
+  tracker median 13.6ms vs detector 71ms per frame.
+
 ## Phase 2 — Tracking
 
 - `ObjectTracker` (`backend/app/services/tracking/tracker.py`) wraps

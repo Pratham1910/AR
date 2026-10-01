@@ -6,9 +6,8 @@ through /api/inspection/*.
 
 import base64
 import time
-from pathlib import Path
-
 import uuid
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -17,13 +16,13 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.database import get_db
-from app.models.asset import Component
 from app.models.model3d import Model3D
 from app.schemas.pose import (
+    ARCounters,
+    ARFrameRequest,
+    ARFrameResponse,
     FeaturePoseRequest,
     FeaturePoseResponse,
-    ModelPoseRequest,
-    ModelPoseResponse,
     ObjectRegistrationRequest,
     ObjectRegistrationResponse,
     PoseAxes,
@@ -33,12 +32,14 @@ from app.schemas.pose import (
     RegisterReferenceImageRequest,
     RegisterReferenceImageResponse,
     RotationDeg,
+    TrackedObjectOut,
     Vector2,
     Vector3,
 )
 from app.schemas.vision import (
     DetectRequest,
     DetectResponse,
+    SegmentedObject,
     SegmentRequest,
     SegmentResponse,
     StateRequest,
@@ -51,14 +52,11 @@ from app.services.pose.calibration import load_calibration
 from app.services.pose.feature_tracker import FeatureTracker, ReferencePlane, RegistrationQuality
 from app.services.pose.markerless import estimate_object_placement
 from app.services.pose.model_pose_client import ModelPoseClient, PoseServiceUnavailable
-from app.services.pose.transforms import (
-    cv_model_pose_to_threejs,
-    cv_pose_to_threejs,
-    euler_angles_deg,
-    project_pose_axes,
-)
+from app.services.pose.transforms import cv_pose_to_threejs, euler_angles_deg, project_pose_axes
 from app.services.state_detection.state_engine import ComponentStateRule, StateEstimationError, StateEstimator
+from app.services.tracking.ar_session import ARSession, ARTrackingConfig
 from app.services.tracking.tracker import ObjectTracker
+from app.services.tracking.trackers import FlowPoseTracker, Frame, MegaPoseTracker
 from app.services.vision.detector import build_detector, time_inference
 from app.services.vision.segmentation import Segmenter, build_segmenter
 
@@ -396,101 +394,152 @@ def estimate_pose(request: PoseRequest) -> PoseResponse:
     )
 
 
-@router.post("/model-pose", response_model=ModelPoseResponse)
-def estimate_model_pose(request: ModelPoseRequest, db: Session = Depends(get_db)) -> ModelPoseResponse:
-    """
-    Model-based (CAD) 6DoF pose: MegaPose (pose_service/, WSL2 + CUDA) matches
-    the Model3D's own mesh against the frame, so the result is the pose of
-    the model itself — not of a marker or a flat photo patch — and needs no
-    anchor offset. The first frame (or after tracking is lost) runs YOLO to
-    find the object's class, then a full coarse+refine search inside that box;
-    later frames only refine from the previous pose.
-    """
+# --- Live AR: detect once, then track (app/services/tracking/ar_session.py) ---
+
+_AR_MAX_SESSIONS = 16
+_ar_sessions: dict[str, tuple[tuple, ARSession]] = {}  # session_id -> (config key, session)
+
+
+def _ar_detector(class_label: str):
+    """The expensive step, called by ARSession only while SEARCHING/LOST."""
+
+    def detect(frame: Frame) -> SegmentedObject | None:
+        objects = _get_segmenter().segment(frame.bgr, _settings.segmentation_confidence_threshold)
+        matches = [o for o in objects if o.class_label == class_label]
+        return max(matches, key=lambda o: o.confidence) if matches else None
+
+    return detect
+
+
+def _ar_model(request: ARFrameRequest, db: Session) -> Model3D:
     try:
-        model = db.get(Model3D, uuid.UUID(request.model_id))
+        model = db.get(Model3D, uuid.UUID(request.model_id or ""))
     except ValueError:
         model = None
     if model is None:
         raise HTTPException(status_code=404, detail="Model not found")
+    return model
 
-    class_label = request.class_label
-    if class_label is None and model.component_id is not None:
-        component = db.get(Component, model.component_id)
-        class_label = component.class_label if component else None
-    if not class_label:
-        raise HTTPException(
-            status_code=400,
-            detail="This model has no detection class (e.g. 'cup'); set one in the model settings",
+
+def _build_ar_session(request: ARFrameRequest, class_label: str, model: Model3D | None) -> ARSession:
+    common = dict(
+        detect_interval_ms=_settings.ar_detect_interval_ms,
+        grace_frames=_settings.ar_grace_frames,
+        lost_timeout_ms=_settings.ar_lost_timeout_ms,
+    )
+    if model is None:
+        config = ARTrackingConfig(
+            good_confidence=_settings.ar_flow_good_confidence,
+            lost_confidence=_settings.ar_flow_lost_confidence,
+            **common,
         )
-    class_label = normalize_class_label(class_label)
+        tracker = FlowPoseTracker(request.real_world_height_m)
+    else:
+        glb_path = Path(_settings.models_3d_dir) / model.storage_key
+        try:
+            _model_pose_client.ensure_registered(str(model.id), glb_path.read_bytes, model.scale)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"GLB file missing: {glb_path}") from exc
+        except PoseServiceUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        config = ARTrackingConfig(
+            good_confidence=_settings.ar_model_good_confidence,
+            lost_confidence=_settings.ar_model_lost_confidence,
+            **common,
+        )
+        tracker = MegaPoseTracker(_model_pose_client, str(model.id), _settings.model_pose_track_iterations)
+    return ARSession(class_label, _ar_detector(class_label), tracker, config)
 
-    frame = decode_frame(request.image_base64)
-    height_px, width_px = frame.shape[:2]
+
+@router.post("/ar-session/frame", response_model=ARFrameResponse)
+def ar_session_frame(request: ARFrameRequest, db: Session = Depends(get_db)) -> ARFrameResponse:
+    """
+    One camera frame through the session's SEARCHING/TRACKING/LOST state
+    machine. The detector (YOLO) only runs while SEARCHING or LOST, at most
+    every ar_detect_interval_ms; while TRACKING only the tracker runs —
+    optical flow ("markerless") or the MegaPose refiner ("model").
+    Changing mode/class/model/height starts a fresh session.
+    """
+    class_label = normalize_class_label(request.class_label)
+    if request.mode == "model":
+        if not request.model_id:
+            raise HTTPException(status_code=400, detail="model_id is required for model-based tracking")
+        model = _ar_model(request, db)
+        key: tuple = ("model", class_label, str(model.id), model.scale)
+    else:
+        if not request.real_world_height_m or request.real_world_height_m <= 0:
+            raise HTTPException(status_code=400, detail="real_world_height_m is required for markerless tracking")
+        model = None
+        key = ("markerless", class_label, request.real_world_height_m)
+
+    # Keep the live session while the same thing is being tracked — its
+    # tracker state is the whole point; rebuild only if that changed.
+    existing = _ar_sessions.pop(request.session_id, None)
+    session = existing[1] if existing is not None and existing[0] == key else _build_ar_session(request, class_label, model)
+    _ar_sessions[request.session_id] = (key, session)
+    while len(_ar_sessions) > _AR_MAX_SESSIONS:
+        _ar_sessions.pop(next(iter(_ar_sessions)))  # oldest-used first
+
+    frame_bgr = decode_frame(request.image_base64)
+    height_px, width_px = frame_bgr.shape[:2]
     calibration = load_calibration(_settings.camera_calibration_path, width_px, height_px)
-
-    def response(**kwargs) -> ModelPoseResponse:
-        return ModelPoseResponse(
-            class_label=class_label,
-            calibration_is_approximate=calibration.is_approximate,
-            calibration_source=calibration.source,
-            camera_vertical_fov_deg=calibration.vertical_fov_deg(),
-            camera_aspect=calibration.aspect_ratio(),
-            **kwargs,
-        )
-
-    label = str(model.id)
-    glb_path = Path(_settings.models_3d_dir) / model.storage_key
     try:
-        _model_pose_client.ensure_registered(label, glb_path.read_bytes, model.scale)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=f"GLB file missing: {glb_path}") from exc
+        result = session.step(Frame(frame_bgr, calibration))
     except PoseServiceUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    if request.reset:
-        _model_pose_client.reset(label, request.session_id)
+    obj = result.obj
+    position = quaternion = rotation_deg = axes = None
+    if result.visible and obj is not None and obj.position is not None:
+        position = Vector3(x=obj.position[0], y=obj.position[1], z=obj.position[2])
+        quaternion = Quaternion(x=obj.quaternion[0], y=obj.quaternion[1], z=obj.quaternion[2], w=obj.quaternion[3])
+        t_co = obj.extra.get("t_camera_object")
+        if t_co is not None:
+            rvec, _ = cv2.Rodrigues(t_co[:3, :3])
+            axes, rotation_deg = _debug_pose_gizmo(rvec.reshape(3), t_co[:3, 3], calibration, axis_length_m=0.05)
 
-    bbox = None
-    if not _model_pose_client.has_track(label, request.session_id):
-        objects = _get_segmenter().segment(frame, _settings.segmentation_confidence_threshold)
-        matches = [o for o in objects if o.class_label == class_label]
-        if not matches:
-            return response(found=False, mode="no_detection")
-        best = max(matches, key=lambda o: o.confidence)
-        bbox = [best.bbox.x1, best.bbox.y1, best.bbox.x2, best.bbox.y2]
-
-    ok, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
-    if not ok:
-        raise HTTPException(status_code=500, detail="Could not re-encode frame")
-    try:
-        result = _model_pose_client.estimate(
-            label,
-            request.session_id,
-            jpeg.tobytes(),
-            calibration.camera_matrix,
-            bbox,
-            _settings.model_pose_min_score,
-            _settings.model_pose_track_iterations,
-            _settings.model_pose_max_misses,
-        )
-    except PoseServiceUnavailable as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-
-    if not result.found:
-        return response(found=False, mode=result.mode, score=result.score, bbox=bbox, elapsed_ms=result.elapsed_ms)
-
-    t_co = result.t_camera_object
-    pose = cv_model_pose_to_threejs(t_co)
-    rvec, _ = cv2.Rodrigues(t_co[:3, :3])
-    axes, rotation_deg = _debug_pose_gizmo(rvec.reshape(3), t_co[:3, 3], calibration, axis_length_m=0.05)
-    return response(
-        found=True,
-        mode=result.mode,
-        score=result.score,
-        bbox=bbox,
-        position=Vector3(x=pose.position[0], y=pose.position[1], z=pose.position[2]),
-        quaternion=Quaternion(x=pose.quaternion[0], y=pose.quaternion[1], z=pose.quaternion[2], w=pose.quaternion[3]),
+    return ARFrameResponse(
+        state=result.state.value,
+        visible=result.visible,
+        monitoring=result.monitoring,
+        object=None
+        if obj is None
+        else TrackedObjectOut(
+            object_id=obj.object_id,
+            class_label=obj.class_label,
+            confidence=obj.confidence,
+            first_seen_frame=obj.first_seen_frame,
+            last_seen_frame=obj.last_seen_frame,
+            bbox=None if obj.bbox is None else [obj.bbox.x1, obj.bbox.y1, obj.bbox.x2, obj.bbox.y2],
+            # Segmentation/tracking use the vision schemas' Vector2; responses use the pose schemas' one.
+            polygon=None if obj.polygon is None else [Vector2(x=p.x, y=p.y) for p in obj.polygon],
+            velocity_px_s=None if obj.velocity_px_s is None else Vector2(x=obj.velocity_px_s[0], y=obj.velocity_px_s[1]),
+        ),
+        position=position,
+        quaternion=quaternion,
         rotation_deg=rotation_deg,
         axes=axes,
-        elapsed_ms=result.elapsed_ms,
+        approximate=request.mode == "markerless",
+        detector_ran=result.detector_ran,
+        tracker_ran=result.tracker_ran,
+        detect_ms=result.detect_ms,
+        track_ms=result.track_ms,
+        counters=ARCounters(
+            frame_index=session.frame_index,
+            detection_runs=session.detection_runs,
+            detections_found=session.detections_found,
+            tracking_frames=session.tracking_frames,
+        ),
+        events=result.events,
+        good_confidence=session.config.good_confidence,
+        lost_confidence=session.config.lost_confidence,
+        calibration_is_approximate=calibration.is_approximate,
+        calibration_source=calibration.source,
+        camera_vertical_fov_deg=calibration.vertical_fov_deg(),
+        camera_aspect=calibration.aspect_ratio(),
     )
+
+
+@router.delete("/ar-session/{session_id}", status_code=204)
+def end_ar_session(session_id: str) -> None:
+    _ar_sessions.pop(session_id, None)
