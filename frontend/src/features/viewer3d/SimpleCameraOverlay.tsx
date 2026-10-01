@@ -116,7 +116,7 @@ export function SimpleCameraOverlay({ modelUrl, partView = EMPTY_PART_VIEW }: Pr
 
   return (
     <div>
-      <div style={{ position: "relative", width: "100%", maxWidth: 640, height: 480 }}>
+      <div className="ar-stage" style={{ aspectRatio: "4 / 3" }}>
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
         <video
           ref={videoRef}
@@ -128,13 +128,11 @@ export function SimpleCameraOverlay({ modelUrl, partView = EMPTY_PART_VIEW }: Pr
         <div ref={overlayRef} style={{ position: "absolute", inset: 0 }} />
       </div>
 
-      <CameraStatusBadge status={cameraStatus} deviceLabel={deviceLabel} resolution={resolution} error={cameraError} />
-      <CameraSelect devices={devices} selectedDeviceId={selectedDeviceId} onSelect={selectDevice} />
-
-      <p className="hint">
-        Drag to rotate, scroll to zoom. The model is not registered to anything in the camera feed — it's
-        just floating on top of it. Use the other tabs for actual physical↔3D alignment.
-      </p>
+      <div className="status-row">
+        <CameraStatusBadge status={cameraStatus} deviceLabel={deviceLabel} resolution={resolution} error={cameraError} />
+        <CameraSelect devices={devices} selectedDeviceId={selectedDeviceId} onSelect={selectDevice} />
+      </div>
+      <p className="hint">Drag to rotate, scroll to zoom. Not registered to the real object — use AR tracking for that.</p>
 
       {!ready && !cameraError && <p>Requesting camera access…</p>}
     </div>

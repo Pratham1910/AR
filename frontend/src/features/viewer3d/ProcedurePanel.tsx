@@ -11,6 +11,7 @@ import {
   stepDuration,
   type FactStatus,
   type ProcedureHost,
+  type StepGuide,
   type ProcedurePackage,
 } from "./procedure";
 
@@ -29,11 +30,13 @@ const LOOP_PAUSE_MS = 1200; // the step animation replays after this pause
 const ADVANCE_DELAY_MS = 1500; // time to see "done" before the next step starts
 
 const FACT_TEXT: Record<FactStatus, string> = {
-  met: "✅ yes",
-  not_met: "❌ not yet",
-  uncertain: "❓ unsure",
-  unknown: "⏳ waiting for tracking",
+  met: "Yes",
+  not_met: "Not yet",
+  uncertain: "Unsure",
+  unknown: "Waiting for tracking",
 };
+const FACT_CHIP: Record<FactStatus, string> = { met: "ok", not_met: "bad", uncertain: "warn", unknown: "" };
+const FACT_SHORT: Record<FactStatus, string> = { met: "yes", not_met: "not yet", uncertain: "unsure", unknown: "waiting" };
 
 /**
  * A Vishwa procedure (.procedure.json) attached to this model: imports it,
@@ -183,104 +186,171 @@ export function ProcedurePanel({ modelId, parts, host, cameraChecks }: Props) {
   const facts = procedure && step ? expectedVisionFacts(procedure, step) : [];
   const allDone = procedure !== null && passed.length === procedure.steps.length;
   const skipped = procedure ? skippedActionTypes(procedure) : [];
+  const stepPassed = step !== null && passed.includes(step.id);
+
+  // The current step, for the AR view to show over the video.
+  useEffect(() => {
+    if (!procedure || !step) {
+      host.publishGuide(null);
+      return;
+    }
+    let state: StepGuide["state"];
+    let statusText: string;
+    if (allDone) {
+      state = "complete";
+      statusText = "All steps done";
+    } else if (stepPassed) {
+      state = "done";
+      statusText = "✓ Done";
+    } else if (!cameraChecks || facts.length === 0) {
+      state = "manual";
+      statusText = "Mark done when finished";
+    } else if (streak > 0) {
+      state = "holding";
+      statusText = `Confirming ${Math.min(streak, REQUIRED_FRAMES)}/${REQUIRED_FRAMES}`;
+    } else {
+      state = "waiting";
+      statusText = facts
+        .map((f) => `${f.part} ${f.kind === "partAbsent" ? "removed" : "in place"}? ${FACT_SHORT[factStatus(f, checks)]}`)
+        .join(" · ");
+    }
+    host.publishGuide({
+      number: index + 1,
+      total: procedure.steps.length,
+      title: step.title ?? step.id,
+      instruction: step.description ?? null,
+      state,
+      statusText,
+    });
+  }, [procedure, step, index, allDone, stepPassed, cameraChecks, streak, checks, host]);
+  useEffect(() => () => host.publishGuide(null), [host]);
 
   return (
     <div className="procedure-panel">
-      <h4>Procedure</h4>
-      {error && <p className="error">{error}</p>}
-      {!procedure && (
-        <p className="hint">
-          Import a procedure exported from Vishwa (<code>.procedure.json</code>). Its part names are matched to the
-          names in the Parts panel.
-        </p>
-      )}
-      <div className="parts-actions">
-        <label className="file-button">
-          {procedure ? "Replace…" : "Import .procedure.json"}
-          <input
-            type="file"
-            accept=".json,application/json"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              e.target.value = "";
-              if (file) void importFile(file);
-            }}
-          />
-        </label>
+      <div className="panel-title">
+        Procedure
         {procedure && (
-          <button className="danger" onClick={() => void remove()}>
-            Remove
-          </button>
+          <span className="parts-actions">
+            <label className="file-button" style={{ height: 28, fontSize: 12 }}>
+              Replace
+              <input
+                type="file"
+                accept=".json,application/json"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = "";
+                  if (file) void importFile(file);
+                }}
+              />
+            </label>
+            <button className="danger" style={{ height: 28, fontSize: 12 }} onClick={() => void remove()}>
+              Remove
+            </button>
+          </span>
         )}
       </div>
+      {error && <p className="error">{error}</p>}
+
+      {!procedure && (
+        <>
+          <p className="hint">
+            Import a procedure exported from Vishwa (<code>.procedure.json</code>). Its part names are matched to the
+            names in the Parts panel.
+          </p>
+          <label className="file-button" style={{ marginTop: "0.5rem" }}>
+            Import .procedure.json
+            <input
+              type="file"
+              accept=".json,application/json"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (file) void importFile(file);
+              }}
+            />
+          </label>
+        </>
+      )}
 
       {procedure && step && (
         <>
-          <p>
+          <div className="procedure-title">
             <strong>{procedure.title ?? procedure.id}</strong>
-            {summary && (
-              <span className="hint">
-                {" "}
-                · {summary.steps} steps, {summary.actions} actions
-              </span>
-            )}
-          </p>
+            <span className="hint">
+              {passed.length} of {procedure.steps.length} steps done
+              {summary && ` · ${summary.actions} animations`}
+            </span>
+          </div>
+          <div className="progress">
+            <div style={{ width: `${(100 * passed.length) / procedure.steps.length}%` }} />
+          </div>
           {unmatched.length > 0 && (
-            <p className="warning">
+            <p className="warning-box">
               Not found in this model: {unmatched.join(", ")} — name the parts in the Parts panel to match.
             </p>
           )}
-          {skipped.length > 0 && <p className="hint">Not played here: {skipped.join(", ")}</p>}
 
           <ol className="procedure-steps">
-            {procedure.steps.map((s, i) => (
-              <li key={s.id} className={i === index ? "current" : ""} onClick={() => goTo(i)}>
-                {passed.includes(s.id) ? "✅" : i === index ? "▶" : "○"} {s.title ?? s.id}
-              </li>
-            ))}
+            {procedure.steps.map((s, i) => {
+              const done = passed.includes(s.id);
+              return (
+                <li key={s.id} className={i === index ? "current" : ""} onClick={() => goTo(i)}>
+                  <span className={`step-dot ${done ? "done" : ""}`}>{done ? "✓" : i + 1}</span>
+                  {s.title ?? s.id}
+                </li>
+              );
+            })}
           </ol>
 
           <div className="procedure-step">
-            <div className="step-title">
-              Step {index + 1}/{procedure.steps.length}: {step.title ?? step.id}
-            </div>
-            {step.description && <p>{step.description}</p>}
+            <div className="step-title">{step.title ?? step.id}</div>
+            {step.description && <p className="hint">{step.description}</p>}
             {facts.length > 0 && (
               <div className="procedure-checks">
-                {facts.map((f) => (
-                  <div key={`${f.kind}-${f.part}`}>
-                    {f.part} {f.kind === "partAbsent" ? "removed" : "in place"}?{" "}
-                    {cameraChecks ? (
-                      <strong>{FACT_TEXT[factStatus(f, checks)]}</strong>
-                    ) : (
-                      <span className="hint">checked by the camera in AR Registration</span>
-                    )}
-                  </div>
-                ))}
-                {cameraChecks && !passed.includes(step.id) && streak > 0 && (
+                {facts.map((f) => {
+                  const status = factStatus(f, checks);
+                  return (
+                    <div key={`${f.kind}-${f.part}`} className="fact-row">
+                      <span>
+                        {f.part} {f.kind === "partAbsent" ? "removed" : "in place"}
+                      </span>
+                      {cameraChecks ? (
+                        <span className={`chip ${FACT_CHIP[status]}`}>{FACT_TEXT[status]}</span>
+                      ) : (
+                        <span className="hint">camera check in AR</span>
+                      )}
+                    </div>
+                  );
+                })}
+                {cameraChecks && !stepPassed && streak > 0 && (
                   <div className="hint">
-                    holding… {Math.min(streak, REQUIRED_FRAMES)}/{REQUIRED_FRAMES} frames
+                    Confirming… {Math.min(streak, REQUIRED_FRAMES)}/{REQUIRED_FRAMES} frames
                   </div>
                 )}
               </div>
             )}
-            {passed.includes(step.id) && <p className="procedure-done">✅ Step done</p>}
-            {allDone && <p className="procedure-done">🎉 Procedure complete</p>}
+            {stepPassed && <p className="procedure-done">✓ Step done</p>}
+            {allDone && <p className="procedure-done">Procedure complete</p>}
           </div>
 
-          <div className="parts-actions">
-            <button disabled={index === 0} onClick={() => goTo(index - 1)}>
-              ◀ Back
+          <div className="procedure-controls">
+            <button disabled={index === 0} onClick={() => goTo(index - 1)} title="Previous step">
+              ◀
             </button>
             <button onClick={togglePlay}>{playing ? "⏸ Pause" : "▶ Play"}</button>
-            <button onClick={() => goTo(index)}>↺ Replay</button>
-            {(facts.length === 0 || !cameraChecks) && !passed.includes(step.id) && (
-              <button onClick={() => complete(index)}>Mark done</button>
-            )}
-            <button disabled={index + 1 >= procedure.steps.length} onClick={() => goTo(index + 1)}>
-              Next ▶
+            <button onClick={() => goTo(index)} title="Replay this step's animation">
+              ↺ Replay
+            </button>
+            <button disabled={index + 1 >= procedure.steps.length} onClick={() => goTo(index + 1)} title="Next step">
+              ▶
             </button>
           </div>
+          {(facts.length === 0 || !cameraChecks) && !stepPassed && (
+            <button className="primary" style={{ width: "100%", marginTop: "0.5rem" }} onClick={() => complete(index)}>
+              Mark step done
+            </button>
+          )}
+          {skipped.length > 0 && <p className="hint">Not played here: {skipped.join(", ")}</p>}
         </>
       )}
     </div>

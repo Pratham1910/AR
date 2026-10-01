@@ -71,10 +71,16 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
       .catch(() => setParts([])); // a single-part model simply has no parts panel
   }, [modelId]);
 
+  const VIEWS = [
+    ["view", "3D model"],
+    ["overlay", "Camera overlay"],
+    ["register", "AR tracking"],
+  ] as const;
+
   return (
     <div>
-      <div className="setup">
-        <label>
+      <div className="workspace-toolbar">
+        <label className="field">
           Asset
           <select value={selectedAssetId} onChange={(e) => setSelectedAssetId(e.target.value)}>
             <option value="">Select an asset…</option>
@@ -86,19 +92,22 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
           </select>
         </label>
         {models.length > 1 && (
-          <label>
+          <label className="field">
             Model
             <select value={selectedModelId} onChange={(e) => setSelectedModelId(e.target.value)}>
               {models.map((m) => (
                 <option key={m.id} value={m.id}>
-                  {m.name} ({m.storage_key}
-                  {m.real_height_m !== null ? `, ${(m.real_height_m * 100).toFixed(1)} cm` : ""})
+                  {m.name}
+                  {m.real_height_m !== null ? ` · ${(m.real_height_m * 100).toFixed(1)} cm` : ""}
                 </option>
               ))}
             </select>
           </label>
         )}
-        <button onClick={() => setShowUpload((v) => !v)}>{showUpload ? "Hide upload" : "+ Upload 3D model"}</button>
+        <div className="spacer" />
+        <button className={showUpload ? "" : "primary"} onClick={() => setShowUpload((v) => !v)}>
+          {showUpload ? "Cancel upload" : "+ Upload 3D model"}
+        </button>
       </div>
 
       {showUpload && (
@@ -115,8 +124,15 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
 
       {error && <p className="error">{error}</p>}
 
+      {!selectedAssetId && (
+        <div className="card">
+          <p className="hint">Pick an asset above to open its 3D model, or upload a new one.</p>
+        </div>
+      )}
       {selectedAssetId && models.length === 0 && !error && (
-        <p>No 3D model registered for this asset yet — use "+ Upload 3D model" above.</p>
+        <div className="card">
+          <p className="hint">No 3D model registered for this asset yet — use "+ Upload 3D model".</p>
+        </div>
       )}
 
       {model && (
@@ -126,79 +142,83 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
             onSaved={() => refreshModels(selectedAssetId, model.id)}
             onDeleted={() => refreshModels(selectedAssetId)}
           />
-          <div className="mode-toggle">
-            <button className={mode === "view" ? "active" : ""} onClick={() => setMode("view")}>
-              3D Viewer (Phase 4)
-            </button>
-            <button className={mode === "overlay" ? "active" : ""} onClick={() => setMode("overlay")}>
-              Camera Overlay (no detection)
-            </button>
-            <button className={mode === "register" ? "active" : ""} onClick={() => setMode("register")}>
-              AR Registration (Phase 5)
-            </button>
+
+          <div className="view-bar">
+            <div className="segmented" role="tablist">
+              {VIEWS.map(([value, label]) => (
+                <button
+                  key={value}
+                  role="tab"
+                  data-view={value}
+                  className={mode === value ? "active" : ""}
+                  onClick={() => setMode(value)}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <span className="hint">
+              {mode === "view" && "Orbit, zoom and click parts to select them."}
+              {mode === "overlay" && "The model floats over the camera feed — no tracking."}
+              {mode === "register" && "Lock the model onto the real object and follow it live."}
+            </span>
           </div>
 
           <div className="viewer-with-parts">
-          <div className="viewer-main">
-          {mode === "view" && (
-            <ThreeViewer
-              modelUrl={resolveApiUrl(model.url)}
-              partView={partView}
-              onPartClick={(nodeIndex) => setPartView((v) => ({ ...v, highlight: nodeIndex }))}
-              procedureHost={procedureHost}
-            />
-          )}
-          {mode === "overlay" && <SimpleCameraOverlay modelUrl={resolveApiUrl(model.url)} partView={partView} />}
-          {mode === "register" && (
-            <>
-              <p className="hint">
-                Print a marker with <code>python -m app.workers.generate_marker</code>, place it next to the
-                physical object, and measure its printed side length against <code>ARUCO_MARKER_LENGTH_M</code>{" "}
-                in <code>.env</code>.
-              </p>
-              <RegistrationOverlay
-                key={model.id}
-                assetId={selectedAssetId}
-                modelId={model.id}
-                modelUrl={resolveApiUrl(model.url)}
-                initialAnchor={{
-                  anchor_offset_x: model.anchor_offset_x,
-                  anchor_offset_y: model.anchor_offset_y,
-                  anchor_offset_z: model.anchor_offset_z,
-                  anchor_rotation_x: model.anchor_rotation_x,
-                  anchor_rotation_y: model.anchor_rotation_y,
-                  anchor_rotation_z: model.anchor_rotation_z,
-                  anchor_rotation_w: model.anchor_rotation_w,
-                }}
-                modelScale={model.scale}
-                defaultTargetClassLabel={model.component_class_label}
-                partView={partView}
-                parts={parts}
-                procedureHost={procedureHost}
-              />
-            </>
-          )}
-          </div>
-          <div className="side-panels">
-            {parts.length > 1 && (
-              <PartsPanel
-                modelId={model.id}
-                parts={parts}
-                view={partView}
-                onViewChange={setPartView}
-                onPartsChange={setParts}
-              />
-            )}
-            {mode !== "overlay" && (
-              <ProcedurePanel
-                key={model.id}
-                modelId={model.id}
-                parts={parts}
-                host={procedureHost}
-                cameraChecks={mode === "register"}
-              />
-            )}
-          </div>
+            <div className="viewer-main">
+              {mode === "view" && (
+                <ThreeViewer
+                  modelUrl={resolveApiUrl(model.url)}
+                  height={560}
+                  partView={partView}
+                  onPartClick={(nodeIndex) => setPartView((v) => ({ ...v, highlight: nodeIndex }))}
+                  procedureHost={procedureHost}
+                />
+              )}
+              {mode === "overlay" && <SimpleCameraOverlay modelUrl={resolveApiUrl(model.url)} partView={partView} />}
+              {mode === "register" && (
+                <RegistrationOverlay
+                  key={model.id}
+                  assetId={selectedAssetId}
+                  modelId={model.id}
+                  modelUrl={resolveApiUrl(model.url)}
+                  initialAnchor={{
+                    anchor_offset_x: model.anchor_offset_x,
+                    anchor_offset_y: model.anchor_offset_y,
+                    anchor_offset_z: model.anchor_offset_z,
+                    anchor_rotation_x: model.anchor_rotation_x,
+                    anchor_rotation_y: model.anchor_rotation_y,
+                    anchor_rotation_z: model.anchor_rotation_z,
+                    anchor_rotation_w: model.anchor_rotation_w,
+                  }}
+                  modelScale={model.scale}
+                  defaultTargetClassLabel={model.component_class_label}
+                  partView={partView}
+                  parts={parts}
+                  procedureHost={procedureHost}
+                />
+              )}
+            </div>
+            <aside className="side-panels">
+              {mode !== "overlay" && (
+                <ProcedurePanel
+                  key={model.id}
+                  modelId={model.id}
+                  parts={parts}
+                  host={procedureHost}
+                  cameraChecks={mode === "register"}
+                />
+              )}
+              {parts.length > 1 && (
+                <PartsPanel
+                  modelId={model.id}
+                  parts={parts}
+                  view={partView}
+                  onViewChange={setPartView}
+                  onPartsChange={setParts}
+                />
+              )}
+            </aside>
           </div>
         </>
       )}

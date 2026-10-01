@@ -7,7 +7,7 @@ import { useCamera } from "../../hooks/useCamera";
 import { ensureVisibleMaterials } from "./ensureVisibleMaterial";
 import { applyRenderStyle, type RenderStyle } from "./renderStyle";
 import { applyPartView, EMPTY_PART_VIEW, indexParts, type PartView } from "./parts";
-import type { ProcedureHost } from "./procedure";
+import type { ProcedureHost, StepGuide } from "./procedure";
 import { Models3DApi, VisionApi, apiErrorMessage } from "../../services/api";
 import { ClassSelect } from "../../components/ClassSelect";
 import type {
@@ -65,6 +65,35 @@ interface Props {
 
 type RegistrationMode = "marker" | "markerless" | "feature" | "model";
 
+const AR_MODES = [
+  [
+    "model",
+    "Model-based (CAD)",
+    "Matches the 3D model's own shape (MegaPose on the GPU pose service): detects once, then tracks every frame. Needs the pose service running in WSL and the model's real size set correctly.",
+  ],
+  [
+    "markerless",
+    "Markerless",
+    "Finds the object by its class and places the model from its apparent size — position only; the model stays upright.",
+  ],
+  [
+    "marker",
+    "ArUco marker",
+    "Accurate 6DoF from a printed marker next to the object (python -m app.workers.generate_marker; set ARUCO_MARKER_LENGTH_M to its printed size).",
+  ],
+  ["feature", "Image target", "6DoF from a registered photo of a flat, textured surface on the object (e.g. a label)."],
+] as const;
+
+const STATE_LABEL: Record<ARFrameResponse["state"], string> = {
+  SEARCHING: "Searching…",
+  INITIALIZING: "Initializing pose…",
+  TRACKING: "Tracking",
+  LOST: "Lost — holding last pose",
+  RECOVERING: "Re-acquiring…",
+};
+
+const DIAGNOSTICS_KEY = "tvasta.ar.diagnosticsOpen";
+
 /**
  * Phase 5 (Project.md #23-#26): physical <-> 3D registration.
  *
@@ -108,6 +137,29 @@ export function RegistrationOverlay({
   // Model-based only: match just this part (e.g. the body, which looks the
   // same with the cap on or off); the whole assembly is still rendered.
   const [trackPart, setTrackPart] = useState<number | null>(null);
+  // The procedure's current step, shown over the video.
+  const [guide, setGuide] = useState<StepGuide | null>(procedureHost?.guide ?? null);
+  useEffect(() => {
+    if (!procedureHost) return;
+    return procedureHost.subscribe((event) => {
+      if (event.type === "guide") setGuide(event.guide);
+    });
+  }, [procedureHost]);
+  const [diagnosticsOpen, setDiagnosticsOpenState] = useState(() => {
+    try {
+      return localStorage.getItem(DIAGNOSTICS_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const setDiagnosticsOpen = (open: boolean) => {
+    setDiagnosticsOpenState(open);
+    try {
+      localStorage.setItem(DIAGNOSTICS_KEY, open ? "1" : "0");
+    } catch {
+      // a per-viewer convenience only
+    }
+  };
   const partsRef = useRef<Map<number, THREE.Object3D>>(new Map());
   const partViewRef = useRef(partView);
   useEffect(() => {
@@ -779,30 +831,31 @@ export function RegistrationOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveTracking, mode, targetClassLabel, realWorldHeightM, trackPart]);
 
+  const isAr = mode === "markerless" || mode === "model";
+  const modeInfo = AR_MODES.find(([value]) => value === mode)!;
+
   return (
     <div>
-      <div className="mode-toggle">
-        <button className={mode === "markerless" ? "active" : ""} onClick={() => setMode("markerless")}>
-          Markerless (place object, no marker)
-        </button>
-        <button className={mode === "marker" ? "active" : ""} onClick={() => setMode("marker")}>
-          ArUco Marker (accurate 6DoF)
-        </button>
-        <button className={mode === "feature" ? "active" : ""} onClick={() => setMode("feature")}>
-          Feature Tracking (real 6DoF, needs texture)
-        </button>
-        <button className={mode === "model" ? "active" : ""} onClick={() => setMode("model")}>
-          Model-based CAD (MegaPose, GPU)
-        </button>
+      <div className="ar-header">
+        <div className="segmented" role="tablist">
+          {AR_MODES.map(([value, label]) => (
+            <button key={value} role="tab" className={mode === value ? "active" : ""} onClick={() => setMode(value)}>
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
+      <p className="mode-description">{modeInfo[2]}</p>
 
-      {mode === "model" && (
-        <div className="registration-controls">
-          <label>
-            Object class
-            <ClassSelect value={targetClassLabel} onChange={setTargetClassLabel} />
-          </label>
-          {parts.length > 1 && (
+      {mode !== "marker" && (
+        <div className="settings-row">
+          {isAr && (
+            <label>
+              Object class
+              <ClassSelect value={targetClassLabel} onChange={setTargetClassLabel} />
+            </label>
+          )}
+          {mode === "model" && parts.length > 1 && (
             <label title="Match only this part's shape; the whole assembly is still drawn. Pick a part that stays on the object (e.g. the body), so tracking holds when other parts are removed.">
               Track by
               <select
@@ -818,55 +871,45 @@ export function RegistrationOverlay({
               </select>
             </label>
           )}
-          <button onClick={() => void resetTracking()}>Reset tracking</button>
-        </div>
-      )}
-
-      {mode === "markerless" && (
-        <div className="registration-controls">
-          <label>
-            Object class
-            <ClassSelect value={targetClassLabel} onChange={setTargetClassLabel} />
-          </label>
-          <label>
-            Real height (m)
-            <input
-              type="number"
-              step="0.01"
-              min="0.01"
-              value={realWorldHeightM}
-              onChange={(e) => setRealWorldHeightM(Number(e.target.value))}
-            />
-          </label>
-          <button onClick={() => void resetTracking()}>Reset tracking</button>
-        </div>
-      )}
-
-      {mode === "feature" && (
-        <div className="registration-controls">
-          <label>
-            Label width (m)
-            <input
-              type="number"
-              step="0.01"
-              min="0.01"
-              value={labelWidthM}
-              onChange={(e) => setLabelWidthM(Number(e.target.value))}
-            />
-          </label>
-          <label>
-            Label height (m)
-            <input
-              type="number"
-              step="0.01"
-              min="0.01"
-              value={labelHeightM}
-              onChange={(e) => setLabelHeightM(Number(e.target.value))}
-            />
-          </label>
-          <button onClick={registerReference} disabled={registering || !ready}>
-            {registering ? "Registering…" : "Register Reference Image"}
-          </button>
+          {mode === "markerless" && (
+            <label title="Distance is estimated from the object's apparent size, so this must be right.">
+              Real height (m)
+              <input
+                type="number"
+                step="0.01"
+                min="0.01"
+                value={realWorldHeightM}
+                onChange={(e) => setRealWorldHeightM(Number(e.target.value))}
+              />
+            </label>
+          )}
+          {mode === "feature" && (
+            <>
+              <label>
+                Label width (m)
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value={labelWidthM}
+                  onChange={(e) => setLabelWidthM(Number(e.target.value))}
+                />
+              </label>
+              <label>
+                Label height (m)
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value={labelHeightM}
+                  onChange={(e) => setLabelHeightM(Number(e.target.value))}
+                />
+              </label>
+              <button onClick={registerReference} disabled={registering || !ready}>
+                {registering ? "Registering…" : "Register reference image"}
+              </button>
+            </>
+          )}
         </div>
       )}
 
@@ -879,28 +922,56 @@ export function RegistrationOverlay({
             "too few — this surface likely lacks enough texture to track. Use a labeled/printed surface, filling the frame with it."}
         </p>
       )}
+      {mode === "feature" && !registration && (
+        <p className="warning">Register a reference image of the object's labeled/textured surface first.</p>
+      )}
 
-      <div style={{ position: "relative", width: "100%", maxWidth: 640 }}>
+      <div className="ar-stage">
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-        <video ref={videoRef} autoPlay playsInline muted style={{ width: "100%", display: "block" }} />
+        <video ref={videoRef} autoPlay playsInline muted />
         <div ref={overlayRef} style={{ position: "absolute", inset: 0, pointerEvents: "none" }} />
         <canvas
           ref={outlineCanvasRef}
           style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}
         />
         <canvas ref={canvasRef} style={{ display: "none" }} />
-        {(mode === "markerless" || mode === "model") && (arResult?.calibrated_parts ?? []).length > 0 && (
-          <div className="part-badges">
+
+        <div className="hud hud-top-left">
+          {isAr && arResult && (
+            <div className={`hud-pill state-${arResult.state}`}>
+              <span className="dot" />
+              {STATE_LABEL[arResult.state]}
+              {arResult.state === "TRACKING" && arResult.object && (
+                <span className="sub">
+                  {arResult.object.class_label} · {(arResult.object.confidence * 100).toFixed(0)}%
+                  {arResult.monitoring ? " · low confidence" : ""}
+                </span>
+              )}
+            </div>
+          )}
+          {isAr && !arResult && liveTracking && (
+            <div className="hud-pill state-SEARCHING">
+              <span className="dot" />
+              Starting…
+            </div>
+          )}
+          {modelStatus !== "loaded" && (
+            <div className="hud-pill">{modelStatus === "loading" ? "Loading 3D model…" : "3D model failed to load"}</div>
+          )}
+        </div>
+
+        {isAr && (arResult?.calibrated_parts ?? []).length > 0 && (
+          <div className="hud hud-top-right part-badges">
             {arResult!.calibrated_parts.map((name) => {
               const check = (arResult!.part_checks ?? []).find((c) => c.part_name === name);
               const cls = check ? `part-badge part-badge-${check.state}` : "part-badge part-badge-waiting";
               const text = !check
-                ? `⏳ ${name}: waiting for tracking`
+                ? `${name}: waiting for tracking`
                 : check.state === "present"
-                  ? `✅ ${name}: present`
+                  ? `✓ ${name} present`
                   : check.state === "absent"
-                    ? `❌ ${name}: REMOVED`
-                    : `❓ ${name}: unsure`;
+                    ? `✕ ${name} REMOVED`
+                    : `? ${name} unsure`;
               return (
                 <div key={name} className={cls}>
                   {text}
@@ -910,33 +981,61 @@ export function RegistrationOverlay({
             })}
           </div>
         )}
+
+        {guide && (
+          <div className={`step-banner ${guide.state === "done" || guide.state === "complete" ? "done" : ""}`}>
+            <div className="step-no">{guide.state === "complete" ? "✓" : guide.number}</div>
+            <div className="step-text">
+              <strong>
+                {guide.state === "complete" ? "Procedure complete" : `Step ${guide.number}/${guide.total} · ${guide.title}`}
+              </strong>
+              {guide.instruction && guide.state !== "complete" && <span>{guide.instruction}</span>}
+            </div>
+            <div className="step-status">{guide.statusText}</div>
+          </div>
+        )}
       </div>
 
-      <CameraStatusBadge status={cameraStatus} deviceLabel={deviceLabel} resolution={resolution} error={cameraError} />
-      <CameraSelect devices={devices} selectedDeviceId={selectedDeviceId} onSelect={selectDevice} />
-
-      {modelStatus === "loading" && <p className="camera-status camera-status-pending">🟡 Loading 3D model…</p>}
-      {modelStatus === "loaded" && <p className="camera-status camera-status-ok">🟢 3D model loaded once — shown while the object is tracked</p>}
-      {modelStatus === "error" && (
-        <p className="camera-status camera-status-error">🔴 3D model failed to load — {modelError}</p>
-      )}
-
-      <div className="registration-controls">
-        <button onClick={detectAndAlign} disabled={busy || !ready || liveTracking}>
-          {mode === "markerless" || mode === "model"
-            ? arResult?.state === "TRACKING"
-              ? "Track one frame"
-              : "Detect & track one frame"
-            : busy
-              ? "Detecting…"
-              : "Detect & Align"}
+      <div className="control-bar">
+        <button
+          className={`big ${liveTracking ? "stop" : "primary"}`}
+          onClick={() => setLiveTracking((v) => !v)}
+          disabled={!ready && !liveTracking}
+          title={isAr ? "Detect once, then track every frame" : "As fast as detection responds, smoothed"}
+        >
+          {liveTracking ? "■ Stop tracking" : "▶ Start live tracking"}
         </button>
-        <label>
-          <input type="checkbox" checked={liveTracking} onChange={(e) => setLiveTracking(e.target.checked)} />
-          {mode === "markerless" || mode === "model"
-            ? "Live tracking (detect once, then track every frame)"
-            : "Live tracking (as fast as detection responds, smoothed)"}
-        </label>
+        <button onClick={detectAndAlign} disabled={busy || !ready || liveTracking}>
+          {isAr ? (arResult?.state === "TRACKING" ? "Track one frame" : "Detect one frame") : busy ? "Detecting…" : "Detect & align"}
+        </button>
+        {isAr && <button onClick={() => void resetTracking()}>Reset</button>}
+        <div className="spacer" />
+        <span
+          className="view-style-toggle"
+          title="How the 3D model is drawn — X-Ray and Wireframe let you see the real object through it to judge alignment"
+        >
+          Model
+          <span className="segmented">
+            {(
+              [
+                ["solid", "Solid"],
+                ["wireframe", "Wireframe"],
+                ["xray", "X-Ray"],
+              ] as const
+            ).map(([value, label]) => (
+              <button key={value} className={renderStyle === value ? "active" : ""} onClick={() => setRenderStyle(value)}>
+                {label}
+              </button>
+            ))}
+          </span>
+        </span>
+      </div>
+
+      <div className="status-row">
+        <CameraStatusBadge status={cameraStatus} deviceLabel={deviceLabel} resolution={resolution} error={cameraError} />
+        <CameraSelect devices={devices} selectedDeviceId={selectedDeviceId} onSelect={selectDevice} />
+        {modelStatus === "error" && <span className="camera-status camera-status-error">3D model: {modelError}</span>}
+        <div style={{ flex: 1 }} />
         <span className="save-frame" title="Saves the raw camera frame (full resolution, without any overlay) to data/debug_frames/ for analysis">
           <input value={frameLabel} onChange={(e) => setFrameLabel(e.target.value)} placeholder="label" />
           <button onClick={() => void saveFrame()} disabled={!ready}>
@@ -944,39 +1043,15 @@ export function RegistrationOverlay({
           </button>
           {frameSaved && <span className="hint">{frameSaved}</span>}
         </span>
-        <span className="view-style-toggle" title="How the 3D model is drawn — X-Ray and Wireframe let you see the real object through it to judge alignment">
-          View:
-          {(
-            [
-              ["solid", "Solid"],
-              ["wireframe", "Wireframe"],
-              ["xray", "X-Ray"],
-            ] as const
-          ).map(([value, label]) => (
-            <button key={value} className={renderStyle === value ? "active" : ""} onClick={() => setRenderStyle(value)}>
-              {label}
-            </button>
-          ))}
-        </span>
       </div>
-
-      {mode === "markerless" && (
-        <p className="warning">
-          Approximate: position only, estimated from the object's apparent size — no orientation is
-          estimated (the model is always placed upright, as authored). Accuracy depends on the
-          "Real height" value above being correct and on camera calibration; run
-          `python -m app.workers.calibrate_camera` for a real one instead of the default approximation.
-        </p>
-      )}
 
       {(mode === "marker" || mode === "feature") && (
         <div className="anchor-calibration">
+          <div className="panel-title">Model alignment</div>
           <p className="hint">
-            The pose above is the tracked <em>reference patch's</em> pose (a marker's face, or the registered
-            photo's plane) — not necessarily where the 3D model's own origin should sit. If the model looks
-            offset, oversized-looking, or tilted relative to the real object even though tracking itself
-            looks stable, nudge it here until it lines up, then save — this is calibrated once per model,
-            not per session.
+            Tracking gives the pose of the reference patch (the marker's face or the registered photo's plane), not
+            the model's own origin. If the model sits offset or tilted while tracking is stable, nudge it here and
+            save — once per model.
           </p>
           <div className="anchor-calibration-grid">
             <div>
@@ -1001,11 +1076,11 @@ export function RegistrationOverlay({
             </div>
           </div>
           <div className="anchor-calibration-actions">
-            <button onClick={saveAnchor} disabled={anchorSaving}>
+            <button className="primary" onClick={saveAnchor} disabled={anchorSaving}>
               {anchorSaving ? "Saving…" : "Save alignment"}
             </button>
             <button onClick={resetAnchor}>Reset</button>
-            {anchorSaved && <span className="camera-status-ok">Saved</span>}
+            {anchorSaved && <span className="camera-status camera-status-ok">Saved</span>}
           </div>
         </div>
       )}
@@ -1018,126 +1093,98 @@ export function RegistrationOverlay({
                 Marker {markerPose.marker_id} found — reprojection error{" "}
                 {markerPose.reprojection_error_px?.toFixed(2)}px
               </p>
-              <p>
+              <p className="pose-readout">
                 position: ({markerPose.position!.x.toFixed(3)}, {markerPose.position!.y.toFixed(3)},{" "}
                 {markerPose.position!.z.toFixed(3)}) m
+                {markerPose.rotation_deg &&
+                  ` · Rx=${markerPose.rotation_deg.rx.toFixed(1)}° Ry=${markerPose.rotation_deg.ry.toFixed(1)}° Rz=${markerPose.rotation_deg.rz.toFixed(1)}°`}
               </p>
-              {markerPose.rotation_deg && (
-                <p>
-                  rotation: Rx={markerPose.rotation_deg.rx.toFixed(1)}° Ry={markerPose.rotation_deg.ry.toFixed(1)}°
-                  Rz={markerPose.rotation_deg.rz.toFixed(1)}°
-                </p>
-              )}
             </>
           ) : (
             <p>No marker detected in frame.</p>
           )}
           {markerPose.calibration_is_approximate && (
-            <p className="warning">
-              Using an approximate default camera calibration ({markerPose.calibration_source}).
-            </p>
+            <p className="hint">Using an approximate default camera calibration ({markerPose.calibration_source}).</p>
           )}
         </div>
       )}
 
-      {mode === "feature" && !registration && (
-        <p className="warning">Register a reference image of the object's labeled/textured surface first.</p>
-      )}
-
-      {mode === "model" && (
-        <p className="hint">
-          Matches this 3D model's own shape against the camera image (MegaPose on the GPU pose service), so the
-          model lands on the real object itself — no marker, reference photo, or alignment offset. The object
-          is detected once (YOLO + a full pose search, ~1s); after that only the tracker runs, refining from the
-          last pose every frame, and the detector runs again only if tracking is lost. Needs the pose service
-          running in WSL (see <code>pose_service/README.md</code>), and the model's real-world size must be
-          correct, since distance is inferred from it.
-        </p>
-      )}
-
-      {(mode === "markerless" || mode === "model") && (arResult || arEvents.length > 0) && (
-        <div
-          className={`pose-status ${
-            arResult?.state === "TRACKING"
-              ? "pose-found"
-              : arResult?.state === "LOST" || arResult?.state === "RECOVERING"
-                ? "pose-lost"
-                : "pose-not-found"
-          }`}
+      {isAr && (arResult || arEvents.length > 0) && (
+        <details
+          className="card diagnostics"
+          open={diagnosticsOpen}
+          onToggle={(e) => setDiagnosticsOpen((e.currentTarget as HTMLDetailsElement).open)}
         >
-          {arResult && (
-            <>
-              <p className="tracking-state">
-                {arResult.state === "SEARCHING" && `🔵 Searching for ${targetClassLabel || "object"}...`}
-                {arResult.state === "INITIALIZING" && "🟡 Initializing pose..."}
-                {arResult.state === "TRACKING" &&
-                  `🟢 Tracking: ${arResult.object?.class_label}` +
-                    (arResult.monitoring ? " — ⚠ low confidence, monitoring" : "")}
-                {arResult.state === "LOST" && "🟠 Tracking lost — holding last pose"}
-                {arResult.state === "RECOVERING" && "🔵 Reacquiring object... (model held at last pose)"}
-              </p>
-              {arResult.object && (
-                <p>
-                  Confidence: <strong>{(arResult.object.confidence * 100).toFixed(0)}%</strong>{" "}
-                  <span className="hint">
-                    {mode === "model" ? "model ↔ real object overlap" : "share of tracked points still agreeing"} (good ≥{" "}
-                    {(arResult.good_confidence * 100).toFixed(0)}%, lost &lt; {(arResult.lost_confidence * 100).toFixed(0)}%)
-                  </span>
+          <summary>
+            Tracking details
+            <span className="hint">
+              {rates.detect.toFixed(1)}/s detect · {rates.track.toFixed(1)}/s track · {rates.render} fps render ·{" "}
+              {frameMs.toFixed(0)} ms/frame
+            </span>
+          </summary>
+          <div className="diagnostics-body">
+            {arResult && (
+              <>
+                {arResult.object && (
+                  <p>
+                    Confidence <strong>{(arResult.object.confidence * 100).toFixed(0)}%</strong>{" "}
+                    <span className="hint">
+                      {mode === "model" ? "model ↔ real object overlap" : "share of tracked points still agreeing"} (good ≥{" "}
+                      {(arResult.good_confidence * 100).toFixed(0)}%, lost &lt; {(arResult.lost_confidence * 100).toFixed(0)}%)
+                    </span>
+                  </p>
+                )}
+                {(arResult.part_checks ?? []).map((check) => (
+                  <p key={check.node_index} className={`part-check part-${check.state}`}>
+                    {check.part_name}: <strong>{check.state === "absent" ? "removed" : check.state}</strong>{" "}
+                    <span className="hint">
+                      ({(check.confidence * 100).toFixed(0)}% sure, region brightness {check.brightness.toFixed(0)})
+                    </span>
+                  </p>
+                ))}
+                <div className="metric-grid">
+                  {(
+                    [
+                      ["Object ID", arResult.object?.object_id ?? "—"],
+                      ["Detections", arResult.counters.detection_count],
+                      ["Detector runs", arResult.counters.detection_runs],
+                      ["Tracking frames", arResult.counters.tracking_frames],
+                      ["Frames since detection", arResult.counters.frames_since_detection ?? "—"],
+                      ["Server time", `${arResult.timings_ms.total.toFixed(0)} ms`],
+                      ["Render time", `${rates.renderMs.toFixed(1)} ms`],
+                    ] as const
+                  ).map(([label, value]) => (
+                    <div key={label} className="metric">
+                      <span>{label}</span>
+                      <strong>{value}</strong>
+                    </div>
+                  ))}
+                </div>
+                <p className="hint">
+                  This frame — detection {arResult.timings_ms.detection.toFixed(0)} ms · initialization{" "}
+                  {arResult.timings_ms.initialization.toFixed(0)} ms · tracking {arResult.timings_ms.tracking.toFixed(0)} ms ·
+                  refinement {arResult.timings_ms.refinement.toFixed(0)} ms
                 </p>
-              )}
-              {(arResult.part_checks ?? []).map((check) => (
-                <p key={check.node_index} className={`part-check part-${check.state}`}>
-                  {check.state === "present" ? "✅" : check.state === "absent" ? "❌" : "❓"} {check.part_name}:{" "}
-                  <strong>{check.state === "absent" ? "removed" : check.state}</strong>{" "}
-                  <span className="hint">
-                    ({(check.confidence * 100).toFixed(0)}% sure, region brightness {check.brightness.toFixed(0)})
-                  </span>
-                </p>
-              ))}
-              <div className="ar-stats">
-                <span>Object ID</span>
-                <strong>{arResult.object?.object_id ?? "—"}</strong>
-                <span>Detection count</span>
-                <strong>{arResult.counters.detection_count}</strong>
-                <span>Detector runs</span>
-                <strong>{arResult.counters.detection_runs}</strong>
-                <span>Tracking frames</span>
-                <strong>{arResult.counters.tracking_frames}</strong>
-                <span>Frames since detection</span>
-                <strong>{arResult.counters.frames_since_detection ?? "—"}</strong>
-                <span>Detection / Tracking / Rendering</span>
-                <strong>
-                  {rates.detect.toFixed(1)}/s · {rates.track.toFixed(1)}/s · {rates.render} fps
-                </strong>
-              </div>
-              <p className="hint">
-                This frame — detection {arResult.timings_ms.detection.toFixed(0)} ms · initialization{" "}
-                {arResult.timings_ms.initialization.toFixed(0)} ms · tracking {arResult.timings_ms.tracking.toFixed(0)} ms ·
-                refinement {arResult.timings_ms.refinement.toFixed(0)} ms · server total{" "}
-                {arResult.timings_ms.total.toFixed(0)} ms · rendering {rates.renderMs.toFixed(1)} ms/frame · total frame{" "}
-                {frameMs.toFixed(0)} ms
-              </p>
-              {arResult.position && arResult.rotation_deg && (
-                <p className="pose-readout">
-                  X={arResult.position.x.toFixed(3)} Y={arResult.position.y.toFixed(3)} Z={arResult.position.z.toFixed(3)} m
-                  · Rx={arResult.rotation_deg.rx.toFixed(1)}° Ry={arResult.rotation_deg.ry.toFixed(1)}° Rz=
-                  {arResult.rotation_deg.rz.toFixed(1)}°
-                  <span className="hint">
-                    {" "}
-                    (filtered, renderer frame: +X right, +Y up, camera looks down −Z
-                    {arResult.approximate ? "; markerless: position only, no rotation" : ""})
-                  </span>
-                </p>
-              )}
-              {arResult.calibration_is_approximate && (
-                <p className="hint">Using an approximate default camera calibration ({arResult.calibration_source}).</p>
-              )}
-            </>
-          )}
-          {arEvents.length > 0 && (
-            <pre className="tracking-log">{arEvents.join("\n")}</pre>
-          )}
-        </div>
+                {arResult.position && arResult.rotation_deg && (
+                  <p className="pose-readout">
+                    X={arResult.position.x.toFixed(3)} Y={arResult.position.y.toFixed(3)} Z={arResult.position.z.toFixed(3)} m
+                    · Rx={arResult.rotation_deg.rx.toFixed(1)}° Ry={arResult.rotation_deg.ry.toFixed(1)}° Rz=
+                    {arResult.rotation_deg.rz.toFixed(1)}°
+                    <span className="hint">
+                      {" "}
+                      (filtered, renderer frame: +X right, +Y up, camera looks down −Z
+                      {arResult.approximate ? "; markerless: position only, no rotation" : ""})
+                    </span>
+                  </p>
+                )}
+                {arResult.calibration_is_approximate && (
+                  <p className="hint">Using an approximate default camera calibration ({arResult.calibration_source}).</p>
+                )}
+              </>
+            )}
+            {arEvents.length > 0 && <pre className="tracking-log">{arEvents.join("\n")}</pre>}
+          </div>
+        </details>
       )}
 
       {mode === "feature" && featurePose && (
@@ -1147,16 +1194,12 @@ export function RegistrationOverlay({
               <p>
                 Matched — {featurePose.num_inliers}/{featurePose.num_matches} inlier features
               </p>
-              <p>
+              <p className="pose-readout">
                 position: ({featurePose.position!.x.toFixed(3)}, {featurePose.position!.y.toFixed(3)},{" "}
                 {featurePose.position!.z.toFixed(3)}) m
+                {featurePose.rotation_deg &&
+                  ` · Rx=${featurePose.rotation_deg.rx.toFixed(1)}° Ry=${featurePose.rotation_deg.ry.toFixed(1)}° Rz=${featurePose.rotation_deg.rz.toFixed(1)}°`}
               </p>
-              {featurePose.rotation_deg && (
-                <p>
-                  rotation: Rx={featurePose.rotation_deg.rx.toFixed(1)}° Ry={featurePose.rotation_deg.ry.toFixed(1)}°
-                  Rz={featurePose.rotation_deg.rz.toFixed(1)}°
-                </p>
-              )}
               {featurePose.num_matches > 0 && featurePose.num_inliers / featurePose.num_matches < 0.25 && (
                 <p className="warning">
                   Low inlier ratio ({Math.round((100 * featurePose.num_inliers) / featurePose.num_matches)}%) — the
@@ -1171,9 +1214,7 @@ export function RegistrationOverlay({
             <p>No match ({featurePose.num_matches} candidate matches, not enough to solve a pose).</p>
           )}
           {featurePose.calibration_is_approximate && (
-            <p className="warning">
-              Using an approximate default camera calibration ({featurePose.calibration_source}).
-            </p>
+            <p className="hint">Using an approximate default camera calibration ({featurePose.calibration_source}).</p>
           )}
         </div>
       )}

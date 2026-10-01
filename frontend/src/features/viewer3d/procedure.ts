@@ -267,17 +267,32 @@ export class ProcedurePlayer {
   }
 }
 
-type HostEvent = { type: "model" } | { type: "checks"; checks: PartCheck[] | null };
+/** What the AR view shows over the video for the current step. */
+export interface StepGuide {
+  number: number;
+  total: number;
+  title: string;
+  instruction: string | null;
+  state: "waiting" | "holding" | "done" | "complete" | "manual";
+  statusText: string;
+}
+
+type HostEvent =
+  | { type: "model" }
+  | { type: "checks"; checks: PartCheck[] | null }
+  | { type: "guide"; guide: StepGuide | null };
 
 /**
  * Connects whichever view draws the model (3D viewer or AR overlay) with the
  * procedure panel, without re-rendering React on every frame: the view
  * announces its loaded parts, calls `tick` each frame and publishes the
- * camera's part checks; the panel listens.
+ * camera's part checks; the panel listens, and publishes the current step
+ * back for the view to show.
  */
 export class ProcedureHost {
   objects = new Map<number, THREE.Object3D>();
   tick: ((now: number) => void) | null = null;
+  guide: StepGuide | null = null; // latest, for views that mount after it was published
   private listeners = new Set<(event: HostEvent) => void>();
 
   attach(objects: Map<number, THREE.Object3D>): void {
@@ -293,6 +308,11 @@ export class ProcedureHost {
 
   publishChecks(checks: PartCheck[] | null): void {
     this.emit({ type: "checks", checks });
+  }
+
+  publishGuide(guide: StepGuide | null): void {
+    this.guide = guide;
+    this.emit({ type: "guide", guide });
   }
 
   subscribe(listener: (event: HostEvent) => void): () => void {

@@ -66,7 +66,9 @@ export function PartsPanel({ modelId, parts, view, onViewChange, onPartsChange }
 
   return (
     <div className="parts-panel">
-      <strong>Parts</strong>
+      <div className="panel-title">
+        Parts <span className="hint">{parts.length}</span>
+      </div>
       <table>
         <thead>
           <tr>
@@ -101,7 +103,7 @@ export function PartsPanel({ modelId, parts, view, onViewChange, onPartsChange }
                     title={`GLB node: ${part.node_name}`}
                   />
                 </td>
-                <td>{part.size_m.map((v) => (v * 100).toFixed(1)).join(" × ")}</td>
+                <td className="size">{part.size_m.map((v) => (v * 100).toFixed(1)).join(" × ")}</td>
                 <td onClick={(e) => e.stopPropagation()}>
                   <button onClick={() => showOnly(part.node_index)}>Only</button>
                 </td>
@@ -116,7 +118,7 @@ export function PartsPanel({ modelId, parts, view, onViewChange, onPartsChange }
       </div>
 
       <div className="presence-calibration">
-        <strong>Presence check{selected ? `: ${selected.display_name}` : ""}</strong>
+        <span className="section-label">Presence check{selected ? ` · ${selected.display_name}` : ""}</span>
         {!selected ? (
           <p className="hint">Select a part above to calibrate "is it still on?" for it.</p>
         ) : (
@@ -130,7 +132,7 @@ export function PartsPanel({ modelId, parts, view, onViewChange, onPartsChange }
             <label>
               Off label <input value={absentLabel} onChange={(e) => setAbsentLabel(e.target.value)} />
             </label>
-            <button onClick={() => void calibrate()} disabled={calibrating}>
+            <button className="primary" onClick={() => void calibrate()} disabled={calibrating}>
               {calibrating ? "Calibrating…" : "Calibrate"}
             </button>
           </>

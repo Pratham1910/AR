@@ -83,9 +83,13 @@ export function ModelSettingsPanel({ model, onSaved, onDeleted }: Props) {
 
   return (
     <div className="model-settings">
-      <strong>
-        {model.name} <span className="hint">({model.storage_key})</span>
-      </strong>
+      <div className="model-name">
+        <strong>{model.name}</strong>
+        <span className="hint">
+          {model.storage_key}
+          {model.real_height_m !== null && ` · ${(model.real_height_m * 100).toFixed(1)} cm tall`}
+        </span>
+      </div>
       {problems.map((p) => (
         <p key={p} className="warning">
           {p}

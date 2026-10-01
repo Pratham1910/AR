@@ -40,7 +40,7 @@ export function ThreeViewer({ modelUrl, height = 480, partView = EMPTY_PART_VIEW
     if (!container) return;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x1a1a1a);
+    scene.background = new THREE.Color(0x0d1117);
 
     const camera = new THREE.PerspectiveCamera(50, container.clientWidth / height, 0.01, 100);
     camera.position.set(0.2, 0.2, 0.4);
@@ -80,7 +80,13 @@ export function ThreeViewer({ modelUrl, height = 480, partView = EMPTY_PART_VIEW
         const size = box.getSize(new THREE.Vector3()).length();
         const center = box.getCenter(new THREE.Vector3());
         controls.target.copy(center);
-        camera.position.copy(center).add(new THREE.Vector3(size * 0.6, size * 0.6, size * 0.6));
+        // Far enough that the whole bounding sphere fits the narrower of the
+        // vertical / horizontal field of view, with a little margin.
+        const radius = size / 2;
+        const vFov = THREE.MathUtils.degToRad(camera.fov) / 2;
+        const hFov = Math.atan(Math.tan(vFov) * camera.aspect);
+        const distance = (radius / Math.sin(Math.min(vFov, hFov))) * 1.1;
+        camera.position.copy(center).add(new THREE.Vector3(1, 0.6, 1).normalize().multiplyScalar(distance));
         camera.near = size / 100;
         camera.far = size * 100;
         camera.updateProjectionMatrix();
@@ -125,13 +131,15 @@ export function ThreeViewer({ modelUrl, height = 480, partView = EMPTY_PART_VIEW
       camera.updateProjectionMatrix();
       renderer.setSize(container.clientWidth, height);
     };
-    window.addEventListener("resize", handleResize);
+    // The container's width follows the page layout (sidebar, window), not just the window.
+    const resizeObserver = new ResizeObserver(handleResize);
+    resizeObserver.observe(container);
 
     return () => {
       disposed = true;
       cancelAnimationFrame(frameId);
       procedureHost?.detach(partsRef.current);
-      window.removeEventListener("resize", handleResize);
+      resizeObserver.disconnect();
       renderer.domElement.removeEventListener("pointerdown", onPointerDown);
       renderer.domElement.removeEventListener("pointerup", onPointerUp);
       controls.dispose();
@@ -142,10 +150,10 @@ export function ThreeViewer({ modelUrl, height = 480, partView = EMPTY_PART_VIEW
 
   return (
     <div>
-      <div ref={containerRef} style={{ width: "100%", height }} />
+      <div ref={containerRef} className="viewer-canvas" style={{ width: "100%", height }} />
       {error && <p className="error">Failed to load model: {error}</p>}
       {nodeNames.length > 0 && (
-        <p className="node-names">Scene nodes: {nodeNames.join(", ")} · click a part to select it</p>
+        <p className="node-names">Nodes: {nodeNames.join(", ")}</p>
       )}
     </div>
   );

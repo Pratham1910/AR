@@ -32,30 +32,36 @@ export default function App() {
   const proceduresForAsset = procedures.filter((p) => p.asset_id === selectedAssetId);
 
   return (
-    <div className="app">
-      <header>
-        <h1>TVASTA — Procedure & QA Platform</h1>
-        <p className="subtitle">
-          Phase 1: camera-based procedure execution and deterministic QA · Phase 4/5: 3D viewer and
-          marker-based physical↔3D registration
-        </p>
+    <>
+      <header className="app-header">
+        <div className="brand">
+          <div className="brand-mark">T</div>
+          <div>
+            <h1>TVASTA</h1>
+            <span>Procedure &amp; QA platform</span>
+          </div>
+        </div>
+        <nav className="tabs">
+          <button className={tab === "inspection" ? "active" : ""} onClick={() => setTab("inspection")}>
+            Procedure inspection
+          </button>
+          <button className={tab === "3d" ? "active" : ""} onClick={() => setTab("3d")}>
+            3D &amp; AR workspace
+          </button>
+        </nav>
       </header>
 
-      <nav className="tabs">
-        <button className={tab === "inspection" ? "active" : ""} onClick={() => setTab("inspection")}>
-          Procedure Inspection
-        </button>
-        <button className={tab === "3d" ? "active" : ""} onClick={() => setTab("3d")}>
-          3D / AR Registration
-        </button>
-      </nav>
-
+    <div className="app">
       {error && <p className="error">{error}</p>}
 
       {tab === "inspection" && (
         <>
           {!running && (
-            <div className="setup">
+            <div className="setup card">
+              <div>
+                <h2>Start an inspection</h2>
+                <p className="hint">Pick the asset and the published procedure revision to run against the camera.</p>
+              </div>
               <label>
                 Asset
                 <select value={selectedAssetId} onChange={(e) => setSelectedAssetId(e.target.value)}>
@@ -84,8 +90,8 @@ export default function App() {
                 </select>
               </label>
 
-              <button disabled={!selectedAssetId || !selectedRevisionId} onClick={() => setRunning(true)}>
-                Start Inspection
+              <button className="primary big" disabled={!selectedAssetId || !selectedRevisionId} onClick={() => setRunning(true)}>
+                Start inspection
               </button>
             </div>
           )}
@@ -98,5 +104,6 @@ export default function App() {
 
       {tab === "3d" && <Viewer3DPage assets={assets} onAssetsChanged={refreshAssets} />}
     </div>
+    </>
   );
 }
