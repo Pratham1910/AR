@@ -61,7 +61,10 @@ class Settings(BaseSettings):
 
     # Model-based (CAD) 6DoF pose — MegaPose, served by pose_service/ running
     # in WSL2 with CUDA (Windows localhost is forwarded into WSL2).
-    pose_service_url: str = "http://localhost:8765"
+    # 127.0.0.1, not "localhost": on Windows a new connection to "localhost"
+    # tries IPv6 first and costs ~2s before falling back (measured 2017ms vs
+    # 19ms), which hit every time the connection to the pose service idled.
+    pose_service_url: str = "http://127.0.0.1:8765"
     pose_service_timeout_s: float = 30.0  # first lock + first-ever mesh registration can take seconds
     # Below this MegaPose pose score the track is dropped and the next frame
     # does a full YOLO + coarse search again instead of refining a wrong pose.
@@ -71,6 +74,9 @@ class Settings(BaseSettings):
     # iterations ~220ms at the same ~3-4mm accuracy as 5 (~380ms), since
     # frame-to-frame motion starts the refiner close to the answer.
     model_pose_track_iterations: int = 2
+    # Consecutive low-score frames tolerated while tracking before falling
+    # back to YOLO + full search (~1s); see ModelPoseClient.estimate.
+    model_pose_max_misses: int = 2
 
     # Auth / RBAC (Project.md #45, Phase 8). Deliberately minimal for now —
     # email-only login, no password/SSO (not requested, and a materially

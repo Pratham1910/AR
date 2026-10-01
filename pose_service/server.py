@@ -25,7 +25,10 @@ Run (inside WSL, from the HappyPose checkout's venv):
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
+import json
+import logging
 import os
 import threading
 import time
@@ -47,9 +50,11 @@ from happypose.toolbox.utils.tensor_collection import PandasTensorCollection
 MODEL_NAME = os.getenv("MEGAPOSE_MODEL", "megapose-1.0-RGB")
 MESH_DIR = Path(os.getenv("TVASTA_POSE_MESH_DIR", Path.home() / "tvasta-pose" / "meshes"))
 # Coarse search tries a grid of rotations; the full grid is the most robust
-# but slowest. Subsampling (as HappyPose's own example does, [::8]) trades a
-# little first-lock robustness for a much faster first lock.
-COARSE_GRID_STRIDE = int(os.getenv("MEGAPOSE_COARSE_GRID_STRIDE", "4"))
+# but slowest. Subsampling as HappyPose's own example does ([::8]): measured
+# on the known-answer cup render, full search 1572ms -> 893ms with first-lock
+# error 3.5mm/4.5deg -> 5.6mm/5.6deg, and the next tracking step brings both
+# back to the same 3.7mm/3.2deg, so re-acquiring a lost object is ~43% faster.
+COARSE_GRID_STRIDE = int(os.getenv("MEGAPOSE_COARSE_GRID_STRIDE", "8"))
 # MegaPose pads every loaded object's data to the LARGEST mesh, so one heavy
 # model slows every request, even for other objects. Measured on an RTX 4090:
 # cup tracking ~185ms with small meshes loaded, ~1.7-2.7s once a 105k-face
@@ -64,10 +69,19 @@ _lock = threading.Lock()  # one GPU pipeline; serialize requests
 _estimator = None
 _model_info = None
 _labels: set[str] = set()
+log = logging.getLogger("uvicorn.error")  # shows up in the service's console/log
 
 
 def _mesh_path(label: str) -> Path:
     return MESH_DIR / f"{label}.ply"
+
+
+def _meta_path(label: str) -> Path:
+    return MESH_DIR / f"{label}.json"
+
+
+def _registration_key(glb: bytes, scale: float) -> dict:
+    return {"glb_sha256": hashlib.sha256(glb).hexdigest(), "scale": scale, "max_faces": MAX_MESH_FACES}
 
 
 def _simplified(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
@@ -138,6 +152,18 @@ def health() -> dict:
 @app.post("/objects", response_model=RegisterObjectResponse)
 def register_object(req: RegisterObjectRequest) -> RegisterObjectResponse:
     data = base64.b64decode(req.glb_base64)
+    key = _registration_key(data, req.scale)
+    mesh_path, meta_path = _mesh_path(req.label), _meta_path(req.label)
+    # The backend re-sends every model after each of ITS restarts. Reloading
+    # MegaPose for an identical mesh took seconds and stalled all tracking,
+    # so an unchanged (same GLB bytes, same scale) registration is a no-op.
+    if req.label in _labels and mesh_path.exists() and meta_path.exists():
+        if json.loads(meta_path.read_text()) == key:
+            existing = trimesh.load(mesh_path, force="mesh")
+            return RegisterObjectResponse(
+                label=req.label, extents_m=[float(v) for v in existing.extents], vertex_count=len(existing.vertices)
+            )
+
     loaded = trimesh.load(io.BytesIO(data), file_type="glb", force="scene")
     # dump(concatenate=True) bakes node transforms into world coordinates,
     # matching Box3.setFromObject() on the Three.js side.
@@ -154,7 +180,9 @@ def register_object(req: RegisterObjectRequest) -> RegisterObjectResponse:
     mesh = _simplified(mesh)
 
     MESH_DIR.mkdir(parents=True, exist_ok=True)
-    mesh.export(_mesh_path(req.label))
+    mesh.export(mesh_path)
+    meta_path.write_text(json.dumps(key))
+    log.info("registering %s (%d faces): reloading MegaPose", req.label[:8], len(mesh.faces))
     with _lock:
         _rebuild_estimator()
     return RegisterObjectResponse(
@@ -168,6 +196,7 @@ def register_object(req: RegisterObjectRequest) -> RegisterObjectResponse:
 def delete_object(label: str) -> dict:
     path = _mesh_path(label)
     existed = path.exists()
+    _meta_path(label).unlink(missing_ok=True)
     if existed:
         path.unlink()
         with _lock:
@@ -205,6 +234,7 @@ def estimate(req: EstimateRequest) -> EstimateResponse:
 
     started = time.perf_counter()
     with _lock, torch.no_grad():
+        waited_ms = (time.perf_counter() - started) * 1000.0  # queued behind another request/reload
         observation = ObservationTensor.from_numpy(rgb, None, K).to(device)
         params = dict(_model_info["inference_parameters"])
         if req.n_refiner_iterations is not None:
@@ -217,21 +247,25 @@ def estimate(req: EstimateRequest) -> EstimateResponse:
                 poses=torch.as_tensor(np.asarray(req.prev_pose, dtype=np.float32)).unsqueeze(0),
             ).to(device)
             params.pop("n_pose_hypotheses", None)
-            output, _ = _estimator.run_inference_pipeline(observation, coarse_estimates=coarse, **params)
+            output, extra = _estimator.run_inference_pipeline(observation, coarse_estimates=coarse, **params)
         else:
             mode = "coarse+refine"
             detections = PandasTensorCollection(
                 infos=infos,
                 bboxes=torch.as_tensor(np.asarray([req.bbox], dtype=np.float32)),
             ).to(device)
-            output, _ = _estimator.run_inference_pipeline(observation, detections=detections, **params)
+            output, extra = _estimator.run_inference_pipeline(observation, detections=detections, **params)
 
     output = output.cpu()
     elapsed_ms = (time.perf_counter() - started) * 1000.0
+    score = output.infos["pose_score"].iloc[0] if len(output) and "pose_score" in output.infos else None
+    log.info(
+        "estimate %s mode=%s score=%s total=%.0fms queued=%.0fms [%s]",
+        req.label[:8], mode, "n/a" if score is None else f"{score:.2f}", elapsed_ms, waited_ms, extra.get("timing_str", ""),
+    )
     if len(output) == 0:
         return EstimateResponse(found=False, mode=mode, elapsed_ms=elapsed_ms)
 
-    score = output.infos["pose_score"].iloc[0] if "pose_score" in output.infos else None
     return EstimateResponse(
         found=True,
         pose=output.poses[0].numpy().astype(float).tolist(),

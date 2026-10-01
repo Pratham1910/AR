@@ -70,6 +70,25 @@ def test_low_score_drops_the_track_so_next_frame_needs_a_fresh_detection():
     assert len(service.requests) == 1
 
 
+def test_brief_low_scores_keep_tracking_from_the_last_good_pose():
+    good = {"found": True, "pose": _pose(0.4), "score": 0.9, "mode": "coarse+refine", "elapsed_ms": 900}
+    blurry = {"found": True, "pose": _pose(0.9), "score": 0.2, "mode": "refine", "elapsed_ms": 200}
+    service = FakeService([good, blurry, blurry, blurry])
+    client = _client(service)
+
+    def track():
+        return client.estimate("m1", "s1", b"jpeg", np.eye(3), None, min_score=0.5, track_iterations=2, max_misses=2)
+
+    assert client.estimate("m1", "s1", b"jpeg", np.eye(3), [1, 1, 5, 5], 0.5, 2, max_misses=2).found
+    for _ in range(2):  # two blurry frames: not shown, but still tracking...
+        assert not track().found
+        assert client.has_track("m1", "s1")
+    # ...and each retry refined from the last GOOD pose, not the blurry one.
+    assert [body["prev_pose"] for _, body in service.requests[1:3]] == [_pose(0.4), _pose(0.4)]
+    assert not track().found  # third in a row: give up, next frame re-detects
+    assert not client.has_track("m1", "s1")
+
+
 @pytest.mark.parametrize("z", [-0.3, 0.0, 7.0])
 def test_implausible_depth_is_rejected_even_with_high_score(z):
     service = FakeService([{"found": True, "pose": _pose(z), "score": 1.0, "mode": "coarse+refine", "elapsed_ms": 900}])
@@ -82,12 +101,12 @@ def test_mesh_is_reregistered_when_scale_changes_and_tracks_reset():
     service = FakeService([{"found": True, "pose": _pose(0.4), "score": 0.9, "mode": "coarse+refine", "elapsed_ms": 900}])
     client = _client(service)
 
-    client.ensure_registered("m1", b"glb", 0.01)
-    client.ensure_registered("m1", b"glb", 0.01)  # same scale: no second upload
+    client.ensure_registered("m1", lambda: b"glb", 0.01)
+    client.ensure_registered("m1", lambda: b"glb", 0.01)  # same scale: no second upload
     _estimate(client)
     assert client.has_track("m1", "s1")
 
-    client.ensure_registered("m1", b"glb", 0.0137)  # corrected real-world size
+    client.ensure_registered("m1", lambda: b"glb", 0.0137)  # corrected real-world size
     assert [path for path, _ in service.requests].count("/objects") == 2
     assert not client.has_track("m1", "s1")  # old pose was solved against the wrong-sized mesh
 
@@ -103,7 +122,7 @@ def test_forget_drops_mesh_and_tracks_and_tolerates_a_stopped_service():
         return service(request)
 
     client = ModelPoseClient("http://pose", 5.0, transport=httpx.MockTransport(handler))
-    client.ensure_registered("m1", b"glb", 0.01)
+    client.ensure_registered("m1", lambda: b"glb", 0.01)
     _estimate(client)
     client.forget("m1")
     assert deletes == ["/objects/m1"]

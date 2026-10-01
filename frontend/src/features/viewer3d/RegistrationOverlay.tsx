@@ -5,6 +5,7 @@ import { CameraSelect } from "../../components/CameraSelect";
 import { CameraStatusBadge } from "../../components/CameraStatusBadge";
 import { useCamera } from "../../hooks/useCamera";
 import { ensureVisibleMaterials } from "./ensureVisibleMaterial";
+import { applyRenderStyle, type RenderStyle } from "./renderStyle";
 import { Models3DApi, VisionApi, apiErrorMessage } from "../../services/api";
 import { ClassSelect } from "../../components/ClassSelect";
 import type {
@@ -218,6 +219,14 @@ export function RegistrationOverlay({
   const [busy, setBusy] = useState(false);
   const [liveTracking, setLiveTracking] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
+  const [renderStyle, setRenderStyle] = useState<RenderStyle>("solid");
+  // Read by the model loader too, so a model (re)loaded while in X-Ray or
+  // Wireframe comes up in that style instead of reverting to solid.
+  const renderStyleRef = useRef<RenderStyle>("solid");
+  useEffect(() => {
+    renderStyleRef.current = renderStyle;
+    if (modelObjectRef.current) applyRenderStyle(modelObjectRef.current, renderStyle);
+  }, [renderStyle]);
   const [modelStatus, setModelStatus] = useState<"loading" | "loaded" | "error">("loading");
   const [modelError, setModelError] = useState<string | null>(null);
 
@@ -282,6 +291,7 @@ export function RegistrationOverlay({
         const group = new THREE.Group();
         group.visible = false; // hidden until a pose is found
         group.add(gltf.scene);
+        applyRenderStyle(group, renderStyleRef.current);
         modelObjectRef.current = group;
         scene.add(group);
         setModelStatus("loaded");
@@ -706,6 +716,20 @@ export function RegistrationOverlay({
           <input type="checkbox" checked={liveTracking} onChange={(e) => setLiveTracking(e.target.checked)} />
           Live tracking (as fast as detection responds, smoothed)
         </label>
+        <span className="view-style-toggle" title="How the 3D model is drawn — X-Ray and Wireframe let you see the real object through it to judge alignment">
+          View:
+          {(
+            [
+              ["solid", "Solid"],
+              ["wireframe", "Wireframe"],
+              ["xray", "X-Ray"],
+            ] as const
+          ).map(([value, label]) => (
+            <button key={value} className={renderStyle === value ? "active" : ""} onClick={() => setRenderStyle(value)}>
+              {label}
+            </button>
+          ))}
+        </span>
       </div>
 
       {mode === "markerless" && (

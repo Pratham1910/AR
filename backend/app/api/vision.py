@@ -441,7 +441,7 @@ def estimate_model_pose(request: ModelPoseRequest, db: Session = Depends(get_db)
     label = str(model.id)
     glb_path = Path(_settings.models_3d_dir) / model.storage_key
     try:
-        _model_pose_client.ensure_registered(label, glb_path.read_bytes(), model.scale)
+        _model_pose_client.ensure_registered(label, glb_path.read_bytes, model.scale)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=f"GLB file missing: {glb_path}") from exc
     except PoseServiceUnavailable as exc:
@@ -471,6 +471,7 @@ def estimate_model_pose(request: ModelPoseRequest, db: Session = Depends(get_db)
             bbox,
             _settings.model_pose_min_score,
             _settings.model_pose_track_iterations,
+            _settings.model_pose_max_misses,
         )
     except PoseServiceUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc

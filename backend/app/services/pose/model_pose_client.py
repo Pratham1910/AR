@@ -12,6 +12,7 @@ Keeps two pieces of per-process state:
 from __future__ import annotations
 
 import base64
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import httpx
@@ -35,7 +36,8 @@ class ModelPoseClient:
     def __init__(self, base_url: str, timeout_s: float, transport: httpx.BaseTransport | None = None):
         self._client = httpx.Client(base_url=base_url, timeout=timeout_s, transport=transport)
         self._registered_scale: dict[str, float] = {}
-        self._tracks: dict[str, np.ndarray] = {}
+        self._tracks: dict[str, np.ndarray] = {}  # last GOOD pose per label:session
+        self._misses: dict[str, int] = {}  # consecutive low-score frames while tracking
 
     def _post(self, path: str, payload: dict) -> dict:
         try:
@@ -49,12 +51,14 @@ class ModelPoseClient:
             raise PoseServiceUnavailable(f"Pose service error {response.status_code}: {response.text}")
         return response.json()
 
-    def ensure_registered(self, label: str, glb_bytes: bytes, scale: float) -> None:
+    def ensure_registered(self, label: str, read_glb: Callable[[], bytes], scale: float) -> None:
+        """`read_glb` is only called when the mesh actually has to be sent —
+        this runs on every tracking frame, so the GLB isn't re-read each time."""
         if self._registered_scale.get(label) == scale:
             return
         self._post(
             "/objects",
-            {"label": label, "glb_base64": base64.b64encode(glb_bytes).decode("ascii"), "scale": scale},
+            {"label": label, "glb_base64": base64.b64encode(read_glb()).decode("ascii"), "scale": scale},
         )
         self._registered_scale[label] = scale
         self.reset_tracks_for(label)
@@ -72,9 +76,11 @@ class ModelPoseClient:
     def reset_tracks_for(self, label: str) -> None:
         for key in [k for k in self._tracks if k.startswith(f"{label}:")]:
             del self._tracks[key]
+            self._misses.pop(key, None)
 
     def reset(self, label: str, session_id: str) -> None:
         self._tracks.pop(f"{label}:{session_id}", None)
+        self._misses.pop(f"{label}:{session_id}", None)
 
     def has_track(self, label: str, session_id: str) -> bool:
         return f"{label}:{session_id}" in self._tracks
@@ -88,10 +94,13 @@ class ModelPoseClient:
         bbox: list[float] | None,
         min_score: float,
         track_iterations: int,
+        max_misses: int = 0,
     ) -> ModelPoseResult:
         """Refines from this session's previous pose if there is one, otherwise
-        does a full search inside `bbox`. A result scoring below `min_score`
-        drops the track so the next frame starts over from a fresh detection."""
+        does a full search inside `bbox`. While tracking, up to `max_misses`
+        consecutive low-score frames (motion blur, a hand passing) keep the
+        track — the next frame refines again from the last GOOD pose — instead
+        of immediately paying for a ~1s full search; one more drops it."""
         key = f"{label}:{session_id}"
         prev = self._tracks.get(key)
         if prev is None and bbox is None:
@@ -115,8 +124,12 @@ class ModelPoseClient:
 
         if good:
             self._tracks[key] = pose
+            self._misses.pop(key, None)
+        elif prev is not None and self._misses.get(key, 0) < max_misses:
+            self._misses[key] = self._misses.get(key, 0) + 1  # keep refining from the last good pose
         else:
             self._tracks.pop(key, None)
+            self._misses.pop(key, None)
         return ModelPoseResult(
             found=good,
             t_camera_object=pose if good else None,
