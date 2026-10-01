@@ -74,9 +74,18 @@ class Settings(BaseSettings):
 
     # Live AR state machine (app/services/tracking/ar_session.py): detect
     # once, track continuously, re-detect only when tracking is lost.
-    ar_detect_interval_ms: float = 150.0  # detector rate cap while SEARCHING/LOST
-    ar_grace_frames: int = 2  # low-confidence frames in a row that keep TRACKING (last pose held)
-    ar_lost_timeout_ms: float = 1500.0  # LOST this long without recovery -> hide model, SEARCHING
+    ar_detect_interval_ms: float = 150.0  # detector rate cap while SEARCHING/RECOVERING
+    ar_grace_frames: int = 2  # LOST frames holding the last pose before RECOVERING (detector)
+    ar_lost_timeout_ms: float = 1500.0  # not re-acquired this long after loss -> hide model, SEARCHING
+    # Pose filter (app/services/tracking/pose_filter.py): translation =
+    # constant-velocity Kalman, rotation = Kalman-gain slerp. Defaults from a
+    # sweep: still jitter 4.0->2.3mm / 3.0->2.0deg, ~1mm lag at 0.2 m/s,
+    # 30deg turn followed within 200ms. Raise process noise = more responsive.
+    ar_filter_enabled: bool = True
+    ar_filter_translation_process_noise: float = 0.3  # m/s^2
+    ar_filter_translation_measurement_noise: float = 0.004  # m
+    ar_filter_rotation_process_noise_deg: float = 40.0  # deg/s
+    ar_filter_rotation_measurement_noise_deg: float = 3.0  # deg
     # Confidence thresholds are per tracker, since their scales differ:
     # optical flow = share of points agreeing with the fitted motion (1.0
     # when stationary); model-based = overlap (IoU) of the posed model's

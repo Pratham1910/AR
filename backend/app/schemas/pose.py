@@ -137,31 +137,62 @@ class TrackedObjectOut(BaseModel):
 
 class ARCounters(BaseModel):
     frame_index: int
-    detection_runs: int  # detector calls (SEARCHING/LOST only)
-    detections_found: int
+    detection_runs: int  # detector calls, found or not (SEARCHING/RECOVERING only)
+    detection_count: int  # successful detections: 1 at first lock, +1 per re-acquisition
     tracking_frames: int  # tracker calls
+    frames_since_detection: int | None = None
+
+
+class ARTimings(BaseModel):
+    """Server-side milliseconds for this frame, by stage (0 when the stage didn't run)."""
+
+    detection: float  # YOLO
+    initialization: float  # initial 6DoF pose (+ tracker lock)
+    tracking: float  # 2D tracker (optical flow) and overhead
+    refinement: float  # MegaPose pose refinement (model-based)
+    total: float  # whole request on the server
+
+
+class DetectionOut(BaseModel):
+    class_label: str
+    confidence: float
+    bbox: list[float]
+    polygon: list[Vector2] | None = None
+
+
+class CameraIntrinsics(BaseModel):
+    """The exact camera model the pose was computed with — the renderer
+    builds its projection from these instead of a field-of-view guess."""
+
+    fx: float
+    fy: float
+    cx: float
+    cy: float
+    width: int
+    height: int
 
 
 class ARFrameResponse(BaseModel):
-    state: Literal["SEARCHING", "TRACKING", "LOST"]
-    visible: bool  # draw the model: TRACKING, or LOST within the grace period at the last valid pose
-    monitoring: bool  # TRACKING but confidence below the "good" threshold
+    state: Literal["SEARCHING", "INITIALIZING", "TRACKING", "LOST", "RECOVERING"]
+    visible: bool  # draw the model: tracking, or holding the last valid pose while lost/re-acquiring
+    monitoring: bool  # TRACKING but confidence below the "good" threshold (tracking with warning)
     object: TrackedObjectOut | None = None
-    # The model's own pose for "model" mode (apply directly, no anchor offset);
-    # an approximate, position-only placement for "markerless".
+    detection: DetectionOut | None = None  # what the detector found on this frame, if it ran
+    # Filtered pose in renderer (Three.js) space — see docs/coordinates.md.
+    # "model": the model's own pose; "markerless": approximate, no orientation.
     position: Vector3 | None = None
     quaternion: Quaternion | None = None
-    rotation_deg: RotationDeg | None = None
-    axes: PoseAxes | None = None
+    rotation_deg: RotationDeg | None = None  # XYZ Euler of `quaternion`, for display
+    axes: PoseAxes | None = None  # raw (unfiltered) measurement gizmo, model-based only
     approximate: bool  # True for markerless (no orientation)
     detector_ran: bool
     tracker_ran: bool
-    detect_ms: float
-    track_ms: float
+    timings_ms: ARTimings
     counters: ARCounters
-    events: list[str]  # [DETECTION]/[POSE]/[TRACKER]/[RECOVERY] lines from this frame
+    events: list[str]  # [SEARCHING]/[DETECTION]/[POSE]/[TRACKER]/[RECOVERY] lines from this frame
     good_confidence: float
     lost_confidence: float
+    intrinsics: CameraIntrinsics
     calibration_is_approximate: bool
     calibration_source: str
     camera_vertical_fov_deg: float

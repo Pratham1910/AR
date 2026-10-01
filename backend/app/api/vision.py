@@ -21,6 +21,9 @@ from app.schemas.pose import (
     ARCounters,
     ARFrameRequest,
     ARFrameResponse,
+    ARTimings,
+    CameraIntrinsics,
+    DetectionOut,
     FeaturePoseRequest,
     FeaturePoseResponse,
     ObjectRegistrationRequest,
@@ -54,7 +57,8 @@ from app.services.pose.markerless import estimate_object_placement
 from app.services.pose.model_pose_client import ModelPoseClient, PoseServiceUnavailable
 from app.services.pose.transforms import cv_pose_to_threejs, euler_angles_deg, project_pose_axes
 from app.services.state_detection.state_engine import ComponentStateRule, StateEstimationError, StateEstimator
-from app.services.tracking.ar_session import ARSession, ARTrackingConfig
+from app.services.tracking.ar_session import ARSession, ARTrackingConfig, euler_xyz_deg
+from app.services.tracking.pose_filter import PoseFilterConfig
 from app.services.tracking.tracker import ObjectTracker
 from app.services.tracking.trackers import FlowPoseTracker, Frame, MegaPoseTracker
 from app.services.vision.detector import build_detector, time_inference
@@ -426,6 +430,13 @@ def _build_ar_session(request: ARFrameRequest, class_label: str, model: Model3D 
         detect_interval_ms=_settings.ar_detect_interval_ms,
         grace_frames=_settings.ar_grace_frames,
         lost_timeout_ms=_settings.ar_lost_timeout_ms,
+        filter=PoseFilterConfig(
+            enabled=_settings.ar_filter_enabled,
+            translation_process_noise=_settings.ar_filter_translation_process_noise,
+            translation_measurement_noise=_settings.ar_filter_translation_measurement_noise,
+            rotation_process_noise_deg=_settings.ar_filter_rotation_process_noise_deg,
+            rotation_measurement_noise_deg=_settings.ar_filter_rotation_measurement_noise_deg,
+        ),
     )
     if model is None:
         config = ARTrackingConfig(
@@ -454,12 +465,14 @@ def _build_ar_session(request: ARFrameRequest, class_label: str, model: Model3D 
 @router.post("/ar-session/frame", response_model=ARFrameResponse)
 def ar_session_frame(request: ARFrameRequest, db: Session = Depends(get_db)) -> ARFrameResponse:
     """
-    One camera frame through the session's SEARCHING/TRACKING/LOST state
-    machine. The detector (YOLO) only runs while SEARCHING or LOST, at most
-    every ar_detect_interval_ms; while TRACKING only the tracker runs —
-    optical flow ("markerless") or the MegaPose refiner ("model").
+    One camera frame through the session's SEARCHING / INITIALIZING /
+    TRACKING / LOST / RECOVERING state machine (ar_session.py). The detector
+    (YOLO) only runs while SEARCHING or RECOVERING, at most every
+    ar_detect_interval_ms; while TRACKING only the tracker runs — optical
+    flow ("markerless") or optical flow + the MegaPose refiner ("model").
     Changing mode/class/model/height starts a fresh session.
     """
+    request_started = time.perf_counter()
     class_label = normalize_class_label(request.class_label)
     if request.mode == "model":
         if not request.model_id:
@@ -493,11 +506,15 @@ def ar_session_frame(request: ARFrameRequest, db: Session = Depends(get_db)) -> 
     if result.visible and obj is not None and obj.position is not None:
         position = Vector3(x=obj.position[0], y=obj.position[1], z=obj.position[2])
         quaternion = Quaternion(x=obj.quaternion[0], y=obj.quaternion[1], z=obj.quaternion[2], w=obj.quaternion[3])
+        rx, ry, rz = euler_xyz_deg(obj.quaternion)
+        rotation_deg = RotationDeg(rx=rx, ry=ry, rz=rz)
         t_co = obj.extra.get("t_camera_object")
         if t_co is not None:
             rvec, _ = cv2.Rodrigues(t_co[:3, :3])
-            axes, rotation_deg = _debug_pose_gizmo(rvec.reshape(3), t_co[:3, 3], calibration, axis_length_m=0.05)
+            axes, _ = _debug_pose_gizmo(rvec.reshape(3), t_co[:3, 3], calibration, axis_length_m=0.05)
 
+    k = calibration.camera_matrix
+    detection = result.detection
     return ARFrameResponse(
         state=result.state.value,
         visible=result.visible,
@@ -515,6 +532,14 @@ def ar_session_frame(request: ARFrameRequest, db: Session = Depends(get_db)) -> 
             polygon=None if obj.polygon is None else [Vector2(x=p.x, y=p.y) for p in obj.polygon],
             velocity_px_s=None if obj.velocity_px_s is None else Vector2(x=obj.velocity_px_s[0], y=obj.velocity_px_s[1]),
         ),
+        detection=None
+        if detection is None
+        else DetectionOut(
+            class_label=detection.class_label,
+            confidence=detection.confidence,
+            bbox=[detection.bbox.x1, detection.bbox.y1, detection.bbox.x2, detection.bbox.y2],
+            polygon=[Vector2(x=p.x, y=p.y) for p in detection.polygon],
+        ),
         position=position,
         quaternion=quaternion,
         rotation_deg=rotation_deg,
@@ -522,17 +547,20 @@ def ar_session_frame(request: ARFrameRequest, db: Session = Depends(get_db)) -> 
         approximate=request.mode == "markerless",
         detector_ran=result.detector_ran,
         tracker_ran=result.tracker_ran,
-        detect_ms=result.detect_ms,
-        track_ms=result.track_ms,
+        timings_ms=ARTimings(**result.timings_ms, total=(time.perf_counter() - request_started) * 1000.0),
         counters=ARCounters(
             frame_index=session.frame_index,
             detection_runs=session.detection_runs,
-            detections_found=session.detections_found,
+            detection_count=session.detection_count,
             tracking_frames=session.tracking_frames,
+            frames_since_detection=session.frames_since_detection,
         ),
         events=result.events,
         good_confidence=session.config.good_confidence,
         lost_confidence=session.config.lost_confidence,
+        intrinsics=CameraIntrinsics(
+            fx=float(k[0, 0]), fy=float(k[1, 1]), cx=float(k[0, 2]), cy=float(k[1, 2]), width=width_px, height=height_px
+        ),
         calibration_is_approximate=calibration.is_approximate,
         calibration_source=calibration.source,
         camera_vertical_fov_deg=calibration.vertical_fov_deg(),

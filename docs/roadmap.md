@@ -141,6 +141,21 @@ camera session (`app/services/tracking/ar_session.py`):
   pose 0.11, wrong sideways pose 0.41; overlap 0.96 vs 0.19). A model whose
   shape doesn't match the object (bottle.glb vs the 24cm flask) is now
   refused instead of shown sideways.
+- Phae-4.md (FoundationPose++ as reference): states are now SEARCHING ->
+  INITIALIZING -> TRACKING -> LOST -> RECOVERING (detection and initial pose
+  are separate steps; LOST holds the last pose for the grace frames, then
+  RECOVERING runs the rate-capped detector). `detection_count` is 1 at the
+  first lock and +1 per re-acquisition only. Accepted poses pass through
+  `pose_filter.py` (constant-velocity Kalman on translation, Kalman-gain
+  slerp on rotation; FoundationPose++ filters rotation). The overlay builds
+  its projection from the backend's fx/fy/cx/cy (`docs/coordinates.md`).
+  FoundationPose++ itself needs RGB-D (Z from the depth image; its refiner
+  takes depth) — not available on the webcam, so Z comes from known size /
+  the metric mesh. Verified E2E on a real frame of the user's flask in both
+  modes: detection_count stayed 1 through left/right/up/closer, 2 after
+  re-acquisition; markerless ~12ms/frame tracking, model-based ~0.4s/frame
+  (0.23s MegaPose refinement). Yaw about a rotationally symmetric object's
+  own axis is unobservable and drifts (harmless visually).
 - **Verified** with Phase-3.md's 12-step sequence as a unit test (detector
   call count unchanged across 150 tracking frames), and end-to-end on a real
   frame with real YOLO: detector ran once for 30 frames of motion + zoom;

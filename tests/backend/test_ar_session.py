@@ -1,12 +1,15 @@
 """
-The detect-once/track state machine, walked through Phase-3.md's expected
-test sequence with a fake detector, fake tracker and a controllable clock.
+The detect-once/track state machine, walked through Phase-3.md's / Phae-4.md's
+expected sequences with a fake detector, fake tracker and a controllable clock.
 """
 
 import pytest
 
 from app.schemas.vision import BoundingBox, SegmentedObject
-from app.services.tracking.ar_session import ARSession, ARTrackingConfig, Measurement, TrackingState
+from app.services.tracking.ar_session import ARSession, ARTrackingConfig, Measurement, TrackingState, euler_xyz_deg
+from app.services.tracking.pose_filter import PoseFilterConfig
+
+S = TrackingState
 
 
 class Clock:
@@ -47,6 +50,7 @@ class FakeTracker:
             position=(self.x, 0.0, -0.4),
             quaternion=(0.0, 0.0, 0.0, 1.0),
             bbox=BoundingBox(x1=100 + self.x * 1000, y1=100, x2=200 + self.x * 1000, y2=250),
+            extra={"pose_service_ms": 0.0},
         )
 
     def initialize(self, frame, detection):
@@ -61,12 +65,21 @@ class FakeTracker:
         self.committed.append(measurement)
 
 
-CONFIG = ARTrackingConfig(detect_interval_ms=150, good_confidence=0.7, lost_confidence=0.4, grace_frames=2, lost_timeout_ms=1500)
+def config(**overrides):
+    base = dict(
+        detect_interval_ms=150,
+        good_confidence=0.7,
+        lost_confidence=0.4,
+        grace_frames=2,
+        lost_timeout_ms=1500,
+        filter=PoseFilterConfig(enabled=False),  # exact positions in these tests; the filter has its own tests
+    )
+    return ARTrackingConfig(**{**base, **overrides})
 
 
-def make(can_recover=False):
+def make(can_recover=False, **overrides):
     clock, detector, tracker = Clock(), FakeDetector(), FakeTracker(can_recover)
-    return ARSession("cup", detector, tracker, CONFIG, clock=clock), clock, detector, tracker
+    return ARSession("cup", detector, tracker, config(**overrides), clock=clock), clock, detector, tracker
 
 
 def run(session, clock, frames, ms_per_frame=33):
@@ -81,131 +94,152 @@ def all_events(results):
     return [e for r in results for e in r.events]
 
 
-def test_full_phase3_sequence_detects_once_then_tracks():
+def test_phase4_success_criteria_sequence():
     session, clock, detector, tracker = make()
 
-    # 1. Camera starts, no cup: searching, detector rate-capped to every 150ms.
+    # 1-2. Camera starts, no cup: SEARCHING, detector rate-capped (~every 150ms, not every frame).
     first = session.step(frame=None)
-    assert first.state == TrackingState.SEARCHING and not first.visible
-    assert "[DETECTION] Searching for cup..." in first.events
-    results = run(session, clock, 30)  # ~1s at 30fps
-    assert all(r.state == TrackingState.SEARCHING for r in results)
-    assert 6 <= detector.calls <= 8  # ~1000ms / 150ms, not 31
-    assert sum(r.detector_ran for r in results) == detector.calls - 1
+    assert first.state == S.SEARCHING and not first.visible
+    assert "[SEARCHING] Running detector..." in first.events
+    results = run(session, clock, 30)
+    assert all(r.state == S.SEARCHING for r in results)
+    assert 6 <= detector.calls <= 8
+    assert session.detection_count == 0
 
-    # 2-3. Cup appears: detected, initial pose, tracker initialized, model shown.
+    # 3. Cup appears: detected -> INITIALIZING (detection and pose init are separate steps).
     detector.cup_visible = True
     results = run(session, clock, 6)
-    locked = next(r for r in results if r.state == TrackingState.TRACKING)
-    assert locked.visible and locked.obj.object_id == 1
+    found = next(r for r in results if r.detection is not None)
+    assert found.state == S.INITIALIZING and not found.visible
+    assert session.detection_count == 1
+    # 4-7. Next frame: initial pose, tracker initialized, model shown, detector stops.
+    locked = results[results.index(found) + 1]
+    assert locked.state == S.TRACKING and locked.visible and locked.obj.object_id == 1
+    assert locked.timings_ms["initialization"] >= 0.0 and not locked.detector_ran
     events = all_events(results)
-    assert "[DETECTION] cup found (confidence=0.90)" in events
+    assert "[DETECTION] cup detected (confidence=0.90) — Detection count = 1" in events
     assert "[POSE] Initial pose calculated" in events
-    assert "[TRACKER] Initialized object ID=1" in events
-    calls_at_lock = detector.calls
-    tracking_frames_at_lock = session.tracking_frames
+    assert "[TRACKER] Tracker initialized — Object ID = 1" in events
+    calls_at_lock, frames_at_lock = detector.calls, session.tracking_frames
 
-    # 4-9. Stationary, then moving: ONLY the tracker runs, pose follows it.
+    # 8-13. Moving: only the tracker runs, detection_count stays 1, model follows.
     results = run(session, clock, 100)
     tracker.x = 0.05
     results += run(session, clock, 50)
-    assert detector.calls == calls_at_lock  # the detector never ran again
+    assert detector.calls == calls_at_lock and session.detection_count == 1
     assert not any(r.detector_ran for r in results)
-    assert all(r.tracker_ran and r.state == TrackingState.TRACKING for r in results)
-    assert not any(e.startswith("[DETECTION]") for e in all_events(results))
+    assert all(r.tracker_ran and r.state == S.TRACKING for r in results)
+    assert not any(e.startswith(("[DETECTION]", "[SEARCHING]")) for e in all_events(results))
     assert results[-1].obj.position == (0.05, 0.0, -0.4)
-    assert session.tracking_frames - tracking_frames_at_lock == 150
-    assert session.detection_runs == calls_at_lock
+    assert session.tracking_frames - frames_at_lock == 150
+    assert session.frames_since_detection > 150
 
-    # 10. Cup hidden briefly: model held at the last valid pose, no flicker.
+    # Tracking lost (cup hidden): model held at the last valid pose; frames 1-2
+    # hold, frame 3 attempts recovery with the detector.
     tracker.confidence = 0.1
-    held = run(session, clock, 2)  # within grace_frames
-    assert all(r.state == TrackingState.TRACKING and r.visible for r in held)
-    assert held[-1].obj.position == (0.05, 0.0, -0.4)
-    assert held[-1].obj.confidence == 0.1  # shown confidence is the real one, pose is the held one
-    lost = run(session, clock, 1)[0]
-    assert lost.state == TrackingState.LOST and lost.visible
-    assert any(e.startswith("[TRACKER] Object lost") for e in lost.events)
-
-    # Recovery while LOST: detector runs, rate-capped, model still at last pose.
     detector.cup_visible = False
+    lost = run(session, clock, 3)
+    assert lost[0].state == S.LOST and any(e.startswith("[TRACKER] Tracking lost") for e in lost[0].events)
+    assert all(r.visible and r.obj.position == (0.05, 0.0, -0.4) for r in lost)
+    assert lost[0].obj.confidence == 0.1  # shown confidence is the real one
+    assert [r.detector_ran for r in lost] == [False, False, True]
+    assert lost[-1].state == S.RECOVERING
+
+    # 15. RECOVERING: detector at a controlled interval, model still held.
     calls_before = detector.calls
-    results = run(session, clock, 20)  # 660ms
-    assert all(r.state == TrackingState.LOST and r.visible for r in results)
+    results = run(session, clock, 20)
+    assert all(r.state == S.RECOVERING and r.visible for r in results)
     assert 4 <= detector.calls - calls_before <= 6
-    assert "[RECOVERY] Running detector" in all_events(results)
+    assert "[RECOVERY] Running detector..." in all_events(results)
 
-    # 11. Hidden long enough: model hides, back to SEARCHING.
-    results = run(session, clock, 40)
-    assert results[-1].state == TrackingState.SEARCHING and not results[-1].visible
-    assert any("not recovered" in e for e in all_events(results))
-
-    # 12. Cup returns: detector runs, tracker re-initializes, detector stops again.
+    # 16-19. Cup reacquired: detection_count = 2, same object, tracker re-initialized, detector stops.
     detector.cup_visible = True
     tracker.confidence = 0.95
-    results = run(session, clock, 10)
-    assert results[-1].state == TrackingState.TRACKING and results[-1].visible
-    calls_after_relock = detector.calls
+    results = run(session, clock, 8)
+    events = all_events(results)
+    assert any("cup reacquired" in e and "Detection count = 2" in e for e in events)
+    assert "[TRACKER] Tracker re-initialized — Object ID = 1" in events
+    assert results[-1].state == S.TRACKING and results[-1].obj.object_id == 1
+    calls = detector.calls
     run(session, clock, 30)
-    assert detector.calls == calls_after_relock
+    assert detector.calls == calls and session.detection_count == 2
 
 
-def test_recovery_during_lost_keeps_object_identity():
+def test_not_reacquired_within_timeout_hides_model_and_searches_again():
     session, clock, detector, tracker = make()
     detector.cup_visible = True
-    run(session, clock, 2)
+    run(session, clock, 3)
     tracker.confidence = 0.1
-    run(session, clock, 3)  # -> LOST
-    assert session.state == TrackingState.LOST
+    detector.cup_visible = False
+    results = run(session, clock, 60)  # ~2s > 1.5s timeout
+    assert results[-1].state == S.SEARCHING and not results[-1].visible and results[-1].obj is None
+    assert any("not reacquired — model hidden" in e for e in all_events(results))
+    # A later detection is a NEW object identity.
+    detector.cup_visible = True
     tracker.confidence = 0.95
-    results = run(session, clock, 10)  # detector reacquires
-    events = all_events(results)
-    assert "[DETECTION] cup reacquired" in events
-    assert "[TRACKER] Reinitialized object ID=1" in events
-    assert results[-1].obj.object_id == 1
-    assert results[-1].state == TrackingState.TRACKING
+    results = run(session, clock, 8)
+    assert results[-1].state == S.TRACKING and results[-1].obj.object_id == 2
 
 
-def test_tracker_that_can_recover_relocks_without_the_detector():
+def test_recoverable_tracker_relocks_during_grace_without_the_detector():
     session, clock, detector, tracker = make(can_recover=True)
     detector.cup_visible = True
-    run(session, clock, 2)
-    tracker.confidence = 0.1
     run(session, clock, 3)
-    assert session.state == TrackingState.LOST
+    tracker.confidence = 0.1
+    assert run(session, clock, 1)[0].state == S.LOST
     calls = detector.calls
     tracker.confidence = 0.9
     result = run(session, clock, 1)[0]
-    assert result.state == TrackingState.TRACKING
-    assert detector.calls == calls
-    assert any(e.startswith("[TRACKER] Recovered object ID=1") for e in result.events)
+    assert result.state == S.TRACKING and detector.calls == calls
+    assert any(e.startswith("[TRACKER] Tracking recovered") for e in result.events)
 
 
-def test_detected_but_unlockable_object_stays_searching():
+def test_detected_but_unlockable_object_returns_to_searching():
     session, clock, detector, tracker = make()
     detector.cup_visible = True
-    tracker.confidence = 0.1  # e.g. a plain surface with nothing to follow
+    tracker.confidence = 0.1  # e.g. a wrong-shaped model, or nothing to follow
     results = run(session, clock, 10)
-    assert all(r.state == TrackingState.SEARCHING and not r.visible for r in results)
-    assert any("could not lock on" in e for e in all_events(results))
+    assert all(not r.visible for r in results)
+    assert {r.state for r in results} <= {S.SEARCHING, S.INITIALIZING}
+    assert any("Could not initialize pose" in e for e in all_events(results))
 
 
 @pytest.mark.parametrize("confidence, monitoring", [(0.95, False), (0.55, True)])
-def test_monitoring_band_between_lost_and_good_thresholds(confidence, monitoring):
+def test_tracking_with_warning_band(confidence, monitoring):
     session, clock, detector, tracker = make()
     detector.cup_visible = True
-    run(session, clock, 2)
+    run(session, clock, 3)
     tracker.confidence = confidence
     result = run(session, clock, 1)[0]
-    assert result.state == TrackingState.TRACKING
-    assert result.monitoring is monitoring
+    assert result.state == S.TRACKING and result.monitoring is monitoring
 
 
-def test_only_accepted_measurements_are_committed_to_the_tracker():
+def test_rejected_measurements_never_become_the_trackers_reference():
     session, clock, detector, tracker = make(can_recover=True)
     detector.cup_visible = True
-    run(session, clock, 2)
+    run(session, clock, 3)
     committed = len(tracker.committed)
     tracker.confidence = 0.1
     run(session, clock, 2)
-    assert len(tracker.committed) == committed  # a bad frame never becomes the next reference
+    assert len(tracker.committed) == committed
+
+
+def test_accepted_poses_are_filtered_and_a_fresh_lock_resets_the_filter():
+    session, clock, detector, tracker = make(filter=PoseFilterConfig())
+    detector.cup_visible = True
+    run(session, clock, 3)
+    assert session.obj.position == (0.0, 0.0, -0.4)  # fresh lock: exact, no blending
+    tracker.x = 0.05  # sudden 5 cm jump in one frame
+    filtered = run(session, clock, 1)[0].obj.position[0]
+    assert 0.0 < filtered < 0.05  # smoothed, not applied raw
+    converged = run(session, clock, 30)[-1].obj.position[0]
+    assert converged == pytest.approx(0.05, abs=0.002)
+
+
+def test_euler_display_matches_threejs_xyz_order():
+    import math
+
+    half = math.radians(30) / 2
+    assert euler_xyz_deg((math.sin(half), 0.0, 0.0, math.cos(half))) == pytest.approx((30.0, 0.0, 0.0))
+    assert euler_xyz_deg((0.0, math.sin(half), 0.0, math.cos(half))) == pytest.approx((0.0, 30.0, 0.0))
+    assert euler_xyz_deg((0.0, 0.0, math.sin(half), math.cos(half))) == pytest.approx((0.0, 0.0, 30.0))

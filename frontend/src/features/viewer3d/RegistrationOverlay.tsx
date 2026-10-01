@@ -11,6 +11,7 @@ import { ClassSelect } from "../../components/ClassSelect";
 import type {
   AnchorOffset,
   ARFrameResponse,
+  CameraIntrinsics,
   FeaturePoseResponse,
   PoseAxes,
   PoseResponse,
@@ -216,7 +217,11 @@ export function RegistrationOverlay({
   const [arResult, setArResult] = useState<ARFrameResponse | null>(null);
   const [arEvents, setArEvents] = useState<string[]>([]);
   // Detector runs / tracker runs per second, from the session's counters.
-  const [rates, setRates] = useState({ detect: 0, track: 0, render: 0 });
+  const [rates, setRates] = useState({ detect: 0, track: 0, render: 0, renderMs: 0 });
+  const renderMsRef = useRef(0);
+  const [frameMs, setFrameMs] = useState(0); // camera frame -> backend -> pose, round trip
+  // Cache key of the intrinsics currently in the render camera's projection.
+  const intrinsicsKeyRef = useRef("");
   const counterSamplesRef = useRef<{ t: number; detections: number; tracks: number }[]>([]);
   const renderFramesRef = useRef(0);
   const [busy, setBusy] = useState(false);
@@ -247,6 +252,7 @@ export function RegistrationOverlay({
     // below) — a guessed constant here visibly misaligns the overlay.
     const camera = new THREE.PerspectiveCamera(60, width / height, 0.01, 100);
     cameraObjectRef.current = camera;
+    intrinsicsKeyRef.current = ""; // new camera: the next result must set its projection
     // Camera stays at the origin, looking down -Z — see module docstring.
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -307,17 +313,23 @@ export function RegistrationOverlay({
     );
 
     let frameId = 0;
-    const SMOOTHING = 0.25; // fraction of the remaining distance closed per frame — higher = snappier, lower = smoother/laggier
+    // Fraction of the remaining distance closed per rendered frame. This only
+    // interpolates between pose updates (which arrive slower than 60 fps);
+    // the actual smoothing is the backend's Kalman filter, so this stays
+    // quick to avoid stacking a second layer of lag on top of it.
+    const INTERPOLATION = 0.4;
     const animate = () => {
       frameId = requestAnimationFrame(animate);
 
       const model = modelObjectRef.current;
       if (model && hasTargetRef.current) {
-        model.position.lerp(targetPositionRef.current, SMOOTHING);
-        model.quaternion.slerp(targetQuaternionRef.current, SMOOTHING);
+        model.position.lerp(targetPositionRef.current, INTERPOLATION);
+        model.quaternion.slerp(targetQuaternionRef.current, INTERPOLATION);
       }
 
+      const started = performance.now();
       renderer.render(scene, camera);
+      renderMsRef.current += performance.now() - started;
       renderFramesRef.current += 1;
     };
     animate();
@@ -429,11 +441,39 @@ export function RegistrationOverlay({
     // Must match the backend's calibration exactly (not the container's own
     // measured aspect) — that calibration is what the position/pose math
     // itself was computed against.
-    if (camera.fov !== verticalFovDeg || camera.aspect !== aspect) {
+    if (camera.fov !== verticalFovDeg || camera.aspect !== aspect || intrinsicsKeyRef.current) {
       camera.fov = verticalFovDeg;
       camera.aspect = aspect;
       camera.updateProjectionMatrix();
+      intrinsicsKeyRef.current = ""; // the intrinsics projection was replaced
     }
+  };
+
+  /**
+   * Builds the render camera's projection straight from the pinhole
+   * intrinsics the backend used (fx, fy, cx, cy for this frame size), so the
+   * rendered model lines up pixel-for-pixel with the pose math — including
+   * an off-center principal point, which a vertical-FOV + aspect camera
+   * can't represent. Camera at the origin looking down -Z (docs/coordinates.md).
+   */
+  const applyCameraIntrinsics = (k: CameraIntrinsics) => {
+    const camera = cameraObjectRef.current;
+    if (!camera) return;
+    const key = `${k.fx},${k.fy},${k.cx},${k.cy},${k.width},${k.height}`;
+    if (key === intrinsicsKeyRef.current) return;
+    intrinsicsKeyRef.current = key;
+    const near = camera.near;
+    // Image y grows downward, so the frustum's top edge is at +cy and its
+    // bottom at -(height - cy), scaled to the near plane.
+    camera.projectionMatrix.makePerspective(
+      (-k.cx * near) / k.fx,
+      ((k.width - k.cx) * near) / k.fx,
+      (k.cy * near) / k.fy,
+      (-(k.height - k.cy) * near) / k.fy,
+      near,
+      camera.far
+    );
+    camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
   };
 
   const applyModelTransform = (
@@ -503,8 +543,10 @@ export function RegistrationOverlay({
   useEffect(() => {
     const timer = setInterval(() => {
       const frames = renderFramesRef.current;
+      const renderMs = frames > 0 ? renderMsRef.current / frames : 0;
       renderFramesRef.current = 0;
-      setRates((r) => ({ ...r, render: frames }));
+      renderMsRef.current = 0;
+      setRates((r) => ({ ...r, render: frames, renderMs }));
     }, 1000);
     return () => clearInterval(timer);
   }, []);
@@ -534,9 +576,10 @@ export function RegistrationOverlay({
     clearOutline();
   };
 
-  const applyArResult = (result: ARFrameResponse) => {
+  const applyArResult = (result: ARFrameResponse, roundTripMs: number) => {
     setArResult(result);
-    applyCameraModel(result.camera_vertical_fov_deg, result.camera_aspect);
+    setFrameMs(roundTripMs);
+    applyCameraIntrinsics(result.intrinsics);
     if (result.events.length) setArEvents((events) => [...events, ...result.events].slice(-12));
 
     // Detection vs tracking rate, over the last ~2 seconds of responses.
@@ -556,9 +599,26 @@ export function RegistrationOverlay({
 
     clearOutline();
     const obj = result.object;
-    if (obj && result.visible) {
-      const color = result.state === "LOST" ? "#ff7043" : result.monitoring ? "#ffca28" : "#00e676";
-      const label = `${result.state === "LOST" ? "lost" : "tracking"} ${obj.class_label} #${obj.object_id} ${(obj.confidence * 100).toFixed(0)}%`;
+    if (result.detection) {
+      // Detector hit on this frame: the pose is initialized on the next one.
+      const d = result.detection;
+      const [x1, y1, x2, y2] = d.bbox;
+      drawPolygon(
+        d.polygon && d.polygon.length >= 3
+          ? d.polygon
+          : [
+              { x: x1, y: y1 },
+              { x: x2, y: y1 },
+              { x: x2, y: y2 },
+              { x: x1, y: y2 },
+            ],
+        "#42a5f5",
+        `detected ${d.class_label} ${(d.confidence * 100).toFixed(0)}% — initializing pose`
+      );
+    } else if (obj && result.visible) {
+      const held = result.state === "LOST" || result.state === "RECOVERING" || result.state === "INITIALIZING";
+      const color = held ? "#ff7043" : result.monitoring ? "#ffca28" : "#00e676";
+      const label = `${held ? "held" : "tracking"} ${obj.class_label} #${obj.object_id} ${(obj.confidence * 100).toFixed(0)}%`;
       if (obj.polygon && obj.polygon.length >= 3) {
         drawPolygon(obj.polygon, color, label);
       } else if (obj.bbox) {
@@ -594,6 +654,7 @@ export function RegistrationOverlay({
     }
     setBusy(true);
     setApiError(null);
+    const frameStarted = performance.now();
     try {
       const frame = captureFrameBase64();
       if (!frame) throw new Error("Could not capture a frame from the camera.");
@@ -617,7 +678,7 @@ export function RegistrationOverlay({
           targetClassLabel,
           mode === "model" ? { modelId } : { realWorldHeightM }
         );
-        applyArResult(result);
+        applyArResult(result, performance.now() - frameStarted);
       } else {
         const result = await VisionApi.estimateFeaturePose(assetId, frame);
         setFeaturePose(result);
@@ -762,7 +823,7 @@ export function RegistrationOverlay({
       <CameraSelect devices={devices} selectedDeviceId={selectedDeviceId} onSelect={selectDevice} />
 
       {modelStatus === "loading" && <p className="camera-status camera-status-pending">🟡 Loading 3D model…</p>}
-      {modelStatus === "loaded" && <p className="camera-status camera-status-ok">🟢 3D model loaded (hidden until a pose is found)</p>}
+      {modelStatus === "loaded" && <p className="camera-status camera-status-ok">🟢 3D model loaded once — shown while the object is tracked</p>}
       {modelStatus === "error" && (
         <p className="camera-status camera-status-error">🔴 3D model failed to load — {modelError}</p>
       )}
@@ -897,49 +958,66 @@ export function RegistrationOverlay({
       {(mode === "markerless" || mode === "model") && (arResult || arEvents.length > 0) && (
         <div
           className={`pose-status ${
-            arResult?.state === "TRACKING" ? "pose-found" : arResult?.state === "LOST" ? "pose-lost" : "pose-not-found"
+            arResult?.state === "TRACKING"
+              ? "pose-found"
+              : arResult?.state === "LOST" || arResult?.state === "RECOVERING"
+                ? "pose-lost"
+                : "pose-not-found"
           }`}
         >
           {arResult && (
             <>
               <p className="tracking-state">
-                {arResult.state === "SEARCHING" && `Searching for ${targetClassLabel || "object"}...`}
+                {arResult.state === "SEARCHING" && `🔵 Searching for ${targetClassLabel || "object"}...`}
+                {arResult.state === "INITIALIZING" && "🟡 Initializing pose..."}
                 {arResult.state === "TRACKING" &&
-                  `Tracking ${arResult.object?.class_label} (object ID ${arResult.object?.object_id})` +
-                    (arResult.monitoring ? " — low confidence, monitoring" : "")}
-                {arResult.state === "LOST" && "Object lost — searching... (model held at last pose)"}
+                  `🟢 Tracking: ${arResult.object?.class_label}` +
+                    (arResult.monitoring ? " — ⚠ low confidence, monitoring" : "")}
+                {arResult.state === "LOST" && "🟠 Tracking lost — holding last pose"}
+                {arResult.state === "RECOVERING" && "🔵 Reacquiring object... (model held at last pose)"}
               </p>
               {arResult.object && (
                 <p>
-                  Tracking confidence: <strong>{(arResult.object.confidence * 100).toFixed(0)}%</strong>{" "}
+                  Confidence: <strong>{(arResult.object.confidence * 100).toFixed(0)}%</strong>{" "}
                   <span className="hint">
-                    {mode === "model" ? "model ↔ real object overlap" : "share of tracked points still agreeing"}
-                  </span>{" "}
-                  <span className="hint">
-                    (good ≥ {(arResult.good_confidence * 100).toFixed(0)}%, lost &lt;{" "}
-                    {(arResult.lost_confidence * 100).toFixed(0)}%)
+                    {mode === "model" ? "model ↔ real object overlap" : "share of tracked points still agreeing"} (good ≥{" "}
+                    {(arResult.good_confidence * 100).toFixed(0)}%, lost &lt; {(arResult.lost_confidence * 100).toFixed(0)}%)
                   </span>
                 </p>
               )}
-              <p>
-                Detector runs: <strong>{arResult.counters.detection_runs}</strong> (found{" "}
-                {arResult.counters.detections_found}) · Tracking frames: <strong>{arResult.counters.tracking_frames}</strong>
-                {arResult.object && <> · Object ID: {arResult.object.object_id}</>}
+              <div className="ar-stats">
+                <span>Object ID</span>
+                <strong>{arResult.object?.object_id ?? "—"}</strong>
+                <span>Detection count</span>
+                <strong>{arResult.counters.detection_count}</strong>
+                <span>Detector runs</span>
+                <strong>{arResult.counters.detection_runs}</strong>
+                <span>Tracking frames</span>
+                <strong>{arResult.counters.tracking_frames}</strong>
+                <span>Frames since detection</span>
+                <strong>{arResult.counters.frames_since_detection ?? "—"}</strong>
+                <span>Detection / Tracking / Rendering</span>
+                <strong>
+                  {rates.detect.toFixed(1)}/s · {rates.track.toFixed(1)}/s · {rates.render} fps
+                </strong>
+              </div>
+              <p className="hint">
+                This frame — detection {arResult.timings_ms.detection.toFixed(0)} ms · initialization{" "}
+                {arResult.timings_ms.initialization.toFixed(0)} ms · tracking {arResult.timings_ms.tracking.toFixed(0)} ms ·
+                refinement {arResult.timings_ms.refinement.toFixed(0)} ms · server total{" "}
+                {arResult.timings_ms.total.toFixed(0)} ms · rendering {rates.renderMs.toFixed(1)} ms/frame · total frame{" "}
+                {frameMs.toFixed(0)} ms
               </p>
-              <p>
-                Detection {rates.detect.toFixed(1)}/s · Tracking {rates.track.toFixed(1)}/s · Rendering {rates.render} fps
-                <span className="hint">
-                  {" "}
-                  (this frame: {arResult.detector_ran ? `detector ${arResult.detect_ms.toFixed(0)} ms` : "no detector"}
-                  {arResult.tracker_ran ? `, tracker ${arResult.track_ms.toFixed(0)} ms` : ""})
-                </span>
-              </p>
-              {arResult.position && (
-                <p>
-                  {arResult.approximate ? "approx. position" : "position"}: ({arResult.position.x.toFixed(3)},{" "}
-                  {arResult.position.y.toFixed(3)}, {arResult.position.z.toFixed(3)}) m
-                  {arResult.rotation_deg &&
-                    ` · rotation Rx=${arResult.rotation_deg.rx.toFixed(1)}° Ry=${arResult.rotation_deg.ry.toFixed(1)}° Rz=${arResult.rotation_deg.rz.toFixed(1)}°`}
+              {arResult.position && arResult.rotation_deg && (
+                <p className="pose-readout">
+                  X={arResult.position.x.toFixed(3)} Y={arResult.position.y.toFixed(3)} Z={arResult.position.z.toFixed(3)} m
+                  · Rx={arResult.rotation_deg.rx.toFixed(1)}° Ry={arResult.rotation_deg.ry.toFixed(1)}° Rz=
+                  {arResult.rotation_deg.rz.toFixed(1)}°
+                  <span className="hint">
+                    {" "}
+                    (filtered, renderer frame: +X right, +Y up, camera looks down −Z
+                    {arResult.approximate ? "; markerless: position only, no rotation" : ""})
+                  </span>
                 </p>
               )}
               {arResult.calibration_is_approximate && (

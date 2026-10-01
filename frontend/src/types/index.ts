@@ -172,7 +172,18 @@ export interface PoseResponse {
 // only runs while SEARCHING/LOST; while TRACKING only the tracker runs —
 // optical flow ("markerless") or the MegaPose refiner ("model").
 export type ARMode = "markerless" | "model";
-export type TrackingState = "SEARCHING" | "TRACKING" | "LOST";
+export type TrackingState = "SEARCHING" | "INITIALIZING" | "TRACKING" | "LOST" | "RECOVERING";
+
+// The exact pinhole camera the backend computed the pose with; the overlay
+// builds its projection from these (see docs/coordinates.md).
+export interface CameraIntrinsics {
+  fx: number;
+  fy: number;
+  cx: number;
+  cy: number;
+  width: number;
+  height: number;
+}
 
 export interface TrackedObject {
   object_id: number;
@@ -187,24 +198,33 @@ export interface TrackedObject {
 
 export interface ARFrameResponse {
   state: TrackingState;
-  // Draw the model: TRACKING, or LOST within the grace period (held at the last valid pose).
+  // Draw the model: tracking, or holding the last valid pose while lost / re-acquiring.
   visible: boolean;
-  monitoring: boolean; // TRACKING but confidence below good_confidence
+  monitoring: boolean; // TRACKING but confidence below good_confidence ("tracking with warning")
   object: TrackedObject | null;
-  // "model": the model's own pose (no anchor offset). "markerless": approximate, position only.
+  // What the detector found on this frame (shown while INITIALIZING).
+  detection: { class_label: string; confidence: number; bbox: number[]; polygon: Vector2[] | null } | null;
+  // Filtered pose, renderer (Three.js) space. "model": the model's own pose
+  // (no anchor offset). "markerless": approximate, position only.
   position: Vector3 | null;
   quaternion: QuaternionXYZW | null;
-  rotation_deg: RotationDeg | null;
-  axes: PoseAxes | null;
+  rotation_deg: RotationDeg | null; // XYZ Euler of `quaternion`
+  axes: PoseAxes | null; // raw measurement gizmo (model-based)
   approximate: boolean;
   detector_ran: boolean;
   tracker_ran: boolean;
-  detect_ms: number;
-  track_ms: number;
-  counters: { frame_index: number; detection_runs: number; detections_found: number; tracking_frames: number };
+  timings_ms: { detection: number; initialization: number; tracking: number; refinement: number; total: number };
+  counters: {
+    frame_index: number;
+    detection_runs: number;
+    detection_count: number; // 1 at first lock, +1 per re-acquisition — must not climb while tracking
+    tracking_frames: number;
+    frames_since_detection: number | null;
+  };
   events: string[];
   good_confidence: number;
   lost_confidence: number;
+  intrinsics: CameraIntrinsics;
   calibration_is_approximate: boolean;
   calibration_source: string;
   camera_vertical_fov_deg: number;
