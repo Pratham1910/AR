@@ -112,8 +112,16 @@ class MegaPoseTracker:
         label: str,
         refine_iterations: int,
         part_offset: np.ndarray | None = None,
+        still_motion_px: float = 1.5,
     ):
         self.client = client
+        # While the object's tracked points have moved less than this since the
+        # last accepted MegaPose pose, that pose is held (no refine). Each
+        # refine starts from the previous pose and is off by a few degrees, so
+        # refining a still object made its rotation random-walk (measured on a
+        # still flask: ~4 deg per frame, up to 60 deg). 0 disables holding.
+        self.still_motion_px = still_motion_px
+        self._held: Measurement | None = None  # the last accepted refined measurement
         self.label = label
         self.refine_iterations = refine_iterations
         # When tracking one part of an assembly (e.g. a bottle's body, which
@@ -134,7 +142,7 @@ class MegaPoseTracker:
         return t
 
     def _measurement(self, result: PoseServiceResult, object_box: BoundingBox | None, polygon=None) -> Measurement:
-        extra = {"pose_service_ms": result.elapsed_ms, "pose_score": result.score}
+        extra = {"pose_service_ms": result.elapsed_ms, "pose_score": result.score, "projected_bbox": result.projected_bbox}
         if result.t_camera_object is None:
             return Measurement(confidence=0.0, extra=extra)
         if object_box is not None and result.projected_bbox is not None:
@@ -186,12 +194,40 @@ class MegaPoseTracker:
             # view): no evidence the pose still fits, and the appearance score
             # alone can't be trusted to say so. Wait for the detector.
             return Measurement(confidence=0.0)
+        if (
+            self._held is not None
+            and object_box is not None
+            and self._flow.motion_since_anchor < self.still_motion_px
+        ):
+            return self._hold(object_box, polygon)
         result = self.client.refine(
             self.label, frame.jpeg, frame.calibration.camera_matrix, self._reference, self.refine_iterations
         )
         return self._measurement(result, object_box, polygon)
 
+    def _hold(self, object_box: BoundingBox, polygon) -> Measurement:
+        """The object hasn't moved: the last accepted pose, re-judged against where flow sees it now."""
+        held = self._held
+        assert held is not None
+        projected = held.extra.get("projected_bbox")
+        confidence = box_iou(object_box, projected) if projected is not None else held.confidence
+        return Measurement(
+            confidence=confidence,
+            position=held.position,
+            quaternion=held.quaternion,
+            bbox=object_box,
+            polygon=polygon,
+            extra={**held.extra, "held": True, "pose_service_ms": 0.0},
+        )
+
     def commit(self, measurement: Measurement) -> None:
         t_mesh = measurement.extra.get("t_camera_mesh")
         if t_mesh is not None:
             self._reference = t_mesh
+        if not measurement.extra.get("held") and measurement.position is not None:
+            # A real (refined) pose: the new still-reference. Only these reset
+            # the motion anchor, so slow steady motion still adds up past the
+            # threshold instead of being re-anchored away every frame.
+            self._held = measurement
+            if self.still_motion_px > 0:
+                self._flow.set_anchor()

@@ -79,6 +79,9 @@ class Settings(BaseSettings):
     # iterations ~220ms at the same ~3-4mm accuracy as 5 (~380ms), since
     # frame-to-frame motion starts the refiner close to the answer.
     model_pose_track_iterations: int = 2
+    # Hold the model still while optical flow says the object hasn't moved
+    # more than this (px) since the last MegaPose pose; 0 = refine every frame.
+    model_pose_still_motion_px: float = 1.5
     # Model-based mode finds the object from its CAD model alone (pose
     # service /detect: FastSAM regions matched against renders of the mesh),
     # no object class needed. A region must match the renders at least this

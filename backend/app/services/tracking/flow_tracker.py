@@ -51,6 +51,10 @@ class FlowBoxTracker:
         self._points: np.ndarray | None = None  # (N, 1, 2) float32
         self._polygon: np.ndarray | None = None  # (M, 2) float32
         self._seeded_count = 0
+        # Where each tracked point was at the last set_anchor(), and motion
+        # carried over from points dropped by a re-seed (see motion_since_anchor).
+        self._anchor: np.ndarray | None = None  # (N, 2), parallel to _points
+        self._carried_motion = 0.0
 
     def _seed(self, gray: np.ndarray, polygon: np.ndarray) -> np.ndarray | None:
         mask = np.zeros(gray.shape, dtype=np.uint8)
@@ -76,7 +80,25 @@ class FlowBoxTracker:
             return False
         self._prev_gray, self._points, self._polygon = gray, points, outline
         self._seeded_count = len(points)
+        self.set_anchor()
         return True
+
+    def set_anchor(self) -> None:
+        """Remember where the object's points are now (e.g. when a pose was accepted)."""
+        if self._points is not None:
+            self._anchor = self._points.reshape(-1, 2).copy()
+        self._carried_motion = 0.0
+
+    @property
+    def motion_since_anchor(self) -> float:
+        """Median distance (px) the object's points moved since set_anchor().
+        Net displacement, not a sum per frame: camera noise jitters points in
+        place and doesn't add up, while real motion — including the object
+        turning in place, which moves its surface points — does."""
+        if self._points is None or self._anchor is None or len(self._anchor) == 0:
+            return float("inf")
+        moved = np.linalg.norm(self._points.reshape(-1, 2) - self._anchor, axis=1)
+        return self._carried_motion + float(np.median(moved))
 
     def update(self, gray: np.ndarray) -> FlowUpdate:
         if self._prev_gray is None or self._points is None or self._polygon is None:
@@ -110,14 +132,20 @@ class FlowBoxTracker:
         self._prev_gray = gray
         self._polygon = polygon.astype(np.float32)
         self._points = new_pts[inlier_mask].reshape(-1, 1, 2).astype(np.float32)
+        if self._anchor is not None:
+            self._anchor = self._anchor[good][inlier_mask]
         # Points are lost over time (occlusion, rotation turning a surface
         # away). Re-seed inside the tracked outline — from the tracker's own
         # estimate, not the detector — so tracking can continue indefinitely.
         if len(self._points) < self._seeded_count * self.reseed_fraction:
             reseeded = self._seed(gray, self._polygon)
             if reseeded is not None:
+                carried = self.motion_since_anchor
                 self._points = reseeded
                 self._seeded_count = len(reseeded)
+                # New points have no history: anchor them here, keeping the motion so far.
+                self.set_anchor()
+                self._carried_motion = 0.0 if carried == float("inf") else carried
 
         return FlowUpdate(
             ok=True,

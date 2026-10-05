@@ -588,7 +588,13 @@ def _build_ar_session(request: ARFrameRequest, class_label: str | None, model: M
             lost_confidence=_settings.ar_model_lost_confidence,
             **common,
         )
-        tracker = MegaPoseTracker(_model_pose_client, label, _settings.model_pose_track_iterations, part_offset=offset)
+        tracker = MegaPoseTracker(
+            _model_pose_client,
+            label,
+            _settings.model_pose_track_iterations,
+            part_offset=offset,
+            still_motion_px=_settings.model_pose_still_motion_px,
+        )
         if class_label is None:
             return ARSession(model.name, _cad_detector(str(model.id), model.name), tracker, config)
     assert class_label is not None  # markerless always detects by class
