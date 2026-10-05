@@ -185,6 +185,16 @@ export const VisionApi = {
       })
       .then((r) => r.data),
 
+  // One raw frame of a recorded clip (replayed by app/workers/replay_clip.py). Index 0 starts the clip afresh.
+  addClipFrame: (clip: string, index: number, tMs: number, imageBase64: string) =>
+    api
+      .post<{ clip: string; frames: number }>(`/api/vision/clips/${encodeURIComponent(clip)}/frames`, {
+        index,
+        t_ms: tMs,
+        image_base64: imageBase64,
+      })
+      .then((r) => r.data),
+
   // Keeps the raw camera frame (full resolution, no overlay) for offline analysis.
   saveFrame: (imageBase64: string, label: string) =>
     api

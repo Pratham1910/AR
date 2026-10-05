@@ -306,6 +306,64 @@ export function RegistrationOverlay({
   const renderFramesRef = useRef(0);
   const [busy, setBusy] = useState(false);
   // "Save frame": keeps the raw camera frame (no overlay) under a label for offline analysis.
+  // Clip recording for the replay benchmark (app/workers/replay_clip.py).
+  const [clipName, setClipName] = useState("");
+  const [recording, setRecording] = useState<{ frames: number; seconds: number; pending: number } | null>(null);
+  const [clipSaved, setClipSaved] = useState<string | null>(null);
+  const recordTimer = useRef<number | null>(null);
+  const uploadChain = useRef<Promise<unknown>>(Promise.resolve());
+  const uploadFailures = useRef<{ count: number; message: string }>({ count: 0, message: "" });
+  const RECORD_FPS = 15;
+  const RECORD_MAX_S = 60;
+  const stopRecording = () => {
+    if (recordTimer.current !== null) window.clearInterval(recordTimer.current);
+    recordTimer.current = null;
+    const name = clipName.trim();
+    void uploadChain.current.then(() => {
+      const failed = uploadFailures.current;
+      setRecording((r) => {
+        if (r) {
+          setClipSaved(
+            failed.count > 0
+              ? `Clip "${name}" NOT saved: ${failed.count} of ${r.frames} frames failed to upload (${failed.message})`
+              : `Saved clip "${name}" — ${r.frames} frames, ${r.seconds.toFixed(1)} s`
+          );
+        }
+        return null;
+      });
+    });
+  };
+  const startRecording = () => {
+    const name = clipName.trim();
+    if (!name) return;
+    setClipSaved(null);
+    uploadFailures.current = { count: 0, message: "" };
+    const started = performance.now();
+    let index = 0;
+    setRecording({ frames: 0, seconds: 0, pending: 0 });
+    recordTimer.current = window.setInterval(() => {
+      const tMs = performance.now() - started;
+      if (tMs > RECORD_MAX_S * 1000) {
+        stopRecording();
+        return;
+      }
+      const frame = captureFrameBase64();
+      if (!frame) return;
+      const i = index++;
+      setRecording((r) => (r ? { frames: i + 1, seconds: tMs / 1000, pending: r.pending + 1 } : r));
+      // Strictly in order: frame 0 resets the clip on the server.
+      uploadChain.current = uploadChain.current
+        .then(() => VisionApi.addClipFrame(name, i, tMs, frame))
+        .catch((err) => {
+          uploadFailures.current = { count: uploadFailures.current.count + 1, message: apiErrorMessage(err) };
+        })
+        .finally(() => setRecording((r) => (r ? { ...r, pending: r.pending - 1 } : r)));
+    }, 1000 / RECORD_FPS);
+  };
+  useEffect(() => () => {
+    if (recordTimer.current !== null) window.clearInterval(recordTimer.current);
+  }, []);
+
   // No default: a pre-filled "cap-on" got cap-off frames saved under the wrong label.
   const [frameLabel, setFrameLabel] = useState("");
   const [frameSaved, setFrameSaved] = useState<string | null>(null);
@@ -1072,6 +1130,27 @@ export function RegistrationOverlay({
         <CameraSelect devices={devices} selectedDeviceId={selectedDeviceId} onSelect={selectDevice} />
         {modelStatus === "error" && <span className="camera-status camera-status-error">3D model: {modelError}</span>}
         <div style={{ flex: 1 }} />
+        <span
+          className="save-frame"
+          title="Records raw camera frames (15/s, up to 60 s) to data/clips/<name>/ for the replay benchmark: python -m app.workers.replay_clip <name> --model <id>"
+        >
+          <input
+            value={clipName}
+            onChange={(e) => setClipName(e.target.value)}
+            placeholder="clip name"
+            disabled={recording !== null}
+          />
+          {recording ? (
+            <button className="stop" onClick={stopRecording}>
+              ■ {recording.seconds.toFixed(0)} s · {recording.frames} frames
+            </button>
+          ) : (
+            <button onClick={startRecording} disabled={!ready || !clipName.trim()}>
+              ● Record clip
+            </button>
+          )}
+          {clipSaved && <span className="hint">{clipSaved}</span>}
+        </span>
         <span className="save-frame" title="Saves the raw camera frame (full resolution, without any overlay) to data/debug_frames/ for analysis">
           <input
             value={frameLabel}

@@ -5,6 +5,7 @@ through /api/inspection/*.
 """
 
 import base64
+import json
 import re
 import time
 import uuid
@@ -44,6 +45,8 @@ from app.schemas.pose import (
 from app.schemas.vision import BoundingBox as VisionBoundingBox
 from app.schemas.vision import Vector2 as VisionVector2
 from app.schemas.vision import (
+    ClipFrameRequest,
+    ClipOut,
     DetectRequest,
     DetectResponse,
     SaveFrameRequest,
@@ -63,6 +66,7 @@ from app.services.model3d.glb_inspect import GlbPartMesh, glb_part_meshes, list_
 from app.services.pose.model_pose_client import ModelPoseClient, PoseServiceUnavailable
 from app.services.pose.transforms import cv_pose_to_threejs, euler_angles_deg, project_pose_axes
 from app.services.state_detection.state_engine import ComponentStateRule, StateEstimationError, StateEstimator
+from app.services.tracking.replay import clip_dir, load_clip
 from app.services.tracking.ar_session import ARSession, ARTrackingConfig, TrackingState, euler_xyz_deg
 from app.services.tracking.pose_filter import PoseFilterConfig
 from app.services.tracking.tracker import ObjectTracker
@@ -768,6 +772,40 @@ def ar_session_frame(request: ARFrameRequest, db: Session = Depends(get_db)) -> 
 @router.delete("/ar-session/{session_id}", status_code=204)
 def end_ar_session(session_id: str) -> None:
     _ar_sessions.pop(session_id, None)
+
+
+def _clip_name(name: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "-", name.strip()).strip("-")
+    if not safe:
+        raise HTTPException(status_code=400, detail="Give the clip a name (letters, digits, - and _)")
+    return safe
+
+
+@router.post("/clips/{name}/frames")
+def add_clip_frame(name: str, request: ClipFrameRequest) -> dict:
+    """Appends one raw camera frame to a recorded clip (replayed by app/workers/replay_clip.py).
+    Frame 0 starts the clip afresh."""
+    directory = clip_dir(Path(_settings.clips_dir), _clip_name(name))
+    frame = decode_frame(request.image_base64)  # validates it's an image
+    if request.index == 0 and directory.exists():
+        for old in directory.glob("*.jpg"):
+            old.unlink()
+        (directory / "index.jsonl").unlink(missing_ok=True)
+    directory.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(directory / f"{request.index:05d}.jpg"), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    with (directory / "index.jsonl").open("a") as index:
+        index.write(json.dumps({"index": request.index, "t_ms": request.t_ms}) + "\n")
+    return {"clip": directory.name, "frames": request.index + 1}
+
+
+@router.get("/clips", response_model=list[ClipOut])
+def list_clips() -> list[ClipOut]:
+    out = []
+    for directory in sorted(Path(_settings.clips_dir).glob("*/")):
+        if (directory / "index.jsonl").exists():
+            frames = load_clip(directory)
+            out.append(ClipOut(name=directory.name, frames=len(frames), seconds=frames[-1].t_ms / 1000 if frames else 0.0))
+    return out
 
 
 @router.post("/debug-frame")

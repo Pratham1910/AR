@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     # Per-part presence calibrations (e.g. what a bottle's cap region looks
     # like on vs off), one JSON per model part. Not committed.
     part_calibration_dir: str = "../data/part_calibration"
+    # Recorded camera clips (raw frames + capture times) for replaying the AR
+    # pipeline as a benchmark (app/workers/replay_clip.py). Not committed.
+    clips_dir: str = "../data/clips"
     # Procedures authored in Vishwa (.procedure.json), one per 3D model.
     procedures_dir: str = "../data/procedures"
 

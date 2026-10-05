@@ -35,6 +35,20 @@ class SegmentedObject(BaseModel):
     polygon: list[Vector2]  # in the captured frame's own pixel space
 
 
+class ClipFrameRequest(BaseModel):
+    """One frame of a clip being recorded in the browser."""
+
+    index: int  # 0, 1, 2, ... in capture order
+    t_ms: float  # capture time since recording started
+    image_base64: str
+
+
+class ClipOut(BaseModel):
+    name: str
+    frames: int
+    seconds: float
+
+
 class SaveFrameRequest(BaseModel):
     """A raw camera frame to keep for offline analysis/calibration."""
 
