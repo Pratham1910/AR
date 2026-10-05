@@ -217,6 +217,17 @@ export interface ProcedureSummary {
   unmatched_parts: string[]; // named in the procedure but not found among the model's parts
 }
 
+export interface FitCheckResult {
+  iou: number; // how much of the real outline the posed model covers
+  good_fit: boolean;
+  findings: string[]; // what to change in the GLB, biggest first
+  real_height_cm: number;
+  model_height_cm: number;
+  parts: { part: string; from_top_cm: [number, number]; real_cm: number; model_cm: number; diff_cm: number; diff_rel: number }[];
+  bands: { from_top_cm: number; real_cm: number; model_cm: number; part: string | null }[];
+  overlay_jpeg_base64: string; // real outline red, model green
+}
+
 export interface PartCheck {
   node_index: number;
   part_name: string;

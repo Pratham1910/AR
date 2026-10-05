@@ -448,12 +448,12 @@ def find_object_by_model(frame_jpeg: bytes, label: str, name: str) -> SegmentedO
     )
 
 
-def locate_model_pose(
+def locate_object_and_pose(
     frame_jpeg: bytes, width: int, height: int, model_id: str, name: str
-) -> tuple[np.ndarray, np.ndarray] | str:
+) -> tuple[SegmentedObject, np.ndarray, np.ndarray] | str:
     """Finds the model in one frame and solves its pose, as a fresh lock would
     (3D-model detection, then full search picked by silhouette). Returns
-    (T_camera_object, camera matrix), or why it couldn't."""
+    (detection, T_camera_object, camera matrix), or why it couldn't."""
     obj = find_object_by_model(frame_jpeg, model_id, name)
     if obj is None:
         return "object not found"
@@ -464,7 +464,15 @@ def locate_model_pose(
     )
     if result.t_camera_object is None or (result.silhouette_iou or 0.0) < _settings.ar_model_lost_confidence:
         return "pose rejected"
-    return result.t_camera_object, camera_matrix
+    return obj, result.t_camera_object, camera_matrix
+
+
+def locate_model_pose(
+    frame_jpeg: bytes, width: int, height: int, model_id: str, name: str
+) -> tuple[np.ndarray, np.ndarray] | str:
+    """(T_camera_object, camera matrix) of the model in one frame, or why not (see locate_object_and_pose)."""
+    located = locate_object_and_pose(frame_jpeg, width, height, model_id, name)
+    return located if isinstance(located, str) else (located[1], located[2])
 
 
 _geometry_cache: dict[Path, tuple[float, dict[int, GlbPartMesh], np.ndarray]] = {}

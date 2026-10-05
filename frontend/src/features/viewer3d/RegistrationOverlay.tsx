@@ -8,6 +8,7 @@ import { ensureVisibleMaterials } from "./ensureVisibleMaterial";
 import { applyRenderStyle, type RenderStyle } from "./renderStyle";
 import { applyPartView, EMPTY_PART_VIEW, indexParts, type PartView } from "./parts";
 import type { ProcedureHost, StepGuide } from "./procedure";
+import { FitCheck } from "./FitCheck";
 import { Models3DApi, VisionApi, apiErrorMessage } from "../../services/api";
 import { ClassSelect } from "../../components/ClassSelect";
 import type {
@@ -1083,6 +1084,8 @@ export function RegistrationOverlay({
           {frameSaved && <span className="hint">{frameSaved}</span>}
         </span>
       </div>
+
+      {mode === "model" && <FitCheck modelId={modelId} captureFrame={captureFrameBase64} disabled={!ready} />}
 
       {(mode === "marker" || mode === "feature") && (
         <div className="anchor-calibration">

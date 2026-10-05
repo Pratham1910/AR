@@ -5,6 +5,7 @@ an Asset/Component, so the frontend viewer can discover it by asset instead
 of hard-coding a filename.
 """
 
+import base64
 import json
 import re
 import uuid
@@ -24,13 +25,16 @@ from app.models.asset import Asset, Component
 from app.models.model3d import Model3D
 from app.api.vision import (
     assembly_geometry,
+    decode_frame,
     find_object,
+    locate_object_and_pose,
     forget_model_pose,
     locate_model_pose,
     normalize_class_label,
     register_model_mesh,
 )
 from app.services.pose.model_pose_client import PoseServiceUnavailable
+from app.services.vision.model_fit import fit_overlay, fit_report
 from app.services.vision.part_presence import (
     PartRegion,
     PresenceCalibration,
@@ -576,6 +580,93 @@ def get_procedure_summary(model_id: uuid.UUID, db: Session = Depends(get_db)) ->
 @router.delete("/{model_id}/procedure", status_code=204)
 def delete_procedure(model_id: uuid.UUID) -> None:
     _procedure_path(model_id).unlink(missing_ok=True)
+
+
+class FitCheckRequest(BaseModel):
+    image_base64: str  # a raw camera frame showing the object
+
+
+class FitBandOut(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    from_top_cm: float
+    real_cm: float
+    model_cm: float
+    part: str | None
+
+
+class PartFitOut(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    part: str
+    from_top_cm: list[float]
+    real_cm: float
+    model_cm: float
+    diff_cm: float
+    diff_rel: float
+
+
+class FitCheckOut(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    iou: float  # how much of the real outline the posed model covers (1 = identical)
+    good_fit: bool
+    findings: list[str]  # what to change in the GLB, biggest first
+    real_height_cm: float
+    model_height_cm: float
+    parts: list[PartFitOut]
+    bands: list[FitBandOut]
+    overlay_jpeg_base64: str  # real outline red, model green
+
+
+@router.post("/{model_id}/fit-check", response_model=FitCheckOut)
+def check_model_fit(model_id: uuid.UUID, payload: FitCheckRequest, db: Session = Depends(get_db)) -> FitCheckOut:
+    """
+    Does the 3D model have the same shape as the real object? Finds the object
+    in the frame by its 3D model, solves the pose, draws each part there and
+    compares the outlines along the object's long axis, in cm. The overlay can
+    only be as tight as this fit.
+    """
+    model = db.get(Model3D, model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    frame = decode_frame(payload.image_base64)
+    height, width = frame.shape[:2]
+    try:
+        register_model_mesh(str(model.id), lambda: _glb_path(model).read_bytes(), model.scale)
+        located = locate_object_and_pose(base64.b64decode(payload.image_base64), width, height, str(model.id), model.name)
+    except PoseServiceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if isinstance(located, str):
+        raise HTTPException(
+            status_code=422, detail=f"Could not check the fit: {located}. Point the camera at the object and try again."
+        )
+    obj, t_co, camera_matrix = located
+
+    meshes, center = assembly_geometry(_glb_path(model))
+    names = {p.node_index: p.display_name for p in _parts_out(db, model)}
+    part_masks = {
+        names.get(index, f"node {index}"): project_part_mask(mesh, center, model.scale, t_co, camera_matrix, (height, width))
+        for index, mesh in meshes.items()
+    }
+    real = np.zeros((height, width), np.uint8)
+    cv2.fillPoly(real, [np.round([[p.x, p.y] for p in obj.polygon]).astype(np.int32)], 1)
+    real = real.astype(bool)
+    cm_per_px = float(t_co[2, 3]) / float(camera_matrix[0, 0]) * 100.0  # at the object's distance
+    report = fit_report(real, part_masks, cm_per_px)
+    model_mask = np.zeros_like(real)
+    for mask in part_masks.values():
+        model_mask |= mask
+    return FitCheckOut(
+        iou=report.iou,
+        good_fit=report.good_fit,
+        findings=report.findings,
+        real_height_cm=report.real_height_cm,
+        model_height_cm=report.model_height_cm,
+        parts=[PartFitOut(**{**vars(p), "from_top_cm": list(p.from_top_cm)}) for p in report.parts],
+        bands=[FitBandOut(from_top_cm=b.from_top_cm, real_cm=b.real_cm, model_cm=b.model_cm, part=b.part) for b in report.bands],
+        overlay_jpeg_base64=base64.b64encode(fit_overlay(frame, real, model_mask)).decode("ascii"),
+    )
 
 
 @router.patch("/{model_id}/anchor", response_model=Model3DOut)

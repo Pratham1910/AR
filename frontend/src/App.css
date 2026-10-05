@@ -1254,3 +1254,35 @@ label {
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
+
+.fit-check {
+  margin-top: 1rem;
+}
+
+.fit-check-body {
+  display: grid;
+  grid-template-columns: minmax(0, 260px) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: start;
+}
+
+.fit-check-body img {
+  width: 100%;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+}
+
+.fit-findings {
+  margin: 0.5rem 0;
+  padding-left: 1.1rem;
+}
+
+.fit-findings li {
+  margin: 0.25rem 0;
+}
+
+@media (max-width: 700px) {
+  .fit-check-body {
+    grid-template-columns: 1fr;
+  }
+}

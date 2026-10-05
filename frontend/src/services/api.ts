@@ -8,6 +8,7 @@ import type {
   InspectionRun,
   Model3DInfo,
   Model3DPart,
+  FitCheckResult,
   ObserveResponse,
   PresenceCalibrationResult,
   PoseResponse,
@@ -110,6 +111,12 @@ export const Models3DApi = {
   renamePart: (modelId: string, nodeIndex: number, displayName: string) =>
     api
       .put<Model3DPart[]>(`/api/models3d/${modelId}/parts/${nodeIndex}`, { display_name: displayName })
+      .then((r) => r.data),
+
+  // Does the GLB have the real object's shape? Compares outlines in one camera frame.
+  fitCheck: (modelId: string, imageBase64: string) =>
+    api
+      .post<FitCheckResult>(`/api/models3d/${modelId}/fit-check`, { image_base64: imageBase64 })
       .then((r) => r.data),
 
   // Procedure authored in Vishwa (.procedure.json), one per model.
