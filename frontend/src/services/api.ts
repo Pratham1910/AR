@@ -18,7 +18,11 @@ import type {
 } from "../types";
 import type { ProcedurePackage } from "../features/viewer3d/procedure";
 
-const baseURL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+// 127.0.0.1, not "localhost": browsers try IPv6 [::1] first, and on this
+// machine Docker can hold [::1]:8000 for another container (the FoundationPose
+// image publishes 8000-8010), which accepts and then drops the connection
+// (ERR_EMPTY_RESPONSE) while the real backend listens on 127.0.0.1.
+const baseURL = import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
 export const api = axios.create({ baseURL });
 
