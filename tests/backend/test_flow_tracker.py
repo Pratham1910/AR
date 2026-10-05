@@ -66,3 +66,15 @@ def test_featureless_object_cannot_be_locked():
 
 def test_update_before_initialize_is_a_miss():
     assert not FlowBoxTracker().update(BACKGROUND.copy()).ok
+
+
+def test_motion_since_anchor_is_net_displacement_not_summed_jitter():
+    tracker = locked_tracker()
+    for _ in range(5):  # still object, re-observed: no build-up
+        tracker.update(frame(300, 240))
+    assert tracker.motion_since_anchor < 0.5
+    for x in (302, 304, 306):  # real motion builds up across frames
+        tracker.update(frame(x, 240))
+    assert tracker.motion_since_anchor == pytest.approx(6.0, abs=1.0)
+    tracker.set_anchor()  # e.g. a new pose was accepted here
+    assert tracker.motion_since_anchor < 0.5

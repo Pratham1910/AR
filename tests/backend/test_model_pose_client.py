@@ -224,3 +224,42 @@ def test_without_an_outline_the_lock_keeps_box_overlap():
     service = FakeService([{"found": True, "pose": _pose(0.4), "score": 0.9, "mode": "coarse+refine", "elapsed_ms": 900}])
     _client(service).full_search("m1", b"jpeg", np.eye(3), [10.0, 10.0, 50.0, 50.0], None)
     assert "mask_polygon" not in service.requests[0][2]
+
+
+def _shifted(frame: Frame, dx: int) -> Frame:
+    return Frame(np.roll(frame.bgr, dx, axis=1), frame.calibration)
+
+
+def test_a_still_object_holds_its_pose_without_calling_megapose():
+    """Refining a still object every frame made its rotation random-walk (each
+    refine starts from the last one); while flow sees no motion the pose is held."""
+    refined = {"found": True, "pose": _pose(0.4), "score": 0.9, "mode": "coarse+refine", "elapsed_ms": 900,
+               "projected_bbox": [240, 160, 360, 320]}
+    service = FakeService([refined, {**refined, "mode": "refine", "pose": _pose(0.42)}])
+    tracker = MegaPoseTracker(_client(service), "m1", refine_iterations=2, still_motion_px=1.5)
+    frame = _textured_frame()
+    detection = SegmentedObject(class_label="cup", confidence=0.8, bbox=BoundingBox(x1=240, y1=160, x2=360, y2=320), polygon=[])
+    tracker.commit(tracker.initialize(frame, detection))
+
+    for _ in range(3):
+        held = tracker.update(frame)
+        tracker.commit(held)
+    assert len(service.requests) == 1  # only the first lock reached the pose service
+    assert held.extra["held"] and held.position == pytest.approx((0.0, 0.0, -0.40))
+    assert held.confidence == pytest.approx(1.0, abs=0.02)  # flow box still on the projected model
+
+    moved = tracker.update(_shifted(frame, 8))  # the object really moved: refine again
+    assert len(service.requests) == 2 and not moved.extra.get("held")
+    assert moved.position == pytest.approx((0.0, 0.0, -0.42))
+
+
+def test_holding_can_be_switched_off():
+    refined = {"found": True, "pose": _pose(0.4), "score": 0.9, "mode": "coarse+refine", "elapsed_ms": 900,
+               "projected_bbox": [240, 160, 360, 320]}
+    service = FakeService([refined, {**refined, "mode": "refine"}])
+    tracker = MegaPoseTracker(_client(service), "m1", refine_iterations=2, still_motion_px=0.0)
+    frame = _textured_frame()
+    detection = SegmentedObject(class_label="cup", confidence=0.8, bbox=BoundingBox(x1=240, y1=160, x2=360, y2=320), polygon=[])
+    tracker.commit(tracker.initialize(frame, detection))
+    tracker.update(frame)
+    assert len(service.requests) == 2
