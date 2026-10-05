@@ -594,6 +594,9 @@ def _build_ar_session(request: ARFrameRequest, class_label: str | None, model: M
             _settings.model_pose_track_iterations,
             part_offset=offset,
             still_motion_px=_settings.model_pose_still_motion_px,
+            min_overlap=_settings.ar_model_lost_confidence,
+            correction_gain_translation=_settings.model_pose_correction_gain_translation,
+            correction_gain_rotation=_settings.model_pose_correction_gain_rotation,
         )
         if class_label is None:
             return ARSession(model.name, _cad_detector(str(model.id), model.name), tracker, config)

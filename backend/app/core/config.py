@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     # Hold the model still while optical flow says the object hasn't moved
     # more than this (px) since the last MegaPose pose; 0 = refine every frame.
     model_pose_still_motion_px: float = 1.5
+    # How far each background MegaPose correction pulls the flow-tracked pose
+    # (0..1): partial pulls average out the few-degree error of single refines.
+    model_pose_correction_gain_translation: float = 0.5
+    model_pose_correction_gain_rotation: float = 0.3
     # Model-based mode finds the object from its CAD model alone (pose
     # service /detect: FastSAM regions matched against renders of the mesh),
     # no object class needed. A region must match the renders at least this

@@ -236,7 +236,10 @@ def test_a_still_object_holds_its_pose_without_calling_megapose():
     refined = {"found": True, "pose": _pose(0.4), "score": 0.9, "mode": "coarse+refine", "elapsed_ms": 900,
                "projected_bbox": [240, 160, 360, 320]}
     service = FakeService([refined, {**refined, "mode": "refine", "pose": _pose(0.42)}])
-    tracker = MegaPoseTracker(_client(service), "m1", refine_iterations=2, still_motion_px=1.5)
+    tracker = MegaPoseTracker(
+        _client(service), "m1", refine_iterations=2, still_motion_px=1.5, async_refine=False,
+        correction_gain_translation=1.0, correction_gain_rotation=1.0,
+    )
     frame = _textured_frame()
     detection = SegmentedObject(class_label="cup", confidence=0.8, bbox=BoundingBox(x1=240, y1=160, x2=360, y2=320), polygon=[])
     tracker.commit(tracker.initialize(frame, detection))
@@ -257,7 +260,7 @@ def test_holding_can_be_switched_off():
     refined = {"found": True, "pose": _pose(0.4), "score": 0.9, "mode": "coarse+refine", "elapsed_ms": 900,
                "projected_bbox": [240, 160, 360, 320]}
     service = FakeService([refined, {**refined, "mode": "refine"}])
-    tracker = MegaPoseTracker(_client(service), "m1", refine_iterations=2, still_motion_px=0.0)
+    tracker = MegaPoseTracker(_client(service), "m1", refine_iterations=2, still_motion_px=0.0, async_refine=False)
     frame = _textured_frame()
     detection = SegmentedObject(class_label="cup", confidence=0.8, bbox=BoundingBox(x1=240, y1=160, x2=360, y2=320), polygon=[])
     tracker.commit(tracker.initialize(frame, detection))

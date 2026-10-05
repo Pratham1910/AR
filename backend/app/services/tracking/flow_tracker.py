@@ -55,6 +55,10 @@ class FlowBoxTracker:
         # carried over from points dropped by a re-seed (see motion_since_anchor).
         self._anchor: np.ndarray | None = None  # (N, 2), parallel to _points
         self._carried_motion = 0.0
+        # The object's 2D motion since reset_motion(), as one similarity
+        # transform (3x3: scale, in-plane rotation, translation) — what moves a
+        # 6DoF pose forward between pose estimates (trackers.propagate_pose).
+        self._motion = np.eye(3)
 
     def _seed(self, gray: np.ndarray, polygon: np.ndarray) -> np.ndarray | None:
         mask = np.zeros(gray.shape, dtype=np.uint8)
@@ -81,7 +85,16 @@ class FlowBoxTracker:
         self._prev_gray, self._points, self._polygon = gray, points, outline
         self._seeded_count = len(points)
         self.set_anchor()
+        self.reset_motion()
         return True
+
+    def reset_motion(self) -> None:
+        self._motion = np.eye(3)
+
+    @property
+    def motion_matrix(self) -> np.ndarray:
+        """2D similarity (3x3) taking image points at reset_motion() to where they are now."""
+        return self._motion.copy()
 
     def set_anchor(self) -> None:
         """Remember where the object's points are now (e.g. when a pose was accepted)."""
@@ -121,6 +134,7 @@ class FlowBoxTracker:
         inlier_mask = inliers.ravel().astype(bool)
         confidence = float(inlier_mask.sum()) / attempted
 
+        self._motion = np.vstack([matrix, [0.0, 0.0, 1.0]]) @ self._motion
         polygon = cv2.transform(self._polygon.reshape(-1, 1, 2), matrix).reshape(-1, 2)
         scale = float(np.hypot(matrix[0, 0], matrix[1, 0]))
         height, width = gray.shape
