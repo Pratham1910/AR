@@ -41,6 +41,8 @@ from app.schemas.pose import (
     Vector2,
     Vector3,
 )
+from app.schemas.vision import BoundingBox as VisionBoundingBox
+from app.schemas.vision import Vector2 as VisionVector2
 from app.schemas.vision import (
     DetectRequest,
     DetectResponse,
@@ -425,6 +427,35 @@ def _ar_detector(class_label: str):
     return detect
 
 
+def find_object_by_model(frame_jpeg: bytes, label: str, name: str) -> SegmentedObject | None:
+    """The registered mesh `label` found in the frame from its 3D model alone
+    (pose service /detect) — no object class involved."""
+    found = _model_pose_client.detect(label, frame_jpeg, _settings.cad_detect_min_score)
+    if found is None:
+        return None
+    x1, y1, x2, y2 = found.bbox
+    return SegmentedObject(
+        class_label=name,
+        confidence=found.score,
+        bbox=VisionBoundingBox(x1=x1, y1=y1, x2=x2, y2=y2),
+        polygon=[VisionVector2(x=x, y=y) for x, y in found.polygon],
+    )
+
+
+def register_model_mesh(model_id: str, read_glb, scale: float) -> None:
+    """Makes sure the pose service has the whole model's mesh (needed to find it by its 3D model)."""
+    _model_pose_client.ensure_registered(model_id, read_glb, scale)
+
+
+def _cad_detector(label: str, name: str):
+    """Model-based mode's detector: finds the whole assembly by its mesh."""
+
+    def detect(frame: Frame) -> SegmentedObject | None:
+        return find_object_by_model(frame.jpeg, label, name)
+
+    return detect
+
+
 _calibration_cache: dict[Path, tuple[float, PresenceCalibration]] = {}
 
 
@@ -453,7 +484,8 @@ def _ar_model(request: ARFrameRequest, db: Session) -> Model3D:
     return model
 
 
-def _build_ar_session(request: ARFrameRequest, class_label: str, model: Model3D | None) -> ARSession:
+def _build_ar_session(request: ARFrameRequest, class_label: str | None, model: Model3D | None) -> ARSession:
+    """`class_label` None: find the object by its 3D model (model-based mode only)."""
     common = dict(
         detect_interval_ms=_settings.ar_detect_interval_ms,
         grace_frames=_settings.ar_grace_frames,
@@ -485,6 +517,11 @@ def _build_ar_session(request: ARFrameRequest, class_label: str, model: Model3D 
                     raise HTTPException(status_code=400, detail=f"This model has no part {request.track_part}")
                 label, node_names = f"{model.id}__node{part.node_index}", [part.name]
             offset = _model_pose_client.ensure_registered(label, glb_path.read_bytes, model.scale, node_names)
+            if class_label is None:
+                # Found by the WHOLE assembly's shape even when tracking one
+                # part: the box then covers the whole object, as the part
+                # presence regions (fractions of that box) assume.
+                _model_pose_client.ensure_registered(str(model.id), glb_path.read_bytes, model.scale)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"GLB file missing: {glb_path}") from exc
         except PoseServiceUnavailable as exc:
@@ -495,6 +532,9 @@ def _build_ar_session(request: ARFrameRequest, class_label: str, model: Model3D 
             **common,
         )
         tracker = MegaPoseTracker(_model_pose_client, label, _settings.model_pose_track_iterations, part_offset=offset)
+        if class_label is None:
+            return ARSession(model.name, _cad_detector(str(model.id), model.name), tracker, config)
+    assert class_label is not None  # markerless always detects by class
     return ARSession(class_label, _ar_detector(class_label), tracker, config)
 
 
@@ -509,7 +549,11 @@ def ar_session_frame(request: ARFrameRequest, db: Session = Depends(get_db)) -> 
     Changing mode/class/model/height starts a fresh session.
     """
     request_started = time.perf_counter()
-    class_label = normalize_class_label(request.class_label)
+    class_label: str | None = None
+    if request.mode == "markerless" or request.detect_by == "class":
+        if not request.class_label:
+            raise HTTPException(status_code=400, detail="Pick an object class — it's what the detector looks for.")
+        class_label = normalize_class_label(request.class_label)
     if request.mode == "model":
         if not request.model_id:
             raise HTTPException(status_code=400, detail="model_id is required for model-based tracking")

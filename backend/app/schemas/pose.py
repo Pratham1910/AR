@@ -119,7 +119,11 @@ class ARFrameRequest(BaseModel):
     session_id: str  # one state machine per camera/session
     mode: Literal["markerless", "model"]  # optical-flow tracking vs MegaPose model-based tracking
     image_base64: str
-    class_label: str  # what the detector looks for (must be a detectable class)
+    # How the object is found (first lock, and after tracking is lost):
+    # "model" (model-based mode only) from its 3D model alone — no class needed;
+    # "class" with the YOLO detector, by `class_label` (always for markerless).
+    detect_by: Literal["model", "class"] = "model"
+    class_label: str | None = None  # a detectable class; required when detecting by class
     # Required for "model"; optional for "markerless", where it only enables
     # the model's calibrated part checks (e.g. "is the cap still on?").
     model_id: str | None = None

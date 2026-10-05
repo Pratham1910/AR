@@ -30,6 +30,8 @@ import io
 import json
 import logging
 import os
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -42,6 +44,7 @@ from fastapi import FastAPI, HTTPException
 from PIL import Image
 from pydantic import BaseModel
 
+from cad_detector import CadDetector
 from happypose.toolbox.datasets.object_dataset import RigidObject, RigidObjectDataset
 from happypose.toolbox.inference.types import ObservationTensor
 from happypose.toolbox.utils.load_model import NAMED_MODELS, load_named_model
@@ -62,6 +65,11 @@ COARSE_GRID_STRIDE = int(os.getenv("MEGAPOSE_COARSE_GRID_STRIDE", "8"))
 # buys nothing; meshes are decimated to at most this many faces.
 MAX_MESH_FACES = int(os.getenv("TVASTA_POSE_MAX_FACES", "10000"))
 
+# CAD detector templates (renders of each mesh, see render_templates.py), cached per label.
+TEMPLATE_DIR = MESH_DIR / "templates"
+TEMPLATE_VIEWS = int(os.getenv("TVASTA_TEMPLATE_VIEWS", "42"))
+SERVICE_DIR = Path(__file__).resolve().parent
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 app = FastAPI(title="TVASTA model-based pose service")
 
@@ -71,6 +79,9 @@ _model_info = None
 _labels: set[str] = set()
 _vertices: dict[str, np.ndarray] = {}  # per label, for projecting the posed model into the image
 log = logging.getLogger("uvicorn.error")  # shows up in the service's console/log
+_detector = CadDetector(device)
+_template_descriptors: dict[str, tuple[float, torch.Tensor]] = {}  # label -> (templates file mtime, descriptors)
+_template_lock = threading.Lock()  # one template render at a time
 
 
 def _mesh_path(label: str) -> Path:
@@ -356,3 +367,89 @@ def estimate(req: EstimateRequest) -> EstimateResponse:
         elapsed_ms=elapsed_ms,
         projected_bbox=projected_bbox,
     )
+
+
+def _templates_for(label: str) -> torch.Tensor:
+    """DINOv2 descriptors of the label's mesh rendered from TEMPLATE_VIEWS
+    viewpoints. Rendering (~10 s) happens once per mesh, in a separate
+    process (Panda3D can't be driven from these worker threads); re-registering
+    the mesh makes the cached renders stale."""
+    mesh_path = _mesh_path(label)
+    npz = TEMPLATE_DIR / f"{label}.npz"
+    with _template_lock:
+        if not npz.exists() or npz.stat().st_mtime < mesh_path.stat().st_mtime:
+            TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
+            started = time.perf_counter()
+            subprocess.run(
+                [sys.executable, str(SERVICE_DIR / "render_templates.py"), str(mesh_path), str(npz), "--views", str(TEMPLATE_VIEWS)],
+                check=True,
+                capture_output=True,
+                env={**os.environ, "CUDA_VISIBLE_DEVICES": os.environ.get("CUDA_VISIBLE_DEVICES", "0")},
+            )
+            log.info("cad-detect: rendered %d templates for %s in %.1fs", TEMPLATE_VIEWS, label[:8], time.perf_counter() - started)
+        mtime = npz.stat().st_mtime
+        cached = _template_descriptors.get(label)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+    data = np.load(npz)
+    with _lock, torch.no_grad():
+        descriptors = _detector.template_descriptors(data["rgb"], data["mask"])
+    _template_descriptors[label] = (mtime, descriptors)
+    return descriptors
+
+
+class DetectRequest(BaseModel):
+    label: str  # a registered mesh; detection needs only the mesh, no object class
+    image_base64: str  # JPEG/PNG, RGB
+    min_score: float = 0.0  # candidates scoring below this are dropped
+
+
+class DetectCandidate(BaseModel):
+    bbox: list[float]  # [x1, y1, x2, y2]
+    score: float  # mean cosine similarity of the region to its best-matching templates
+    area_fraction: float
+    polygon: list[list[float]]  # the region's outline, [[x, y], ...]
+
+
+class DetectResponse(BaseModel):
+    found: bool
+    best: DetectCandidate | None = None
+    candidates: list[DetectCandidate]  # best first, for debugging close calls
+    elapsed_ms: float
+    timings_ms: dict[str, float]
+
+
+@app.post("/detect", response_model=DetectResponse)
+def detect(req: DetectRequest) -> DetectResponse:
+    """
+    Finds the registered object in the image from its CAD model alone
+    (cad_detector.py): FastSAM proposes regions, DINOv2 descriptors match
+    them against renders of the mesh. Returns the best-matching region's box,
+    which /estimate's full search then uses like a detector box.
+    """
+    gpu_problem = _gpu_problem()
+    if gpu_problem:
+        raise HTTPException(status_code=503, detail=gpu_problem)
+    if not _mesh_path(req.label).exists():
+        raise HTTPException(status_code=404, detail=f"Object {req.label!r} not registered")
+
+    started = time.perf_counter()
+    templates = _templates_for(req.label)
+    rgb = np.array(Image.open(io.BytesIO(base64.b64decode(req.image_base64))).convert("RGB"), dtype=np.uint8)
+    with _lock:
+        ranked, timings = _detector.detect(rgb, templates)
+    candidates = [
+        DetectCandidate(bbox=list(c.bbox), score=c.score, area_fraction=c.area_fraction, polygon=[list(p) for p in c.polygon])
+        for c in ranked
+    ]
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    best = candidates[0] if candidates and candidates[0].score >= req.min_score else None
+    log.info(
+        "detect %s best=%s second=%s total=%.0fms [%s]",
+        req.label[:8],
+        f"{candidates[0].score:.3f}" if candidates else "none",
+        f"{candidates[1].score:.3f}" if len(candidates) > 1 else "none",
+        elapsed_ms,
+        ", ".join(f"{k}={v:.0f}ms" for k, v in timings.items()),
+    )
+    return DetectResponse(found=best is not None, best=best, candidates=candidates, elapsed_ms=elapsed_ms, timings_ms=timings)

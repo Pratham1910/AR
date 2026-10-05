@@ -79,6 +79,11 @@ class Settings(BaseSettings):
     # iterations ~220ms at the same ~3-4mm accuracy as 5 (~380ms), since
     # frame-to-frame motion starts the refiner close to the answer.
     model_pose_track_iterations: int = 2
+    # Model-based mode finds the object from its CAD model alone (pose
+    # service /detect: FastSAM regions matched against renders of the mesh),
+    # no object class needed. A region must match the renders at least this
+    # well (cosine similarity of DINOv2 descriptors) to count as the object.
+    cad_detect_min_score: float = 0.5
 
     # Live AR state machine (app/services/tracking/ar_session.py): detect
     # once, track continuously, re-detect only when tracking is lost.

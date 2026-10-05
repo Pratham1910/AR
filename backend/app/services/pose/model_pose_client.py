@@ -30,6 +30,17 @@ class PoseServiceResult:
     projected_bbox: tuple[float, float, float, float] | None = None  # the posed mesh's image-space box
 
 
+@dataclass
+class CadDetection:
+    """The object found from its CAD model alone (pose_service /detect)."""
+
+    bbox: tuple[float, float, float, float]  # x1, y1, x2, y2 in image pixels
+    score: float  # how well the region matches renders of the mesh (cosine similarity)
+    polygon: list[tuple[float, float]]
+    runner_up_score: float | None  # the next-best region's score, to judge close calls
+    elapsed_ms: float
+
+
 class ModelPoseClient:
     def __init__(self, base_url: str, timeout_s: float, transport: httpx.BaseTransport | None = None):
         self._client = httpx.Client(base_url=base_url, timeout=timeout_s, transport=transport)
@@ -120,4 +131,24 @@ class ModelPoseClient:
                 "prev_pose": np.asarray(prev_pose, dtype=float).tolist(),
                 "n_refiner_iterations": iterations,
             }
+        )
+
+    def detect(self, label: str, image_jpeg: bytes, min_score: float) -> CadDetection | None:
+        """Finds the registered mesh in the image without any object class
+        (FastSAM regions matched to renders of the mesh); None if no region
+        matches at least `min_score`."""
+        data = self._post(
+            "/detect",
+            {"label": label, "image_base64": base64.b64encode(image_jpeg).decode("ascii"), "min_score": min_score},
+        )
+        best = data.get("best")
+        if not data.get("found") or best is None:
+            return None
+        candidates = data.get("candidates") or []
+        return CadDetection(
+            bbox=tuple(float(v) for v in best["bbox"]),
+            score=float(best["score"]),
+            polygon=[(float(x), float(y)) for x, y in best.get("polygon", [])],
+            runner_up_score=float(candidates[1]["score"]) if len(candidates) > 1 else None,
+            elapsed_ms=float(data["elapsed_ms"]),
         )

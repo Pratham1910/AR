@@ -69,7 +69,7 @@ const AR_MODES = [
   [
     "model",
     "Model-based (CAD)",
-    "Matches the 3D model's own shape (MegaPose on the GPU pose service): detects once, then tracks every frame. Needs the pose service running in WSL and the model's real size set correctly.",
+    "Finds and follows the object by its 3D model alone (GPU pose service in WSL): detects once, then tracks every frame. Works for any object with a GLB; the model's real size must be set correctly.",
   ],
   [
     "markerless",
@@ -267,6 +267,10 @@ export function RegistrationOverlay({
 
   const [mode, setMode] = useState<RegistrationMode>("markerless");
   const [targetClassLabel, setTargetClassLabel] = useState(defaultTargetClassLabel || "");
+  // Model-based mode: find the object by its 3D model (no class needed — works
+  // for anything with a GLB, e.g. a junction box), or by a detector class.
+  const [detectBy, setDetectBy] = useState<"model" | "class">("model");
+  const needsClass = mode === "markerless" || (mode === "model" && detectBy === "class");
   const [realWorldHeightM, setRealWorldHeightM] = useState(0.2);
 
   // Re-sync "Object class" whenever the selected asset's own detection class
@@ -648,7 +652,7 @@ export function RegistrationOverlay({
     setArResult(null);
     setArEvents([]);
     counterSamplesRef.current = [];
-  }, [mode, targetClassLabel, realWorldHeightM, trackPart]);
+  }, [mode, targetClassLabel, realWorldHeightM, trackPart, detectBy]);
 
   // End the backend session when this view goes away (switching model/asset remounts it).
   useEffect(() => {
@@ -755,7 +759,7 @@ export function RegistrationOverlay({
   };
 
   const detectAndAlign = async () => {
-    if ((mode === "markerless" || mode === "model") && !targetClassLabel) {
+    if (needsClass && !targetClassLabel) {
       setApiError("Pick an object class first — it's what the camera looks for.");
       return;
     }
@@ -782,9 +786,9 @@ export function RegistrationOverlay({
           sessionIdRef.current,
           mode,
           frame,
-          targetClassLabel,
+          needsClass ? targetClassLabel : null,
           // model_id in markerless mode only enables the model's calibrated part checks.
-          mode === "model" ? { modelId, trackPart } : { realWorldHeightM, modelId }
+          mode === "model" ? { modelId, trackPart, detectBy } : { realWorldHeightM, modelId, detectBy: "class" }
         );
         applyArResult(result, performance.now() - frameStarted);
       } else {
@@ -829,7 +833,7 @@ export function RegistrationOverlay({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveTracking, mode, targetClassLabel, realWorldHeightM, trackPart]);
+  }, [liveTracking, mode, targetClassLabel, realWorldHeightM, trackPart, detectBy]);
 
   const isAr = mode === "markerless" || mode === "model";
   const modeInfo = AR_MODES.find(([value]) => value === mode)!;
@@ -849,7 +853,20 @@ export function RegistrationOverlay({
 
       {mode !== "marker" && (
         <div className="settings-row">
-          {isAr && (
+          {mode === "model" && (
+            <label title="3D model: matches renders of this model against the camera image, so any object with a GLB works — no detector class. Object class: the stock detector's categories (bottle, cup, …).">
+              Find object by
+              <span className="segmented">
+                <button className={detectBy === "model" ? "active" : ""} onClick={() => setDetectBy("model")}>
+                  3D model
+                </button>
+                <button className={detectBy === "class" ? "active" : ""} onClick={() => setDetectBy("class")}>
+                  Object class
+                </button>
+              </span>
+            </label>
+          )}
+          {needsClass && (
             <label>
               Object class
               <ClassSelect value={targetClassLabel} onChange={setTargetClassLabel} />

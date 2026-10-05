@@ -8,6 +8,7 @@ of hard-coding a filename.
 import json
 import re
 import uuid
+from typing import Literal
 from pathlib import Path
 
 import cv2
@@ -21,7 +22,14 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.asset import Asset, Component
 from app.models.model3d import Model3D
-from app.api.vision import find_object, forget_model_pose, normalize_class_label
+from app.api.vision import (
+    find_object,
+    find_object_by_model,
+    forget_model_pose,
+    normalize_class_label,
+    register_model_mesh,
+)
+from app.services.pose.model_pose_client import PoseServiceUnavailable
 from app.services.vision.part_presence import PartRegion, PresenceCalibration, region_brightness
 from app.services.model3d.fbx_convert import BlenderNotFound, FbxConversionError, convert_fbx_to_glb
 from app.services.model3d.glb_inspect import (
@@ -345,6 +353,9 @@ def rename_model_part(
 class PresenceCalibrationRequest(BaseModel):
     present_label: str = "cap-on"  # saved frames ("Save frame" on the AR page) with the part on
     absent_label: str = "cap-off"  # ... and with it removed
+    # How the object is found in each frame — must match how the live AR
+    # session finds it, since part regions are fractions of that box.
+    detect_by: Literal["model", "class"] = "model"
 
 
 class PresenceCalibrationOut(BaseModel):
@@ -372,16 +383,34 @@ def calibrate_part_presence(
     Learns what a part's region looks like present vs absent from labelled
     raw frames (data/debug_frames/<label>_*.jpg), so the live AR session can
     report e.g. "Cap: removed". The region comes from the assembly geometry
-    (where the part sits on the object); the object is found with the
-    detector in each frame. Re-run after saving more frames.
+    (where the part sits on the object); the object is found in each frame
+    the same way the live session finds it (by its 3D model, or by class). Re-run after saving more frames.
     """
     model = db.get(Model3D, model_id)
     if model is None:
         raise HTTPException(status_code=404, detail="Model not found")
-    component = db.get(Component, model.component_id) if model.component_id else None
-    if component is None:
-        raise HTTPException(status_code=400, detail="Set this model's detection class first (model settings)")
-    parts = list_glb_parts(_glb_path(model).read_bytes())
+    glb = _glb_path(model).read_bytes()
+    if payload.detect_by == "class":
+        component = db.get(Component, model.component_id) if model.component_id else None
+        if component is None:
+            raise HTTPException(status_code=400, detail="Set this model's detection class first (model settings)")
+        class_label = component.class_label
+
+        def locate(path: Path, frame: np.ndarray):
+            # A lower threshold than live detection: these frames are known to
+            # contain the object (the stock detector rates the user's flask ~0.5).
+            return find_object(frame, class_label, threshold=0.25)
+
+    else:
+        try:
+            register_model_mesh(str(model.id), lambda: glb, model.scale)
+        except PoseServiceUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        def locate(path: Path, frame: np.ndarray):
+            return find_object_by_model(path.read_bytes(), str(model.id), model.name)
+
+    parts = list_glb_parts(glb)
     part = next((p for p in parts if p.node_index == node_index), None)
     if part is None:
         raise HTTPException(status_code=404, detail=f"No part with node index {node_index} in this model")
@@ -392,9 +421,10 @@ def calibrate_part_presence(
     for state, label in (("present", payload.present_label), ("absent", payload.absent_label)):
         for path in _frames(label):
             frame = cv2.imread(str(path))
-            # A lower threshold than live detection: these frames are known to
-            # contain the object (the stock detector rates the user's flask ~0.5).
-            obj = find_object(frame, component.class_label, threshold=0.25) if frame is not None else None
+            try:
+                obj = locate(path, frame) if frame is not None else None
+            except PoseServiceUnavailable as exc:
+                raise HTTPException(status_code=503, detail=str(exc)) from exc
             brightness = region_brightness(frame, region, obj.bbox) if obj is not None else None
             if brightness is None:
                 missing.append(path.name)
