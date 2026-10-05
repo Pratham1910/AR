@@ -222,8 +222,10 @@ export interface PartCheck {
   part_name: string;
   state: "present" | "absent" | "uncertain";
   confidence: number;
-  brightness: number;
+  brightness: number; // the measured value of `measure`
   region_px: [number, number, number, number];
+  measure?: string;
+  region_polygon?: Vector2[] | null; // "pose" checks: the part's exact outline at the tracked pose
 }
 
 export interface PresenceCalibrationResult {
@@ -235,7 +237,10 @@ export interface PresenceCalibrationResult {
   absent_samples: number;
   separation: number;
   verdict: string;
-  frames_without_object: string[];
+  frames_without_object: string[]; // not used: "<frame> (object not found / pose rejected / …)"
+  method: "pose" | "box"; // pose: the part's exact pixels at the solved 3D pose
+  measure: string; // brightness statistic that separated on/off best ("mean", "p90", "std", …)
+  frames: { frame: string; state: "present" | "absent"; value: number }[];
 }
 
 export interface ARFrameResponse {

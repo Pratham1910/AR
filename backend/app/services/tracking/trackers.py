@@ -159,8 +159,17 @@ class MegaPoseTracker:
     def initialize(self, frame: Frame, detection: SegmentedObject) -> Measurement:
         self._flow_ready = self._flow_usable = self._flow.initialize(frame.gray, detection.bbox, detection.polygon)
         bbox = [detection.bbox.x1, detection.bbox.y1, detection.bbox.x2, detection.bbox.y2]
-        result = self.client.full_search(self.label, frame.jpeg, frame.calibration.camera_matrix, bbox)
-        return self._measurement(result, detection.bbox, detection.polygon)
+        outline = [(p.x, p.y) for p in detection.polygon] if detection.polygon else None
+        result = self.client.full_search(self.label, frame.jpeg, frame.calibration.camera_matrix, bbox, outline)
+        measurement = self._measurement(result, detection.bbox, detection.polygon)
+        if result.silhouette_iou is not None and result.t_camera_object is not None:
+            # The first lock is judged by how well the posed model's silhouette
+            # covers the detected outline: box overlap can't reject a bottle
+            # posed upside down (same box), silhouette overlap can.
+            measurement.confidence = result.silhouette_iou
+            measurement.extra["confidence_source"] = "silhouette"
+            measurement.extra["silhouette_iou"] = result.silhouette_iou
+        return measurement
 
     def update(self, frame: Frame) -> Measurement:
         if self._reference is None:

@@ -2,6 +2,7 @@ import json
 import math
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from app.services.model3d.glb_inspect import (
@@ -113,3 +114,51 @@ def test_glb_with_no_json_chunk_raises():
     header = b"glTF" + (2).to_bytes(4, "little") + (12).to_bytes(4, "little")
     with pytest.raises(GlbParseError):
         compute_glb_bounds(header)
+
+
+def _glb_with_triangle() -> bytes:
+    """One triangle (indexed, uint16) under a node translated +5 in X."""
+    import struct
+
+    vertices = struct.pack("<9f", 0, 0, 0, 1, 0, 0, 0, 1, 0)
+    indices = struct.pack("<3H", 0, 1, 2) + b"\x00\x00"  # padded to 4 bytes
+    binary = vertices + indices
+    doc = {
+        "asset": {"version": "2.0"},
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
+        "nodes": [{"mesh": 0, "translation": [5, 0, 0]}],
+        "meshes": [{"primitives": [{"attributes": {"POSITION": 0}, "indices": 1}]}],
+        "buffers": [{"byteLength": len(binary)}],
+        "bufferViews": [{"buffer": 0, "byteOffset": 0, "byteLength": 36}, {"buffer": 0, "byteOffset": 36, "byteLength": 6}],
+        "accessors": [
+            {"bufferView": 0, "componentType": 5126, "count": 3, "type": "VEC3", "min": [0, 0, 0], "max": [1, 1, 0]},
+            {"bufferView": 1, "componentType": 5123, "count": 3, "type": "SCALAR"},
+        ],
+    }
+    payload = json.dumps(doc).encode()
+    payload += b" " * (-len(payload) % 4)
+    json_chunk = len(payload).to_bytes(4, "little") + b"JSON" + payload
+    bin_chunk = len(binary).to_bytes(4, "little") + b"BIN\x00" + binary
+    body = json_chunk + bin_chunk
+    return b"glTF" + (2).to_bytes(4, "little") + (12 + len(body)).to_bytes(4, "little") + body
+
+
+def test_part_meshes_read_triangles_with_node_transforms():
+    from app.services.model3d.glb_inspect import glb_part_meshes
+
+    mesh = glb_part_meshes(_glb_with_triangle())[0]
+    assert mesh.vertices.tolist() == [[5, 0, 0], [6, 0, 0], [5, 1, 0]]
+    assert mesh.faces.tolist() == [[0, 1, 2]]
+
+
+def test_part_meshes_of_the_bottle_span_its_bounds():
+    from app.services.model3d.glb_inspect import glb_part_meshes
+
+    data = BOTTLE_GLB_PATH.read_bytes()
+    meshes = glb_part_meshes(data)
+    points = np.concatenate([m.vertices for m in meshes.values()])
+    bounds = compute_glb_bounds(data)
+    assert points.min(axis=0) == pytest.approx(bounds.min, abs=1e-5)
+    assert points.max(axis=0) == pytest.approx(bounds.max, abs=1e-5)
+    assert all(m.faces.max() < len(m.vertices) for m in meshes.values())

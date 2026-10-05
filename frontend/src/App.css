@@ -1248,3 +1248,9 @@ label {
 .setup h2 {
   font-size: 16px;
 }
+
+.calibration-frames td {
+  padding: 0.1rem 0.4rem;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}

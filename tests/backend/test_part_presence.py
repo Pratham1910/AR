@@ -67,3 +67,73 @@ def test_save_and_load_round_trip(tmp_path):
     loaded = PresenceCalibration.load(path)
     assert loaded == CAL and isinstance(loaded.region, PartRegion)
     assert PresenceCalibration.load(tmp_path / "missing.json") is None
+
+
+# ── pose method: the part's exact pixels at the tracked pose ─────────────
+
+from app.services.model3d.glb_inspect import GlbPartMesh  # noqa: E402
+from app.services.vision.part_presence import best_feature, mask_features, project_part_mask  # noqa: E402
+
+K = np.array([[100.0, 0, 50], [0, 100.0, 50], [0, 0, 1]])
+# A 2 x 2 unit square (two triangles) centred on the assembly center (10, 0, 0).
+SQUARE = GlbPartMesh(
+    vertices=np.array([[9, -1, 0], [11, -1, 0], [11, 1, 0], [9, 1, 0]], float),
+    faces=np.array([[0, 1, 2], [0, 2, 3]]),
+)
+CENTER = np.array([10.0, 0.0, 0.0])
+
+
+def _at(z: float) -> np.ndarray:
+    pose = np.eye(4)
+    pose[2, 3] = z
+    return pose
+
+
+def test_part_mask_is_the_part_drawn_at_the_pose():
+    # Scale 0.1: the square is 0.2 m wide, 1 m away -> 20 px wide around the principal point.
+    mask = project_part_mask(SQUARE, CENTER, 0.1, _at(1.0), K, (100, 100))
+    rows, cols = np.flatnonzero(mask.any(axis=1)), np.flatnonzero(mask.any(axis=0))
+    assert (cols[0], cols[-1], rows[0], rows[-1]) == (40, 60, 40, 60)
+    assert mask[40:61, 40:61].all()
+
+
+def test_overlapping_triangles_do_not_cancel_into_holes():
+    """cv2.fillPoly with all triangles at once uses even-odd filling: a front
+    and back face over the same pixels would leave a hole."""
+    doubled = GlbPartMesh(SQUARE.vertices, np.vstack([SQUARE.faces, SQUARE.faces[:, ::-1]]))
+    assert project_part_mask(doubled, CENTER, 0.1, _at(1.0), K, (100, 100))[50, 50]
+
+
+def test_triangles_behind_the_camera_are_dropped():
+    assert not project_part_mask(SQUARE, CENTER, 0.1, _at(-1.0), K, (100, 100)).any()
+
+
+def test_features_need_enough_visible_pixels():
+    frame = np.full((100, 100, 3), 200, np.uint8)
+    tiny = np.zeros((100, 100), bool)
+    tiny[0:3, 0:3] = True
+    assert mask_features(frame, tiny) is None
+    big = np.zeros((100, 100), bool)
+    big[20:80, 20:80] = True
+    assert mask_features(frame, big) == pytest.approx({"mean": 200, "p10": 200, "p90": 200, "std": 0})
+
+
+def test_calibration_keeps_the_feature_that_separates_on_from_off():
+    """The user's flask: similar mean brightness either way, but a black cap is
+    uniform (low spread) while the threaded steel neck is not."""
+    present = [{"mean": 70, "p10": lo, "p90": p, "std": s} for lo, p, s in ((48, 90, 21), (55, 110, 24), (42, 94, 27))]
+    absent = [
+        {"mean": m, "p10": lo, "p90": p, "std": s} for m, lo, p, s in ((72, 50, 100, 36), (90, 38, 160, 40), (140, 60, 193, 45))
+    ]
+    feature, stats = best_feature(present, absent)
+    assert feature == "std"
+    assert stats["present_mean"] == pytest.approx(24) and stats["absent_mean"] == pytest.approx(40.33, abs=0.01)
+
+
+def test_files_saved_before_the_pose_method_load_as_box_mean(tmp_path):
+    path = tmp_path / "old.json"
+    old = {k: v for k, v in CAL.__dict__.items() if k not in ("method", "feature")}
+    old["region"] = CAL.region.__dict__
+    path.write_text(__import__("json").dumps(old))
+    loaded = PresenceCalibration.load(path)
+    assert (loaded.method, loaded.feature) == ("box", "mean")

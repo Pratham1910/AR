@@ -59,7 +59,7 @@ from app.services.pose.aruco_pose import ArucoPoseEstimator
 from app.services.pose.calibration import load_calibration
 from app.services.pose.feature_tracker import FeatureTracker, ReferencePlane, RegistrationQuality
 from app.services.pose.markerless import estimate_object_placement
-from app.services.model3d.glb_inspect import list_glb_parts
+from app.services.model3d.glb_inspect import GlbPartMesh, glb_part_meshes, list_glb_parts
 from app.services.pose.model_pose_client import ModelPoseClient, PoseServiceUnavailable
 from app.services.pose.transforms import cv_pose_to_threejs, euler_angles_deg, project_pose_axes
 from app.services.state_detection.state_engine import ComponentStateRule, StateEstimationError, StateEstimator
@@ -68,7 +68,13 @@ from app.services.tracking.pose_filter import PoseFilterConfig
 from app.services.tracking.tracker import ObjectTracker
 from app.services.tracking.trackers import FlowPoseTracker, Frame, MegaPoseTracker
 from app.services.vision.detector import build_detector, time_inference
-from app.services.vision.part_presence import PresenceCalibration, region_brightness
+from app.services.vision.part_presence import (
+    PresenceCalibration,
+    mask_features,
+    mask_outline,
+    project_part_mask,
+    region_brightness,
+)
 from app.services.vision.segmentation import Segmenter, build_segmenter
 
 router = APIRouter(prefix="/api/vision", tags=["vision"])
@@ -442,6 +448,57 @@ def find_object_by_model(frame_jpeg: bytes, label: str, name: str) -> SegmentedO
     )
 
 
+def locate_model_pose(
+    frame_jpeg: bytes, width: int, height: int, model_id: str, name: str
+) -> tuple[np.ndarray, np.ndarray] | str:
+    """Finds the model in one frame and solves its pose, as a fresh lock would
+    (3D-model detection, then full search picked by silhouette). Returns
+    (T_camera_object, camera matrix), or why it couldn't."""
+    obj = find_object_by_model(frame_jpeg, model_id, name)
+    if obj is None:
+        return "object not found"
+    camera_matrix = load_calibration(_settings.camera_calibration_path, width, height).camera_matrix
+    b = obj.bbox
+    result = _model_pose_client.full_search(
+        model_id, frame_jpeg, camera_matrix, [b.x1, b.y1, b.x2, b.y2], [(p.x, p.y) for p in obj.polygon]
+    )
+    if result.t_camera_object is None or (result.silhouette_iou or 0.0) < _settings.ar_model_lost_confidence:
+        return "pose rejected"
+    return result.t_camera_object, camera_matrix
+
+
+_geometry_cache: dict[Path, tuple[float, dict[int, GlbPartMesh], np.ndarray]] = {}
+
+
+def assembly_geometry(glb_path: Path) -> tuple[dict[int, GlbPartMesh], np.ndarray]:
+    """The model's part triangles (by node index) and the assembly's bounding-box
+    center (GLB units) — the center the pose service recenters on. Cached by mtime."""
+    mtime = glb_path.stat().st_mtime
+    cached = _geometry_cache.get(glb_path)
+    if cached is None or cached[0] != mtime:
+        meshes = glb_part_meshes(glb_path.read_bytes())
+        points = np.concatenate([m.vertices for m in meshes.values()])
+        _geometry_cache[glb_path] = cached = (mtime, meshes, (points.min(axis=0) + points.max(axis=0)) / 2)
+    return cached[1], cached[2]
+
+
+def measure_part(
+    frame_bgr: np.ndarray,
+    cal: PresenceCalibration,
+    model: Model3D,
+    t_camera_object: np.ndarray,
+    camera_matrix: np.ndarray,
+) -> tuple[float, np.ndarray] | None:
+    """A "pose" calibration's feature on the part's exact pixels at this pose, and those pixels."""
+    meshes, center = assembly_geometry(Path(_settings.models_3d_dir) / model.storage_key)
+    mesh = meshes.get(cal.node_index)
+    if mesh is None:
+        return None
+    mask = project_part_mask(mesh, center, model.scale, t_camera_object, camera_matrix, frame_bgr.shape[:2])
+    features = mask_features(frame_bgr, mask)
+    return None if features is None else (features[cal.feature], mask)
+
+
 def register_model_mesh(model_id: str, read_glb, scale: float) -> None:
     """Makes sure the pose service has the whole model's mesh (needed to find it by its 3D model)."""
     _model_pose_client.ensure_registered(model_id, read_glb, scale)
@@ -598,20 +655,39 @@ def ar_session_frame(request: ARFrameRequest, db: Session = Depends(get_db)) -> 
     # which never contains the browser's overlay.
     part_checks: list[PartCheckOut] = []
     calibrations = part_calibrations(request.model_id) if request.model_id else []
-    if result.state == TrackingState.TRACKING and obj is not None and obj.bbox is not None:
+    t_co = obj.extra.get("t_camera_object") if obj is not None else None
+    if result.state == TrackingState.TRACKING and obj is not None:
         for cal in calibrations:
-            brightness = region_brightness(frame_bgr, cal.region, obj.bbox)
-            if brightness is None:
-                continue
-            state, confidence = cal.classify(brightness)
+            outline = None
+            if cal.method == "pose":
+                # The part's exact pixels at the tracked pose (model-based mode only).
+                if t_co is None or model is None:
+                    continue
+                measured = measure_part(frame_bgr, cal, model, t_co, calibration.camera_matrix)
+                if measured is None:
+                    continue
+                value, mask = measured
+                rows, cols = np.flatnonzero(mask.any(axis=1)), np.flatnonzero(mask.any(axis=0))
+                region = [int(cols[0]), int(rows[0]), int(cols[-1]) + 1, int(rows[-1]) + 1]
+                outline = [Vector2(x=x, y=y) for x, y in mask_outline(mask)]
+            else:
+                if obj.bbox is None:
+                    continue
+                value = region_brightness(frame_bgr, cal.region, obj.bbox)
+                if value is None:
+                    continue
+                region = list(cal.region.pixels(obj.bbox))
+            state, confidence = cal.classify(value)
             part_checks.append(
                 PartCheckOut(
                     node_index=cal.node_index,
                     part_name=cal.part_name,
                     state=state,
                     confidence=confidence,
-                    brightness=brightness,
-                    region_px=list(cal.region.pixels(obj.bbox)),
+                    brightness=value,
+                    region_px=region,
+                    measure=cal.feature,
+                    region_polygon=outline,
                 )
             )
 

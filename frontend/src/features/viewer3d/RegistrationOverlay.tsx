@@ -305,7 +305,8 @@ export function RegistrationOverlay({
   const renderFramesRef = useRef(0);
   const [busy, setBusy] = useState(false);
   // "Save frame": keeps the raw camera frame (no overlay) under a label for offline analysis.
-  const [frameLabel, setFrameLabel] = useState("cap-on");
+  // No default: a pre-filled "cap-on" got cap-off frames saved under the wrong label.
+  const [frameLabel, setFrameLabel] = useState("");
   const [frameSaved, setFrameSaved] = useState<string | null>(null);
   const saveFrame = async () => {
     const frame = captureFrameBase64();
@@ -748,7 +749,15 @@ export function RegistrationOverlay({
         const color = check.state === "present" ? "#00e676" : check.state === "absent" ? "#ff1744" : "#ffca28";
         ctx.strokeStyle = color;
         ctx.lineWidth = 3;
-        ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+        if (check.region_polygon && check.region_polygon.length >= 3) {
+          // The part's exact outline at the tracked pose — what was measured.
+          ctx.beginPath();
+          check.region_polygon.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+          ctx.closePath();
+          ctx.stroke();
+        } else {
+          ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+        }
         ctx.fillStyle = color;
         ctx.font = "bold 18px sans-serif";
         ctx.fillText(`${check.part_name}: ${check.state}`, x2 + 6, (y1 + y2) / 2 + 6);
@@ -1063,8 +1072,12 @@ export function RegistrationOverlay({
         {modelStatus === "error" && <span className="camera-status camera-status-error">3D model: {modelError}</span>}
         <div style={{ flex: 1 }} />
         <span className="save-frame" title="Saves the raw camera frame (full resolution, without any overlay) to data/debug_frames/ for analysis">
-          <input value={frameLabel} onChange={(e) => setFrameLabel(e.target.value)} placeholder="label" />
-          <button onClick={() => void saveFrame()} disabled={!ready}>
+          <input
+            value={frameLabel}
+            onChange={(e) => setFrameLabel(e.target.value)}
+            placeholder="label, e.g. cap-off"
+          />
+          <button onClick={() => void saveFrame()} disabled={!ready || !frameLabel.trim()}>
             Save frame
           </button>
           {frameSaved && <span className="hint">{frameSaved}</span>}
@@ -1164,7 +1177,9 @@ export function RegistrationOverlay({
                   <p key={check.node_index} className={`part-check part-${check.state}`}>
                     {check.part_name}: <strong>{check.state === "absent" ? "removed" : check.state}</strong>{" "}
                     <span className="hint">
-                      ({(check.confidence * 100).toFixed(0)}% sure, region brightness {check.brightness.toFixed(0)})
+                      ({(check.confidence * 100).toFixed(0)}% sure, {check.measure ?? "mean"} brightness{" "}
+                      {check.brightness.toFixed(1)}
+                      {check.region_polygon ? ", measured on its 3D outline" : ""})
                     </span>
                   </p>
                 ))}

@@ -4,7 +4,7 @@ import httpx
 import numpy as np
 import pytest
 
-from app.schemas.vision import BoundingBox, SegmentedObject
+from app.schemas.vision import BoundingBox, SegmentedObject, Vector2
 from app.services.pose.calibration import CameraCalibration
 from app.services.pose.model_pose_client import ModelPoseClient, PoseServiceUnavailable
 from app.services.tracking.trackers import Frame, MegaPoseTracker
@@ -197,3 +197,30 @@ def test_megapose_tracker_refines_from_the_last_accepted_pose_only():
     tracker.update(frame)
     assert service.requests[1][2]["prev_pose"] == _pose(0.40)
     assert service.requests[2][2]["prev_pose"] == _pose(0.40)  # not the rejected 0.90
+
+
+def test_first_lock_sends_the_outline_and_is_judged_by_silhouette_overlap():
+    """An upside-down bottle has the same box as an upright one, so box overlap
+    can't reject it; the service picks the pose by silhouette and the lock's
+    confidence is that silhouette overlap."""
+    service = FakeService(
+        [
+            {
+                "found": True, "pose": _pose(0.4), "score": 0.9, "mode": "coarse+refine", "elapsed_ms": 900,
+                "projected_bbox": [240, 160, 360, 320], "silhouette_iou": 0.17, "candidate_ious": [0.17, 0.12],
+            }
+        ]
+    )
+    tracker = MegaPoseTracker(_client(service), "m1", refine_iterations=2)
+    outline = [Vector2(x=240, y=160), Vector2(x=360, y=160), Vector2(x=300, y=320)]
+    detection = SegmentedObject(class_label="cup", confidence=0.8, bbox=BoundingBox(x1=240, y1=160, x2=360, y2=320), polygon=outline)
+    m = tracker.initialize(_textured_frame(), detection)
+    assert service.requests[0][2]["mask_polygon"] == [[240.0, 160.0], [360.0, 160.0], [300.0, 320.0]]
+    assert m.confidence == pytest.approx(0.17)  # box overlap alone would have said 1.0
+    assert m.extra["confidence_source"] == "silhouette"
+
+
+def test_without_an_outline_the_lock_keeps_box_overlap():
+    service = FakeService([{"found": True, "pose": _pose(0.4), "score": 0.9, "mode": "coarse+refine", "elapsed_ms": 900}])
+    _client(service).full_search("m1", b"jpeg", np.eye(3), [10.0, 10.0, 50.0, 50.0], None)
+    assert "mask_polygon" not in service.requests[0][2]

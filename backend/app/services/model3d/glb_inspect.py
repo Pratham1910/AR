@@ -168,6 +168,84 @@ def _world_corners(data: bytes) -> list[tuple[int | None, np.ndarray]]:
     return corners
 
 
+@dataclass
+class GlbPartMesh:
+    """A part's triangles in the file's own units, assembly (world) frame."""
+
+    vertices: np.ndarray  # (N, 3) float
+    faces: np.ndarray  # (M, 3) int, indices into vertices
+
+
+_COMPONENT_DTYPES = {5121: np.uint8, 5123: np.uint16, 5125: np.uint32, 5126: np.float32}
+_TYPE_SIZES = {"SCALAR": 1, "VEC3": 3}
+
+
+def glb_part_meshes(data: bytes) -> dict[int, GlbPartMesh]:
+    """Every mesh-carrying node's triangles (node transforms applied), keyed by
+    node index — for drawing exactly where a part appears in a camera image
+    once the assembly's pose is known."""
+    json_chunk = _json_chunk(data)
+    binary = _bin_chunk(data)
+    accessors = json_chunk.get("accessors", [])
+    views = json_chunk.get("bufferViews", [])
+
+    def read(accessor_index: int) -> np.ndarray:
+        accessor = accessors[accessor_index]
+        view = views[accessor["bufferView"]]
+        dtype = np.dtype(_COMPONENT_DTYPES[accessor["componentType"]])
+        width = _TYPE_SIZES[accessor["type"]]
+        start = view.get("byteOffset", 0) + accessor.get("byteOffset", 0)
+        stride = view.get("byteStride") or dtype.itemsize * width
+        count = accessor["count"]
+        rows = np.ndarray(
+            shape=(count, width), dtype=dtype, buffer=binary, offset=start, strides=(stride, dtype.itemsize)
+        )
+        return np.array(rows)
+
+    meshes = json_chunk.get("meshes", [])
+    nodes = json_chunk.get("nodes", [])
+    scenes = json_chunk.get("scenes", [])
+    roots = scenes[json_chunk.get("scene", 0)].get("nodes", []) if scenes else []
+    out: dict[int, GlbPartMesh] = {}
+
+    def visit(node_index: int, parent: np.ndarray) -> None:
+        node = nodes[node_index]
+        world = parent @ _node_matrix(node)
+        if "mesh" in node:
+            vertex_sets, face_sets, base = [], [], 0
+            for prim in meshes[node["mesh"]].get("primitives", []):
+                position = prim.get("attributes", {}).get("POSITION")
+                if position is None or prim.get("mode", 4) != 4:  # triangle lists only
+                    continue
+                vertices = read(position).astype(float)
+                if "indices" in prim:
+                    faces = read(prim["indices"]).reshape(-1, 3).astype(np.int64)
+                else:
+                    faces = np.arange(len(vertices)).reshape(-1, 3)
+                homogeneous = np.c_[vertices, np.ones(len(vertices))]
+                vertex_sets.append((homogeneous @ world.T)[:, :3])
+                face_sets.append(faces + base)
+                base += len(vertices)
+            if vertex_sets:
+                out[node_index] = GlbPartMesh(np.concatenate(vertex_sets), np.concatenate(face_sets))
+        for child in node.get("children", []):
+            visit(child, world)
+
+    for root in roots:
+        visit(root, np.eye(4))
+    return out
+
+
+def _bin_chunk(data: bytes) -> bytes:
+    offset = 12
+    while offset + 8 <= len(data):
+        chunk_len, chunk_type = struct.unpack("<I4s", data[offset : offset + 8])
+        if chunk_type == b"BIN\x00":
+            return data[offset + 8 : offset + 8 + chunk_len]
+        offset += 8 + chunk_len
+    raise GlbParseError("No binary chunk found in .glb file")
+
+
 def _node_matrix(node: dict) -> np.ndarray:
     """A glTF node's local transform: `matrix` (column-major) or T * R * S."""
     if "matrix" in node:

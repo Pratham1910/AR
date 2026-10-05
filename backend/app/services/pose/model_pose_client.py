@@ -28,6 +28,7 @@ class PoseServiceResult:
     mode: str  # "coarse+refine" or "refine"
     elapsed_ms: float
     projected_bbox: tuple[float, float, float, float] | None = None  # the posed mesh's image-space box
+    silhouette_iou: float | None = None  # full search with an outline: the chosen pose's overlap with it
 
 
 @dataclass
@@ -106,18 +107,31 @@ class ModelPoseClient:
             pose = None
         score = float(data["score"]) if pose is not None and data.get("score") is not None else 0.0
         box = data.get("projected_bbox") if pose is not None else None
-        return PoseServiceResult(pose, score, data["mode"], float(data["elapsed_ms"]), tuple(box) if box else None)
-
-    def full_search(self, label: str, image_jpeg: bytes, camera_matrix: np.ndarray, bbox: list[float]) -> PoseServiceResult:
-        """Initial pose: coarse rotation search + refinement inside the detector's box."""
-        return self._estimate(
-            {
-                "label": label,
-                "image_base64": base64.b64encode(image_jpeg).decode("ascii"),
-                "K": np.asarray(camera_matrix, dtype=float).tolist(),
-                "bbox": bbox,
-            }
+        return PoseServiceResult(
+            pose, score, data["mode"], float(data["elapsed_ms"]), tuple(box) if box else None, data.get("silhouette_iou")
         )
+
+    def full_search(
+        self,
+        label: str,
+        image_jpeg: bytes,
+        camera_matrix: np.ndarray,
+        bbox: list[float],
+        mask_polygon: list[tuple[float, float]] | None = None,
+    ) -> PoseServiceResult:
+        """Initial pose: coarse rotation search + refinement inside the detector's
+        box. With the detected outline, the service keeps the candidate pose whose
+        silhouette matches it — e.g. a bottle upright rather than upside down,
+        which the box alone can't distinguish."""
+        payload = {
+            "label": label,
+            "image_base64": base64.b64encode(image_jpeg).decode("ascii"),
+            "K": np.asarray(camera_matrix, dtype=float).tolist(),
+            "bbox": bbox,
+        }
+        if mask_polygon and len(mask_polygon) >= 3:
+            payload["mask_polygon"] = [[float(x), float(y)] for x, y in mask_polygon]
+        return self._estimate(payload)
 
     def refine(
         self, label: str, image_jpeg: bytes, camera_matrix: np.ndarray, prev_pose: np.ndarray, iterations: int

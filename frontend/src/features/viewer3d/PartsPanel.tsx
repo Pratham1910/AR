@@ -138,13 +138,31 @@ export function PartsPanel({ modelId, parts, view, onViewChange, onPartsChange }
           </>
         )}
         {calibration && (
-          <p className={calibration.separation >= 3 ? "camera-status-ok" : "warning"}>
-            {calibration.part_name}: on ≈ {calibration.present_mean.toFixed(0)}, off ≈{" "}
-            {calibration.absent_mean.toFixed(0)} brightness ({calibration.present_samples} on /{" "}
-            {calibration.absent_samples} off frames) — {calibration.verdict}.
-            {calibration.frames_without_object.length > 0 &&
-              ` ${calibration.frames_without_object.length} frame(s) skipped: object not found.`}
-          </p>
+          <>
+            <p className={calibration.separation >= 3 ? "camera-status-ok" : "warning"}>
+              {calibration.part_name}: on ≈ {calibration.present_mean.toFixed(1)}, off ≈{" "}
+              {calibration.absent_mean.toFixed(1)} ({calibration.measure} brightness
+              {calibration.method === "pose" ? " on the part's 3D outline" : " of a box slice"};{" "}
+              {calibration.present_samples} on / {calibration.absent_samples} off frames) — {calibration.verdict}.
+            </p>
+            <details>
+              <summary className="hint">Per-frame values (a frame sitting in the other group's range is probably mislabelled)</summary>
+              <table className="calibration-frames">
+                <tbody>
+                  {calibration.frames.map((f) => (
+                    <tr key={f.frame}>
+                      <td>{f.state === "present" ? "on" : "off"}</td>
+                      <td>{f.value.toFixed(1)}</td>
+                      <td className="hint">{f.frame}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {calibration.frames_without_object.length > 0 && (
+                <p className="hint">Skipped: {calibration.frames_without_object.join(", ")}</p>
+              )}
+            </details>
+          </>
         )}
       </div>
       {error && <p className="error">{error}</p>}

@@ -36,6 +36,7 @@ import threading
 import time
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pandas as pd
 import torch
@@ -78,6 +79,11 @@ _estimator = None
 _model_info = None
 _labels: set[str] = set()
 _vertices: dict[str, np.ndarray] = {}  # per label, for projecting the posed model into the image
+_faces: dict[str, np.ndarray] = {}  # per label, for drawing its silhouette at a candidate pose
+# Full search refines this many of the coarse model's best rotation guesses
+# when the detector gives the object's outline, and keeps the one whose
+# drawn silhouette matches that outline best.
+SILHOUETTE_HYPOTHESES = int(os.getenv("TVASTA_SILHOUETTE_HYPOTHESES", "5"))
 log = logging.getLogger("uvicorn.error")  # shows up in the service's console/log
 _detector = CadDetector(device)
 _template_descriptors: dict[str, tuple[float, torch.Tensor]] = {}  # label -> (templates file mtime, descriptors)
@@ -115,13 +121,15 @@ def _rebuild_estimator() -> None:
     """(Re)load MegaPose bound to every registered mesh. MegaPose binds its
     renderer to a fixed object set at load time, so registering a new object
     means rebuilding — acceptable since it only happens once per new model."""
-    global _estimator, _model_info, _labels, _vertices
+    global _estimator, _model_info, _labels, _vertices, _faces
     objects = [
         RigidObject(label=p.stem, mesh_path=p, mesh_units="m")
         for p in sorted(MESH_DIR.glob("*.ply"))
     ]
     _labels = {o.label for o in objects}
-    _vertices = {p.stem: np.asarray(trimesh.load(p, force="mesh").vertices) for p in MESH_DIR.glob("*.ply")}
+    meshes = {p.stem: trimesh.load(p, force="mesh") for p in MESH_DIR.glob("*.ply")}
+    _vertices = {label: np.asarray(m.vertices) for label, m in meshes.items()}
+    _faces = {label: np.asarray(m.faces) for label, m in meshes.items()}
     if not objects:
         _estimator = None
         return
@@ -283,6 +291,11 @@ class EstimateRequest(BaseModel):
     # Full search only: refine this many of the coarse model's best rotation
     # guesses and keep the highest-scoring (HappyPose's "multi-hypothesis").
     n_pose_hypotheses: int | None = None
+    # Full search only: the detected object's outline [[x, y], ...]. The
+    # candidate pose whose drawn silhouette overlaps it best wins — MegaPose's
+    # own score can't tell a symmetric object (a bottle) from its upside-down
+    # pose, which also has exactly the same bounding box.
+    mask_polygon: list[list[float]] | None = None
 
 
 class EstimateResponse(BaseModel):
@@ -296,6 +309,10 @@ class EstimateResponse(BaseModel):
     # upright bottle scored 0.11, a wrong sideways one 0.41), so callers
     # judge a pose by how well this box overlaps the real object instead.
     projected_bbox: list[float] | None = None
+    # Full search with mask_polygon: IoU of the chosen pose's silhouette with
+    # the detected outline, and of every candidate considered (for the logs).
+    silhouette_iou: float | None = None
+    candidate_ious: list[float] | None = None
 
 
 @app.post("/estimate", response_model=EstimateResponse)
@@ -332,6 +349,8 @@ def estimate(req: EstimateRequest) -> EstimateResponse:
             mode = "coarse+refine"
             if req.n_pose_hypotheses is not None:
                 params["n_pose_hypotheses"] = req.n_pose_hypotheses
+            if req.mask_polygon and len(req.mask_polygon) >= 3:
+                params["n_pose_hypotheses"] = max(params.get("n_pose_hypotheses", 1), SILHOUETTE_HYPOTHESES)
             detections = PandasTensorCollection(
                 infos=infos,
                 bboxes=torch.as_tensor(np.asarray([req.bbox], dtype=np.float32)),
@@ -339,11 +358,24 @@ def estimate(req: EstimateRequest) -> EstimateResponse:
             output, extra = _estimator.run_inference_pipeline(observation, detections=detections, **params)
 
     output = output.cpu()
+    silhouette_iou = candidate_ious = None
+    if mode == "coarse+refine" and req.mask_polygon and len(req.mask_polygon) >= 3 and len(output):
+        # Pick among every refined candidate by silhouette overlap, not MegaPose's score.
+        candidates = extra["scoring"]["preds"].cpu()
+        target = np.zeros(rgb.shape[:2], np.uint8)
+        cv2.fillPoly(target, [np.round(np.asarray(req.mask_polygon)).astype(np.int32)], 1)
+        candidate_ious = [
+            _silhouette_iou(req.label, candidates.poses[i].numpy().astype(float), K, target) for i in range(len(candidates))
+        ]
+        best = int(np.argmax(candidate_ious))
+        silhouette_iou = candidate_ious[best]
+        output = PandasTensorCollection(infos=candidates.infos.iloc[[best]].reset_index(drop=True), poses=candidates.poses[best : best + 1])
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     score = output.infos["pose_score"].iloc[0] if len(output) and "pose_score" in output.infos else None
     log.info(
-        "estimate %s mode=%s score=%s total=%.0fms queued=%.0fms [%s]",
+        "estimate %s mode=%s score=%s total=%.0fms queued=%.0fms [%s]%s",
         req.label[:8], mode, "n/a" if score is None else f"{score:.2f}", elapsed_ms, waited_ms, extra.get("timing_str", ""),
+        "" if candidate_ious is None else f" silhouette IoU of candidates {[round(v, 2) for v in candidate_ious]}",
     )
     if len(output) == 0:
         return EstimateResponse(found=False, mode=mode, elapsed_ms=elapsed_ms)
@@ -366,7 +398,25 @@ def estimate(req: EstimateRequest) -> EstimateResponse:
         mode=mode,
         elapsed_ms=elapsed_ms,
         projected_bbox=projected_bbox,
+        silhouette_iou=silhouette_iou,
+        candidate_ious=candidate_ious,
     )
+
+
+def _silhouette_iou(label: str, pose: np.ndarray, K: np.ndarray, target: np.ndarray) -> float:
+    """IoU of the mesh drawn at `pose` with a target mask (same image size)."""
+    cam = _vertices[label] @ pose[:3, :3].T + pose[:3, 3]
+    if (cam[:, 2] <= 1e-3).any():
+        return 0.0  # partly behind the camera: not a plausible pose
+    px = cam @ K.astype(float).T
+    px = np.round(px[:, :2] / px[:, 2:3]).astype(np.int32)
+    drawn = np.zeros_like(target)
+    # One triangle at a time: fillPoly with all of them at once uses an
+    # even-odd rule, so overlapping front/back faces cancel into holes.
+    for triangle in px[_faces[label]]:
+        cv2.fillConvexPoly(drawn, triangle, 1)
+    union = np.count_nonzero(drawn | target)
+    return float(np.count_nonzero(drawn & target)) / union if union else 0.0
 
 
 def _templates_for(label: str) -> torch.Tensor:

@@ -189,8 +189,11 @@ class PartCheckOut(BaseModel):
     part_name: str
     state: Literal["present", "absent", "uncertain"]
     confidence: float  # 0 at the present/absent midpoint, 1 at a calibrated mean
-    brightness: float  # measured mean HSV value of the part's region
-    region_px: list[int]  # [x1, y1, x2, y2] that was measured, for drawing
+    brightness: float  # the measured value (HSV brightness statistic `measure`) of the part's pixels
+    region_px: list[int]  # [x1, y1, x2, y2] around what was measured, for drawing
+    measure: str = "mean"  # which brightness statistic (calibration picks the most telling one)
+    # "pose" checks: the outline of the part as drawn at the tracked pose — the exact pixels measured.
+    region_polygon: list[Vector2] | None = None
 
 
 class ARFrameResponse(BaseModel):

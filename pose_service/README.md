@@ -59,7 +59,10 @@ Then, in the web app: 3D Viewer → AR Registration → **Model-based CAD**.
   the camera image into candidate regions, and the region whose DINOv2
   descriptor best matches the renders is the object (the CNOS method). The
   older "Object class" option (YOLO) is still available in the app.
-- Then MegaPose coarse search + refine inside that box (~1s). Following
+- Then MegaPose coarse search + refine inside that box (~1s). Given the
+  detected outline, the 5 best candidate poses are refined and the one whose
+  silhouette overlaps the outline best is kept: MegaPose's own score can't
+  tell a bottle from the same bottle upside down (same box), the outline can. Following
   frames: refine only, from the previous pose; the detector runs again only
   if tracking is lost.
 - RGB only (no depth sensor): distance comes from the model's known real

@@ -23,14 +23,22 @@ from app.core.database import get_db
 from app.models.asset import Asset, Component
 from app.models.model3d import Model3D
 from app.api.vision import (
+    assembly_geometry,
     find_object,
-    find_object_by_model,
     forget_model_pose,
+    locate_model_pose,
     normalize_class_label,
     register_model_mesh,
 )
 from app.services.pose.model_pose_client import PoseServiceUnavailable
-from app.services.vision.part_presence import PartRegion, PresenceCalibration, region_brightness
+from app.services.vision.part_presence import (
+    PartRegion,
+    PresenceCalibration,
+    best_feature,
+    mask_features,
+    project_part_mask,
+    region_brightness,
+)
 from app.services.model3d.fbx_convert import BlenderNotFound, FbxConversionError, convert_fbx_to_glb
 from app.services.model3d.glb_inspect import (
     GlbParseError,
@@ -358,6 +366,12 @@ class PresenceCalibrationRequest(BaseModel):
     detect_by: Literal["model", "class"] = "model"
 
 
+class CalibrationFrameOut(BaseModel):
+    frame: str
+    state: Literal["present", "absent"]  # as labelled
+    value: float
+
+
 class PresenceCalibrationOut(BaseModel):
     node_index: int
     part_name: str
@@ -367,7 +381,11 @@ class PresenceCalibrationOut(BaseModel):
     absent_samples: int
     separation: float  # gap / spread; >3 = clearly separable
     verdict: str
-    frames_without_object: list[str]  # frames where the object itself wasn't found (not used)
+    frames_without_object: list[str]  # frames not used: object not found / pose rejected / part not visible
+    method: str = "box"  # "pose": the part's exact pixels at the solved pose; "box": a slice of the object's box
+    measure: str = "mean"  # the brightness statistic that separated present from absent best
+    # Every used frame's value, to spot a mislabelled frame (one sitting in the other group's range).
+    frames: list[CalibrationFrameOut] = []
 
 
 def _frames(label: str) -> list[Path]:
@@ -390,46 +408,56 @@ def calibrate_part_presence(
     if model is None:
         raise HTTPException(status_code=404, detail="Model not found")
     glb = _glb_path(model).read_bytes()
+    parts = list_glb_parts(glb)
+    part = next((p for p in parts if p.node_index == node_index), None)
+    if part is None:
+        raise HTTPException(status_code=404, detail=f"No part with node index {node_index} in this model")
+    region = PartRegion.from_parts(part, parts)
+
     if payload.detect_by == "class":
         component = db.get(Component, model.component_id) if model.component_id else None
         if component is None:
             raise HTTPException(status_code=400, detail="Set this model's detection class first (model settings)")
         class_label = component.class_label
+        method = "box"
 
-        def locate(path: Path, frame: np.ndarray):
+        def measure(path: Path, frame: np.ndarray) -> dict[str, float] | str:
             # A lower threshold than live detection: these frames are known to
             # contain the object (the stock detector rates the user's flask ~0.5).
-            return find_object(frame, class_label, threshold=0.25)
+            obj = find_object(frame, class_label, threshold=0.25)
+            value = region_brightness(frame, region, obj.bbox) if obj is not None else None
+            return "object not found" if value is None else {"mean": value}
 
     else:
+        method = "pose"
         try:
             register_model_mesh(str(model.id), lambda: glb, model.scale)
         except PoseServiceUnavailable as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+        meshes, center = assembly_geometry(_glb_path(model))
 
-        def locate(path: Path, frame: np.ndarray):
-            return find_object_by_model(path.read_bytes(), str(model.id), model.name)
+        def measure(path: Path, frame: np.ndarray) -> dict[str, float] | str:
+            height, width = frame.shape[:2]
+            located = locate_model_pose(path.read_bytes(), width, height, str(model.id), model.name)
+            if isinstance(located, str):
+                return located
+            t_co, camera_matrix = located
+            mask = project_part_mask(meshes[part.node_index], center, model.scale, t_co, camera_matrix, (height, width))
+            return mask_features(frame, mask) or "part not visible"
 
-    parts = list_glb_parts(glb)
-    part = next((p for p in parts if p.node_index == node_index), None)
-    if part is None:
-        raise HTTPException(status_code=404, detail=f"No part with node index {node_index} in this model")
-
-    region = PartRegion.from_parts(part, parts)
-    samples: dict[str, list[float]] = {"present": [], "absent": []}
-    missing: list[str] = []
+    samples: dict[str, list[tuple[str, dict[str, float]]]] = {"present": [], "absent": []}
+    skipped: list[str] = []
     for state, label in (("present", payload.present_label), ("absent", payload.absent_label)):
         for path in _frames(label):
             frame = cv2.imread(str(path))
             try:
-                obj = locate(path, frame) if frame is not None else None
+                measured = measure(path, frame) if frame is not None else "unreadable"
             except PoseServiceUnavailable as exc:
                 raise HTTPException(status_code=503, detail=str(exc)) from exc
-            brightness = region_brightness(frame, region, obj.bbox) if obj is not None else None
-            if brightness is None:
-                missing.append(path.name)
+            if isinstance(measured, str):
+                skipped.append(f"{path.name} ({measured})")
             else:
-                samples[state].append(brightness)
+                samples[state].append((path.name, measured))
     for state, label in (("present", payload.present_label), ("absent", payload.absent_label)):
         if not samples[state]:
             raise HTTPException(
@@ -437,18 +465,23 @@ def calibrate_part_presence(
                 detail=f"No usable '{label}' frames (object not found in any). Save some with 'Save frame' first.",
             )
 
-    present, absent = np.array(samples["present"]), np.array(samples["absent"])
+    present = [f for _, f in samples["present"]]
+    absent = [f for _, f in samples["absent"]]
+    feature, stats = best_feature(present, absent) if method == "pose" else ("mean", None)
+    if stats is None:
+        on, off = np.array([f["mean"] for f in present]), np.array([f["mean"] for f in absent])
+        stats = {"present_mean": float(on.mean()), "absent_mean": float(off.mean()),
+                 "present_std": float(on.std()), "absent_std": float(off.std())}
     named = _part_components(db, model).get(part.name)
     calibration = PresenceCalibration(
         region=region,
-        present_mean=float(present.mean()),
-        absent_mean=float(absent.mean()),
         present_samples=len(present),
         absent_samples=len(absent),
-        present_std=float(present.std()),
-        absent_std=float(absent.std()),
         node_index=part.node_index,
         part_name=named.name if named else part.name,
+        method=method,
+        feature=feature,
+        **stats,
     )
     calibration.save(Path(_settings.part_calibration_dir) / f"{model.id}__node{part.node_index}.json")
     sep = calibration.separation
@@ -468,7 +501,14 @@ def calibrate_part_presence(
         absent_samples=calibration.absent_samples,
         separation=sep,
         verdict=verdict,
-        frames_without_object=missing,
+        frames_without_object=skipped,
+        method=method,
+        measure=feature,
+        frames=[
+            CalibrationFrameOut(frame=name, state=state, value=values[feature])
+            for state in ("present", "absent")
+            for name, values in samples[state]
+        ],
     )
 
 
