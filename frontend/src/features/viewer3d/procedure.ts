@@ -118,6 +118,34 @@ export function factStatus(fact: VisionFact, checks: PartCheck[] | null): FactSt
   return (check.state === "absent") === (fact.kind === "partAbsent") ? "met" : "not_met";
 }
 
+/** Progress of one step's camera check, frame by frame (see stepCheck). */
+export interface StepCheck {
+  armed: boolean; // starting state confirmed: the end state was seen NOT reached yet
+  startFrames: number; // consecutive frames showing the starting state
+  endFrames: number; // consecutive frames showing the end state, once armed
+}
+
+export const NEW_STEP_CHECK: StepCheck = { armed: false, startFrames: 0, endFrames: 0 };
+
+/**
+ * One camera frame's fact statuses applied to a step's check. A step passes
+ * only after `required` consecutive frames of its starting state (every fact
+ * clearly read, at least one not true yet — e.g. the cap still on) and THEN
+ * `required` consecutive frames of its end state. Without the first part a
+ * step whose end state already holds (refitting a cap that never came off),
+ * or a burst of misreadings, would pass without anything happening.
+ * Unclear frames (uncertain / not tracking) break either run.
+ */
+export function stepCheck(check: StepCheck, statuses: FactStatus[], required: number): { check: StepCheck; done: boolean } {
+  if (!check.armed) {
+    const startState = statuses.includes("not_met") && statuses.every((s) => s === "met" || s === "not_met");
+    const startFrames = startState ? check.startFrames + 1 : 0;
+    return { check: { armed: startFrames >= required, startFrames, endFrames: 0 }, done: false };
+  }
+  const endFrames = statuses.length > 0 && statuses.every((s) => s === "met") ? check.endFrames + 1 : 0;
+  return { check: { ...check, endFrames }, done: endFrames >= required };
+}
+
 /**
  * Procedure part name -> the loaded object: the name given in the Parts
  * panel, else the GLB node name (as authored or as GLTFLoader sanitized it).

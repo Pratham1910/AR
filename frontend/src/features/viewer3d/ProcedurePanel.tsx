@@ -6,6 +6,9 @@ import {
   expectedVisionFacts,
   factStatus,
   makePartResolver,
+  NEW_STEP_CHECK,
+  stepCheck,
+  type StepCheck,
   ProcedurePlayer,
   skippedActionTypes,
   stepDuration,
@@ -23,9 +26,9 @@ interface Props {
   cameraChecks: boolean;
 }
 
-// Consecutive camera frames a step's end state must hold before it counts as
-// done, so one misread frame can't pass (or a flicker reset) a step.
-const REQUIRED_FRAMES = 5;
+// Consecutive camera frames a state must hold to count — twice per step:
+// starting state, then end state (see stepCheck).
+const REQUIRED_FRAMES = 8; // ~2.5 s at live tracking rates
 const LOOP_PAUSE_MS = 1200; // the step animation replays after this pause
 const ADVANCE_DELAY_MS = 1500; // time to see "done" before the next step starts
 
@@ -52,11 +55,12 @@ export function ProcedurePanel({ modelId, parts, host, cameraChecks }: Props) {
   const [playing, setPlaying] = useState(true);
   const [passed, setPassed] = useState<string[]>([]);
   const [checks, setChecks] = useState<PartCheck[] | null>(null);
-  const [streak, setStreak] = useState(0);
+  const [stepProgress, setStepProgress] = useState<StepCheck>(NEW_STEP_CHECK);
+  const { armed, endFrames: streak } = stepProgress;
   const [unmatched, setUnmatched] = useState<string[]>([]);
 
   const playback = useRef({ index: 0, startedAt: performance.now(), playing: true, frozenAt: 0 });
-  const streakRef = useRef(0);
+  const checkRef = useRef<StepCheck>(NEW_STEP_CHECK);
   const advanceTimer = useRef<number | null>(null);
 
   const procedure = pkg?.procedure ?? null;
@@ -83,9 +87,14 @@ export function ProcedurePanel({ modelId, parts, host, cameraChecks }: Props) {
     playback.current.startedAt = performance.now();
     playback.current.playing = true;
     setPlaying(true);
-    streakRef.current = 0;
-    setStreak(0);
+    checkRef.current = NEW_STEP_CHECK;
+    setStepProgress(NEW_STEP_CHECK);
     setIndex(i);
+  };
+
+  const restart = () => {
+    setPassed([]);
+    goTo(0);
   };
 
   // Restart from step 1 whenever a (different) procedure is loaded.
@@ -130,10 +139,14 @@ export function ProcedurePanel({ modelId, parts, host, cameraChecks }: Props) {
       if (!procedure || !current || advanceTimer.current !== null) return;
       const facts = expectedVisionFacts(procedure, current);
       if (facts.length === 0) return;
-      const met = facts.every((f) => factStatus(f, event.checks) === "met");
-      streakRef.current = met ? streakRef.current + 1 : 0;
-      setStreak(streakRef.current);
-      if (streakRef.current >= REQUIRED_FRAMES) complete(playback.current.index);
+      const { check, done } = stepCheck(
+        checkRef.current,
+        facts.map((f) => factStatus(f, event.checks)),
+        REQUIRED_FRAMES
+      );
+      checkRef.current = check;
+      setStepProgress(check);
+      if (done) complete(playback.current.index);
     });
   }, [cameraChecks, procedure, host]);
 
@@ -205,6 +218,9 @@ export function ProcedurePanel({ modelId, parts, host, cameraChecks }: Props) {
     } else if (!cameraChecks || facts.length === 0) {
       state = "manual";
       statusText = "Mark done when finished";
+    } else if (!armed) {
+      state = "waiting";
+      statusText = `Checking start: ${facts.map((f) => `${f.part} ${f.kind === "partAbsent" ? "on" : "off"}`).join(", ")}…`;
     } else if (streak > 0) {
       state = "holding";
       statusText = `Confirming ${Math.min(streak, REQUIRED_FRAMES)}/${REQUIRED_FRAMES}`;
@@ -222,7 +238,7 @@ export function ProcedurePanel({ modelId, parts, host, cameraChecks }: Props) {
       state,
       statusText,
     });
-  }, [procedure, step, index, allDone, stepPassed, cameraChecks, streak, checks, host]);
+  }, [procedure, step, index, allDone, stepPassed, cameraChecks, armed, streak, checks, host]);
   useEffect(() => () => host.publishGuide(null), [host]);
 
   return (
@@ -322,7 +338,13 @@ export function ProcedurePanel({ modelId, parts, host, cameraChecks }: Props) {
                     </div>
                   );
                 })}
-                {cameraChecks && !stepPassed && streak > 0 && (
+                {cameraChecks && !stepPassed && !armed && (
+                  <div className="hint">
+                    First confirming the starting state (
+                    {facts.map((f) => `${f.part} ${f.kind === "partAbsent" ? "still on" : "still off"}`).join(", ")})…
+                  </div>
+                )}
+                {cameraChecks && !stepPassed && armed && streak > 0 && (
                   <div className="hint">
                     Confirming… {Math.min(streak, REQUIRED_FRAMES)}/{REQUIRED_FRAMES} frames
                   </div>
@@ -345,9 +367,19 @@ export function ProcedurePanel({ modelId, parts, host, cameraChecks }: Props) {
               ▶
             </button>
           </div>
-          {(facts.length === 0 || !cameraChecks) && !stepPassed && (
-            <button className="primary" style={{ width: "100%", marginTop: "0.5rem" }} onClick={() => complete(index)}>
-              Mark step done
+          {!stepPassed && (
+            <button
+              className={facts.length === 0 || !cameraChecks ? "primary" : ""}
+              style={{ width: "100%", marginTop: "0.5rem" }}
+              onClick={() => complete(index)}
+              title={cameraChecks && facts.length > 0 ? "Override the camera check" : undefined}
+            >
+              {cameraChecks && facts.length > 0 ? "Mark done manually" : "Mark step done"}
+            </button>
+          )}
+          {passed.length > 0 && (
+            <button style={{ width: "100%", marginTop: "0.5rem" }} onClick={restart}>
+              ↺ Restart procedure
             </button>
           )}
           {skipped.length > 0 && <p className="hint">Not played here: {skipped.join(", ")}</p>}

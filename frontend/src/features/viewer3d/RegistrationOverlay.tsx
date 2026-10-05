@@ -94,6 +94,8 @@ const STATE_LABEL: Record<ARFrameResponse["state"], string> = {
 
 const DIAGNOSTICS_KEY = "tvasta.ar.diagnosticsOpen";
 
+const newSessionId = () => `s-${Math.random().toString(36).slice(2)}`;
+
 /**
  * Phase 5 (Project.md #23-#26): physical <-> 3D registration.
  *
@@ -290,7 +292,7 @@ export function RegistrationOverlay({
   // Markerless + model-based modes go through the backend's detect-once /
   // track state machine (one session per mounted overlay, so two tabs or
   // cameras never share tracking state).
-  const sessionIdRef = useRef(`s-${Math.random().toString(36).slice(2)}`);
+  const sessionIdRef = useRef(newSessionId());
   const [arResult, setArResult] = useState<ARFrameResponse | null>(null);
   const [arEvents, setArEvents] = useState<string[]>([]);
   // Detector runs / tracker runs per second, from the session's counters.
@@ -655,15 +657,20 @@ export function RegistrationOverlay({
   }, [mode, targetClassLabel, realWorldHeightM, trackPart, detectBy]);
 
   // End the backend session when this view goes away (switching model/asset remounts it).
-  useEffect(() => {
-    const sessionId = sessionIdRef.current;
-    return () => {
-      void VisionApi.endArSession(sessionId).catch(() => undefined);
-    };
-  }, []);
+  useEffect(
+    () => () => {
+      void VisionApi.endArSession(sessionIdRef.current).catch(() => undefined);
+    },
+    []
+  );
 
   const resetTracking = async () => {
-    await VisionApi.endArSession(sessionIdRef.current).catch(() => undefined);
+    // Switch to a fresh session rather than only deleting the current one:
+    // during live tracking a frame is almost always in flight, and the backend
+    // stores that frame's session back when it finishes, undoing the delete.
+    const previous = sessionIdRef.current;
+    sessionIdRef.current = newSessionId();
+    void VisionApi.endArSession(previous).catch(() => undefined);
     counterSamplesRef.current = [];
     setArResult(null);
     setArEvents((events) => [...events, "[UI] Tracking reset — searching again"].slice(-12));
@@ -782,14 +789,16 @@ export function RegistrationOverlay({
         }
         applyModelTransform(result.position, result.quaternion);
       } else if (mode === "markerless" || mode === "model") {
+        const sessionId = sessionIdRef.current;
         const result = await VisionApi.arFrame(
-          sessionIdRef.current,
+          sessionId,
           mode,
           frame,
           needsClass ? targetClassLabel : null,
           // model_id in markerless mode only enables the model's calibrated part checks.
           mode === "model" ? { modelId, trackPart, detectBy } : { realWorldHeightM, modelId, detectBy: "class" }
         );
+        if (sessionId !== sessionIdRef.current) return; // tracking was reset while this frame was in flight
         applyArResult(result, performance.now() - frameStarted);
       } else {
         const result = await VisionApi.estimateFeaturePose(assetId, frame);
