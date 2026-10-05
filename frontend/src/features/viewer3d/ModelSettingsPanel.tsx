@@ -31,10 +31,13 @@ export function ModelSettingsPanel({ model, onSaved, onDeleted }: Props) {
   }, [model.id, model.scale, model.component_class_label]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const problems: string[] = [];
-  if (!model.component_class_label) {
-    problems.push("No detection class — the camera has nothing to look for.");
-  } else if (classes.length && !classes.includes(model.component_class_label)) {
-    problems.push(`"${model.component_class_label}" isn't a class the detector knows — it will never be found.`);
+  // The class only matters for markerless mode and "Find object by: Object
+  // class"; model-based tracking finds the object by its 3D model by default.
+  if (model.component_class_label && classes.length && !classes.includes(model.component_class_label)) {
+    problems.push(
+      `"${model.component_class_label}" isn't a class the detector knows — fine for model-based tracking ` +
+        "(found by its 3D model), but markerless mode and \"Find object by: Object class\" won't find it."
+    );
   }
   if (currentHeightCm !== null && (currentHeightCm > 300 || currentHeightCm < 1)) {
     problems.push(
