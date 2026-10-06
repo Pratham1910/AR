@@ -195,6 +195,20 @@ export function useCamera() {
     return dataUrl.split(",")[1] ?? null;
   }, []);
 
+  // The current frame as JPEG bytes, encoded off the main thread (toBlob) —
+  // for streaming every camera frame without stalling rendering.
+  const captureFrameJpeg = useCallback((): Promise<Blob | null> => {
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    if (!video || !canvas || video.videoWidth === 0) return Promise.resolve(null);
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return Promise.resolve(null);
+    ctx.drawImage(video, 0, 0);
+    return new Promise((resolve) => canvas.toBlob((blob) => resolve(blob), "image/jpeg", 0.85));
+  }, []);
+
   return {
     videoRef,
     canvasRef,
@@ -207,5 +221,6 @@ export function useCamera() {
     selectedDeviceId,
     selectDevice,
     captureFrameBase64,
+    captureFrameJpeg,
   };
 }

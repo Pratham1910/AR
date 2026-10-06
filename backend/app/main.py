@@ -2,9 +2,11 @@
 
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import OperationalError
 
 from app.api import assets, auth, evidence, inspection, metrology, models3d, procedures, video, vision
 from app.core.config import get_settings
@@ -22,6 +24,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.exception_handler(OperationalError)
+def database_unreachable(request: Request, exc: OperationalError) -> JSONResponse:
+    """Database down (e.g. Docker Desktop not started): a clear 503 instead of a
+    bare 500. A 500 is sent without CORS headers, so the browser reported it as
+    "blocked by CORS policy", which hid the real cause."""
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": "Database not reachable — start Docker Desktop and the tvasta-postgres container, "
+            f"then retry. ({type(exc.orig).__name__ if exc.orig else 'OperationalError'})"
+        },
+    )
+
 
 app.include_router(auth.router)
 app.include_router(assets.router)

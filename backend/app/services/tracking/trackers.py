@@ -28,9 +28,12 @@ from app.services.tracking.flow_tracker import FlowBoxTracker
 class Frame:
     """One camera frame, with the conversions trackers need computed once."""
 
-    def __init__(self, bgr: np.ndarray, calibration: CameraCalibration):
+    def __init__(self, bgr: np.ndarray, calibration: CameraCalibration, encoded: bytes | None = None):
         self.bgr = bgr
         self.calibration = calibration
+        # The JPEG/PNG the frame arrived as, if any: sent to the pose service
+        # as-is instead of re-encoding the decoded pixels (~17 ms at 1280x720).
+        self._encoded = encoded
 
     @cached_property
     def gray(self) -> np.ndarray:
@@ -38,6 +41,8 @@ class Frame:
 
     @cached_property
     def jpeg(self) -> bytes:
+        if self._encoded is not None:
+            return self._encoded
         ok, data = cv2.imencode(".jpg", self.bgr, [cv2.IMWRITE_JPEG_QUALITY, 92])
         if not ok:
             raise RuntimeError("Could not encode frame as JPEG")

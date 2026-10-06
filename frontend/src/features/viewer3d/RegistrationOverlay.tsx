@@ -9,7 +9,7 @@ import { applyRenderStyle, type RenderStyle } from "./renderStyle";
 import { applyPartView, EMPTY_PART_VIEW, indexParts, type PartView } from "./parts";
 import type { ProcedureHost, StepGuide } from "./procedure";
 import { FitCheck } from "./FitCheck";
-import { Models3DApi, VisionApi, apiErrorMessage } from "../../services/api";
+import { Models3DApi, VisionApi, apiErrorMessage, apiWebSocketUrl } from "../../services/api";
 import { ClassSelect } from "../../components/ClassSelect";
 import type {
   AnchorOffset,
@@ -181,6 +181,7 @@ export function RegistrationOverlay({
     selectedDeviceId,
     selectDevice,
     captureFrameBase64,
+    captureFrameJpeg,
   } = useCamera();
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const outlineCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -197,6 +198,16 @@ export function RegistrationOverlay({
   const targetPositionRef = useRef(new THREE.Vector3());
   const targetQuaternionRef = useRef(new THREE.Quaternion());
   const hasTargetRef = useRef(false);
+  // Streamed poses carry their frame's capture time: the last one plus its
+  // velocity lets every rendered frame draw the pose for "now" (see animate).
+  const motionRef = useRef<{
+    t: number; // capture time (performance.now() clock)
+    p: THREE.Vector3;
+    q: THREE.Quaternion;
+    v: THREE.Vector3; // m/s, renderer frame
+    w: THREE.Vector3; // rad/s, axis * speed
+  } | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
 
   // Anchor offset (see Props.initialAnchor doc): edited as position (m) +
   // Euler degrees for intuitive nudge buttons, converted to a quaternion
@@ -473,11 +484,32 @@ export function RegistrationOverlay({
     // the actual smoothing is the backend's Kalman filter, so this stays
     // quick to avoid stacking a second layer of lag on top of it.
     const INTERPOLATION = 0.4;
+    // Streamed poses: predict at most this far past the newest pose's capture
+    // time, and follow the prediction this quickly (hides correction steps).
+    const MAX_PREDICT_MS = 100;
+    const PREDICTED_FOLLOW = 0.5;
+    const predictedPosition = new THREE.Vector3();
+    const predictedQuaternion = new THREE.Quaternion();
+    const turn = new THREE.Quaternion();
+    const axis = new THREE.Vector3();
     const animate = () => {
       frameId = requestAnimationFrame(animate);
 
       const model = modelObjectRef.current;
-      if (model && hasTargetRef.current) {
+      const motion = motionRef.current;
+      const age = motion ? performance.now() - motion.t : Infinity;
+      if (model && hasTargetRef.current && motion && age < 2 * MAX_PREDICT_MS) {
+        // The newest pose is from a frame captured `age` ms ago: move it on by
+        // its velocity, so the model is where the object is now, at the
+        // screen's refresh rate rather than the camera's.
+        const horizon = Math.min(age, MAX_PREDICT_MS) / 1000;
+        predictedPosition.copy(motion.p).addScaledVector(motion.v, horizon);
+        predictedQuaternion.copy(motion.q);
+        const angle = motion.w.length() * horizon;
+        if (angle > 1e-6) predictedQuaternion.premultiply(turn.setFromAxisAngle(axis.copy(motion.w).normalize(), angle));
+        model.position.lerp(predictedPosition, PREDICTED_FOLLOW);
+        model.quaternion.slerp(predictedQuaternion, PREDICTED_FOLLOW);
+      } else if (model && hasTargetRef.current) {
         model.position.lerp(targetPositionRef.current, INTERPOLATION);
         model.quaternion.slerp(targetQuaternionRef.current, INTERPOLATION);
       }
@@ -637,7 +669,9 @@ export function RegistrationOverlay({
     position: { x: number; y: number; z: number } | null,
     quaternion: { x: number; y: number; z: number; w: number } | null,
     // false for model-based (CAD) mode: its pose is already the model's own.
-    useAnchor = true
+    useAnchor = true,
+    // Streamed frames: when the frame behind this pose was captured (enables prediction).
+    captureMs?: number
   ) => {
     const model = modelObjectRef.current;
     if (!model) return;
@@ -666,6 +700,34 @@ export function RegistrationOverlay({
 
       targetPositionRef.current.copy(finalPosition);
       targetQuaternionRef.current.copy(finalQuaternion);
+      if (captureMs !== undefined) {
+        // Velocity from the previous streamed pose (lightly smoothed), for prediction.
+        const prev = motionRef.current;
+        if (wasVisible && prev && captureMs > prev.t && captureMs - prev.t < 250) {
+          const dt = (captureMs - prev.t) / 1000;
+          const v = finalPosition.clone().sub(prev.p).divideScalar(dt);
+          const dq = finalQuaternion.clone().multiply(prev.q.clone().invert());
+          if (dq.w < 0) dq.set(-dq.x, -dq.y, -dq.z, -dq.w);
+          const angle = 2 * Math.acos(Math.min(1, dq.w));
+          const s = Math.sqrt(Math.max(0, 1 - dq.w * dq.w));
+          const w = s < 1e-6 ? new THREE.Vector3() : new THREE.Vector3(dq.x / s, dq.y / s, dq.z / s).multiplyScalar(angle / dt);
+          motionRef.current = {
+            t: captureMs,
+            p: finalPosition.clone(),
+            q: finalQuaternion.clone(),
+            v: prev.v.clone().lerp(v, 0.5),
+            w: prev.w.clone().lerp(w, 0.5),
+          };
+        } else {
+          motionRef.current = {
+            t: captureMs,
+            p: finalPosition.clone(),
+            q: finalQuaternion.clone(),
+            v: new THREE.Vector3(),
+            w: new THREE.Vector3(),
+          };
+        }
+      }
       if (!wasVisible || !hasTargetRef.current) {
         // First sighting (or reappearing after being lost) — snap instead of
         // gliding in from wherever it last was (or the origin).
@@ -677,6 +739,7 @@ export function RegistrationOverlay({
     } else {
       model.visible = false;
       hasTargetRef.current = false;
+      motionRef.current = null; // never predict from a pose that's no longer shown
     }
   };
 
@@ -731,6 +794,8 @@ export function RegistrationOverlay({
     const previous = sessionIdRef.current;
     sessionIdRef.current = newSessionId();
     void VisionApi.endArSession(previous).catch(() => undefined);
+    motionRef.current = null;
+    if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(streamConfig());
     counterSamplesRef.current = [];
     setArResult(null);
     setArEvents((events) => [...events, "[UI] Tracking reset — searching again"].slice(-12));
@@ -827,7 +892,7 @@ export function RegistrationOverlay({
     // backend keeps returning the last valid pose, so the model stays put
     // instead of flickering on a missed frame.
     if (result.visible) {
-      applyModelTransform(result.position, result.quaternion, mode !== "model");
+      applyModelTransform(result.position, result.quaternion, mode !== "model", result.capture_ms ?? undefined);
     } else {
       applyModelTransform(null, null);
     }
@@ -887,8 +952,95 @@ export function RegistrationOverlay({
     }
   };
 
+  // What the stream tracks — sent when it opens and again whenever it changes or tracking is reset.
+  const streamConfig = () =>
+    JSON.stringify({
+      session_id: sessionIdRef.current,
+      mode,
+      detect_by: mode === "model" ? detectBy : "class",
+      class_label: needsClass ? targetClassLabel : null,
+      model_id: modelId,
+      track_part: mode === "model" ? trackPart : null,
+      real_world_height_m: mode === "markerless" ? realWorldHeightM : null,
+    });
+
+  // Live tracking (markerless / model-based) as a stream: every new camera
+  // frame goes up as JPEG with its capture time, poses come back as they're
+  // computed; the backend always works on the newest frame. At most two
+  // frames in flight, so the browser never encodes frames the tracker would drop.
   useEffect(() => {
-    if (!liveTracking) return;
+    if (!liveTracking || !(mode === "markerless" || mode === "model")) return;
+    if (needsClass && !targetClassLabel) {
+      setApiError("Pick an object class first — it's what the camera looks for.");
+      return;
+    }
+    const ws = new WebSocket(apiWebSocketUrl("/api/vision/ar-session/stream"));
+    ws.binaryType = "arraybuffer";
+    wsRef.current = ws;
+    const video = videoRef.current;
+    let stopped = false;
+    let outstanding = 0;
+    let lastReply = performance.now();
+    let handle = 0;
+
+    const sendFrame = async () => {
+      if (stopped || ws.readyState !== WebSocket.OPEN) return;
+      if (outstanding >= 2 && performance.now() - lastReply < 1000) return;
+      const captured = performance.now();
+      const blob = await captureFrameJpeg();
+      if (!blob || stopped || ws.readyState !== WebSocket.OPEN) return;
+      const jpeg = new Uint8Array(await blob.arrayBuffer());
+      const message = new Uint8Array(8 + jpeg.length);
+      new DataView(message.buffer).setFloat64(0, captured, true);
+      message.set(jpeg, 8);
+      ws.send(message);
+      outstanding += 1;
+    };
+    // One send per new camera image where supported (fires once per video frame), else per animation frame.
+    const schedule = () => {
+      if (stopped) return;
+      if (video && "requestVideoFrameCallback" in video) {
+        handle = video.requestVideoFrameCallback(() => {
+          void sendFrame();
+          schedule();
+        });
+      } else {
+        handle = requestAnimationFrame(() => {
+          void sendFrame();
+          schedule();
+        });
+      }
+    };
+    ws.onopen = () => {
+      ws.send(streamConfig());
+      schedule();
+    };
+    ws.onmessage = (event) => {
+      outstanding = 0; // anything older was processed or dropped in favour of a newer frame
+      lastReply = performance.now();
+      const message = JSON.parse(event.data as string);
+      if (message.error) {
+        setApiError(message.error);
+        return;
+      }
+      const result = message as ARFrameResponse;
+      applyArResult(result, result.capture_ms != null ? performance.now() - result.capture_ms : 0);
+    };
+    ws.onerror = () =>
+      setApiError("Tracking stream failed — is the backend running (restarted after the latest update)?");
+    return () => {
+      stopped = true;
+      wsRef.current = null;
+      if (video && "cancelVideoFrameCallback" in video) video.cancelVideoFrameCallback(handle);
+      cancelAnimationFrame(handle);
+      ws.close();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveTracking, mode, targetClassLabel, realWorldHeightM, trackPart, detectBy, modelId]);
+
+  useEffect(() => {
+    // Marker / image-target modes: one HTTP request per frame.
+    if (!liveTracking || mode === "markerless" || mode === "model") return;
     let cancelled = false;
 
     // Self-rescheduling rather than a fixed setInterval: each frame is a

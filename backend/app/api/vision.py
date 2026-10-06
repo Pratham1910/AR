@@ -4,20 +4,23 @@ must never return a PASS/FAIL — that is the QA engine's job, reached only
 through /api/inspection/*.
 """
 
+import asyncio
 import base64
 import json
 import re
+import struct
 import time
 import uuid
 from pathlib import Path
 
 import cv2
 import numpy as np
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.core.database import get_db
+from app.core.database import SessionLocal, get_db
 from app.models.model3d import Model3D
 from app.schemas.pose import (
     ARCounters,
@@ -616,17 +619,8 @@ def _build_ar_session(request: ARFrameRequest, class_label: str | None, model: M
     return ARSession(class_label, _ar_detector(class_label), tracker, config)
 
 
-@router.post("/ar-session/frame", response_model=ARFrameResponse)
-def ar_session_frame(request: ARFrameRequest, db: Session = Depends(get_db)) -> ARFrameResponse:
-    """
-    One camera frame through the session's SEARCHING / INITIALIZING /
-    TRACKING / LOST / RECOVERING state machine (ar_session.py). The detector
-    (YOLO) only runs while SEARCHING or RECOVERING, at most every
-    ar_detect_interval_ms; while TRACKING only the tracker runs — optical
-    flow ("markerless") or optical flow + the MegaPose refiner ("model").
-    Changing mode/class/model/height starts a fresh session.
-    """
-    request_started = time.perf_counter()
+def _ar_session_for(request: ARFrameRequest, db: Session) -> tuple[ARSession, Model3D | None]:
+    """The live session for this request's session_id, rebuilt only if what is tracked changed."""
     class_label: str | None = None
     if request.mode == "markerless" or request.detect_by == "class":
         if not request.class_label:
@@ -650,15 +644,32 @@ def ar_session_frame(request: ARFrameRequest, db: Session = Depends(get_db)) -> 
     _ar_sessions[request.session_id] = (key, session)
     while len(_ar_sessions) > _AR_MAX_SESSIONS:
         _ar_sessions.pop(next(iter(_ar_sessions)))  # oldest-used first
+    return session, model
 
-    frame_bgr = decode_frame(request.image_base64)
+
+def decode_frame_bytes(raw: bytes) -> np.ndarray:
+    frame = cv2.imdecode(np.frombuffer(raw, dtype=np.uint8), cv2.IMREAD_COLOR)
+    if frame is None:
+        raise HTTPException(status_code=400, detail="Could not decode the frame as an image")
+    return frame
+
+
+def process_ar_frame(
+    request: ARFrameRequest,
+    session: ARSession,
+    model: Model3D | None,
+    encoded: bytes,
+    started: float,
+    capture_ms: float | None = None,
+) -> ARFrameResponse:
+    """One encoded camera frame through the session's state machine, and what to draw."""
+    frame_bgr = decode_frame_bytes(encoded)
     height_px, width_px = frame_bgr.shape[:2]
     calibration = load_calibration(_settings.camera_calibration_path, width_px, height_px)
     try:
-        result = session.step(Frame(frame_bgr, calibration))
+        result = session.step(Frame(frame_bgr, calibration, encoded=encoded))
     except PoseServiceUnavailable as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-
     obj = result.obj
     position = quaternion = rotation_deg = axes = None
     if result.visible and obj is not None and obj.position is not None:
@@ -746,7 +757,8 @@ def ar_session_frame(request: ARFrameRequest, db: Session = Depends(get_db)) -> 
         approximate=request.mode == "markerless",
         detector_ran=result.detector_ran,
         tracker_ran=result.tracker_ran,
-        timings_ms=ARTimings(**result.timings_ms, total=(time.perf_counter() - request_started) * 1000.0),
+        timings_ms=ARTimings(**result.timings_ms, total=(time.perf_counter() - started) * 1000.0),
+        capture_ms=capture_ms,
         counters=ARCounters(
             frame_index=session.frame_index,
             detection_runs=session.detection_runs,
@@ -767,6 +779,104 @@ def ar_session_frame(request: ARFrameRequest, db: Session = Depends(get_db)) -> 
         camera_vertical_fov_deg=calibration.vertical_fov_deg(),
         camera_aspect=calibration.aspect_ratio(),
     )
+
+
+
+
+@router.post("/ar-session/frame", response_model=ARFrameResponse)
+def ar_session_frame(request: ARFrameRequest, db: Session = Depends(get_db)) -> ARFrameResponse:
+    """
+    One camera frame through the session's SEARCHING / INITIALIZING /
+    TRACKING / LOST / RECOVERING state machine (ar_session.py). The detector
+    (by default in model-based mode the 3D model itself, see
+    find_object_by_model; otherwise YOLO by class) only runs while SEARCHING
+    or RECOVERING, at most every ar_detect_interval_ms; while TRACKING only
+    the tracker runs. Changing mode/class/model/height starts a fresh session.
+    The live view streams over /ar-session/stream instead; this is for single
+    frames ("Detect one frame") and the replay benchmark.
+    """
+    started = time.perf_counter()
+    session, model = _ar_session_for(request, db)
+    try:
+        encoded = base64.b64decode(request.image_base64)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid image_base64: {exc}") from exc
+    return process_ar_frame(request, session, model, encoded, started)
+
+
+@router.websocket("/ar-session/stream")
+async def ar_session_stream(websocket: WebSocket) -> None:
+    """
+    Live tracking as a stream: the browser sends every new camera frame as it
+    arrives and poses come back as they're computed, instead of one HTTP
+    round trip per frame with nothing overlapping.
+
+    Protocol: first a JSON text message with the ARFrameRequest fields
+    (without image_base64); then binary messages = 8-byte little-endian
+    float64 capture time (ms, the sender's clock) + the JPEG. Each processed
+    frame is answered with an ARFrameResponse JSON text message echoing that
+    capture time, so the client can predict the pose for "now". Frames that
+    arrive while one is being processed are dropped except the newest: the
+    tracker always works on the latest image and never falls behind the camera.
+    A JSON text message later replaces the configuration.
+
+    The frame source is separate from tracking on purpose: a native camera
+    (e.g. a high-speed industrial one) can feed process_ar_frame the same way.
+    """
+    await websocket.accept()
+    latest: dict = {}
+    arrived = asyncio.Event()
+    closed = False
+
+    async def receive() -> None:
+        nonlocal closed
+        try:
+            while True:
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    break
+                if message.get("text") is not None:
+                    latest["config"] = ARFrameRequest(**{**json.loads(message["text"]), "image_base64": ""})
+                    latest.pop("frame", None)
+                elif message.get("bytes"):
+                    data = message["bytes"]
+                    latest["frame"] = (struct.unpack("<d", data[:8])[0], data[8:])  # newest wins
+                    arrived.set()
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+        finally:
+            closed = True
+            arrived.set()
+
+    receiver = asyncio.create_task(receive())
+    try:
+        while not closed:
+            await arrived.wait()
+            arrived.clear()
+            frame = latest.pop("frame", None)
+            config: ARFrameRequest | None = latest.get("config")
+            if frame is None or config is None:
+                continue
+            capture_ms, encoded = frame
+            started = time.perf_counter()
+            try:
+                response = await run_in_threadpool(_stream_step, config, encoded, started, capture_ms)
+                await websocket.send_text(response.model_dump_json())
+            except HTTPException as exc:
+                await websocket.send_text(json.dumps({"error": exc.detail, "status": exc.status_code, "capture_ms": capture_ms}))
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        receiver.cancel()
+
+
+def _stream_step(config: ARFrameRequest, encoded: bytes, started: float, capture_ms: float) -> ARFrameResponse:
+    db = SessionLocal()
+    try:
+        session, model = _ar_session_for(config, db)
+        return process_ar_frame(config, session, model, encoded, started, capture_ms)
+    finally:
+        db.close()
 
 
 @router.delete("/ar-session/{session_id}", status_code=204)

@@ -256,6 +256,7 @@ export interface PresenceCalibrationResult {
 
 export interface ARFrameResponse {
   state: TrackingState;
+  capture_ms?: number | null; // streamed frames: when this frame was captured (the sender's performance.now())
   // Draw the model: tracking, or holding the last valid pose while lost / re-acquiring.
   visible: boolean;
   monitoring: boolean; // TRACKING but confidence below good_confidence ("tracking with warning")

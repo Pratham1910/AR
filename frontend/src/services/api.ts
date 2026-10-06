@@ -31,6 +31,7 @@ export const api = axios.create({ baseURL });
 // "/static/models/bottle.glb") — the <model-viewer>/Three.js loader needs a
 // fully-qualified URL, not one relative to the frontend's own origin.
 export const resolveApiUrl = (path: string) => `${baseURL}${path}`;
+export const apiWebSocketUrl = (path: string) => `${baseURL.replace(/^http/, "ws")}${path}`;
 
 export const AssetsApi = {
   list: () => api.get<Asset[]>("/api/assets").then((r) => r.data),

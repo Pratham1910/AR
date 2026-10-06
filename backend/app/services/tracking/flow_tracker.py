@@ -42,11 +42,13 @@ class FlowBoxTracker:
         min_points: int = 8,
         forward_backward_threshold_px: float = 1.5,
         reseed_fraction: float = 0.5,
+        search_margin_px: float = 80.0,
     ):
         self.max_points = max_points
         self.min_points = min_points
         self.fb_threshold = forward_backward_threshold_px
         self.reseed_fraction = reseed_fraction
+        self.search_margin_px = search_margin_px
         self._prev_gray: np.ndarray | None = None
         self._points: np.ndarray | None = None  # (N, 1, 2) float32
         self._polygon: np.ndarray | None = None  # (M, 2) float32
@@ -113,14 +115,38 @@ class FlowBoxTracker:
         moved = np.linalg.norm(self._points.reshape(-1, 2) - self._anchor, axis=1)
         return self._carried_motion + float(np.median(moved))
 
+    def _search_region(self, shape: tuple[int, ...]) -> tuple[int, int, int, int]:
+        """x1, y1, x2, y2 around the tracked outline, with half its size (at least
+        `search_margin_px`) of room each side for motion since the last frame."""
+        assert self._polygon is not None
+        (x1, y1), (x2, y2) = self._polygon.min(axis=0), self._polygon.max(axis=0)
+        margin = max(self.search_margin_px, 0.5 * max(x2 - x1, y2 - y1))
+        height, width = shape[:2]
+        return (
+            int(max(0, x1 - margin)),
+            int(max(0, y1 - margin)),
+            int(min(width, x2 + margin)),
+            int(min(height, y2 + margin)),
+        )
+
     def update(self, gray: np.ndarray) -> FlowUpdate:
         if self._prev_gray is None or self._points is None or self._polygon is None:
             return FlowUpdate(ok=False, confidence=0.0)
 
+        # Flow only on the region the object can be in (its outline plus room
+        # to move): building image pyramids of the whole 1280x720 frame was
+        # most of the tracker's time. (Reusing one pyramid for the forward and
+        # backward pass would save more, but OpenCV's Python binding can't take
+        # prebuilt pyramids — a job for a native tracker.)
+        x1, y1, x2, y2 = self._search_region(gray.shape)
+        prev_roi, next_roi = self._prev_gray[y1:y2, x1:x2], gray[y1:y2, x1:x2]
         lk = dict(winSize=(21, 21), maxLevel=3, criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01))
-        forward, status_f, _ = cv2.calcOpticalFlowPyrLK(self._prev_gray, gray, self._points, None, **lk)
-        backward, status_b, _ = cv2.calcOpticalFlowPyrLK(gray, self._prev_gray, forward, None, **lk)
-        fb_error = np.linalg.norm((self._points - backward).reshape(-1, 2), axis=1)
+        offset = np.array([x1, y1], dtype=np.float32)
+        local = self._points - offset
+        forward, status_f, _ = cv2.calcOpticalFlowPyrLK(prev_roi, next_roi, local, None, **lk)
+        backward, status_b, _ = cv2.calcOpticalFlowPyrLK(next_roi, prev_roi, forward, None, **lk)
+        fb_error = np.linalg.norm((local - backward).reshape(-1, 2), axis=1)
+        forward = forward + offset
         good = (status_f.ravel() == 1) & (status_b.ravel() == 1) & (fb_error < self.fb_threshold)
 
         attempted = len(self._points)

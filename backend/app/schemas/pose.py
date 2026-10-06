@@ -198,6 +198,9 @@ class PartCheckOut(BaseModel):
 
 class ARFrameResponse(BaseModel):
     state: Literal["SEARCHING", "INITIALIZING", "TRACKING", "LOST", "RECOVERING"]
+    # Streamed frames: when the camera captured the frame this answers (sender's clock, ms),
+    # so the client can predict the pose for the moment it draws.
+    capture_ms: float | None = None
     visible: bool  # draw the model: tracking, or holding the last valid pose while lost/re-acquiring
     monitoring: bool  # TRACKING but confidence below the "good" threshold (tracking with warning)
     object: TrackedObjectOut | None = None
