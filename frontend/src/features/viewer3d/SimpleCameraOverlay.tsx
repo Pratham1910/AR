@@ -5,7 +5,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { CameraSelect } from "../../components/CameraSelect";
 import { CameraStatusBadge } from "../../components/CameraStatusBadge";
 import { useCamera } from "../../hooks/useCamera";
-import { ensureVisibleMaterials } from "./ensureVisibleMaterial";
+import { addStudioEnvironment, ensureVisibleMaterials } from "./ensureVisibleMaterial";
 import { applyPartView, EMPTY_PART_VIEW, indexParts, type PartView } from "./parts";
 
 interface Props {
@@ -55,6 +55,7 @@ export function SimpleCameraOverlay({ modelUrl, partView = EMPTY_PART_VIEW }: Pr
     camera.position.set(0.3, 0.2, 0.5);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    const removeEnvironment = addStudioEnvironment(scene, renderer);
     renderer.setSize(width, height);
     renderer.setClearColor(0x000000, 0); // transparent, so the live video shows through
     container.appendChild(renderer.domElement);
@@ -107,6 +108,7 @@ export function SimpleCameraOverlay({ modelUrl, partView = EMPTY_PART_VIEW }: Pr
 
     return () => {
       cancelAnimationFrame(frameId);
+      removeEnvironment();
       resizeObserver.disconnect();
       controls.dispose();
       renderer.dispose();

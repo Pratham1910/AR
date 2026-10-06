@@ -79,3 +79,14 @@ def test_frames_before_the_configuration_are_ignored(monkeypatch):
         ws.send_bytes(_frame(2.0, b"x"))
         assert json.loads(ws.receive_text())["capture_ms"] == 2.0
     assert seen == [2.0]
+
+
+def test_an_invalid_configuration_is_reported_not_silently_fatal(monkeypatch):
+    monkeypatch.setattr(vision, "_stream_step", lambda c, e, s, t: _Reply(t, e))
+    with TestClient(app).websocket_connect("/api/vision/ar-session/stream") as ws:
+        ws.send_text(json.dumps({**CONFIG, "detect_by": "telepathy"}))
+        error = json.loads(ws.receive_text())
+        assert error["status"] == 422 and "Invalid tracking configuration" in error["error"]
+        ws.send_text(json.dumps(CONFIG))  # the stream is still usable
+        ws.send_bytes(_frame(5.0, b"ok"))
+        assert json.loads(ws.receive_text())["capture_ms"] == 5.0

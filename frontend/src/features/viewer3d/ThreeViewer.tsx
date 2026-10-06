@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { ensureVisibleMaterials } from "./ensureVisibleMaterial";
+import { addStudioEnvironment, ensureVisibleMaterials } from "./ensureVisibleMaterial";
 import { applyPartView, EMPTY_PART_VIEW, indexParts, partOf, type PartView } from "./parts";
 import type { ProcedureHost } from "./procedure";
 
@@ -46,6 +46,7 @@ export function ThreeViewer({ modelUrl, height = 480, partView = EMPTY_PART_VIEW
     camera.position.set(0.2, 0.2, 0.4);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true });
+    const removeEnvironment = addStudioEnvironment(scene, renderer);
     renderer.setSize(container.clientWidth, height);
     container.appendChild(renderer.domElement);
 
@@ -138,6 +139,7 @@ export function ThreeViewer({ modelUrl, height = 480, partView = EMPTY_PART_VIEW
     return () => {
       disposed = true;
       cancelAnimationFrame(frameId);
+      removeEnvironment();
       procedureHost?.detach(partsRef.current);
       resizeObserver.disconnect();
       renderer.domElement.removeEventListener("pointerdown", onPointerDown);

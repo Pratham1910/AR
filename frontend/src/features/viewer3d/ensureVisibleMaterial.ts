@@ -1,4 +1,5 @@
 import * as THREE from "three";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 
 /**
  * Makes every mesh of a loaded GLB actually visible:
@@ -41,4 +42,25 @@ export function ensureVisibleMaterials(root: THREE.Object3D, color = 0x4a90c4): 
       }
     });
   });
+}
+
+/**
+ * Soft studio surroundings for the scene to reflect. glTF materials default
+ * to fully metallic when a file doesn't say otherwise (the joystick GLB's
+ * textured body has no metalness value), and a metallic surface shows only
+ * reflections of its environment — with none it renders almost black. With
+ * this, materials look as authored instead of being overridden.
+ * Returns a cleanup function.
+ */
+export function addStudioEnvironment(scene: THREE.Scene, renderer: THREE.WebGLRenderer): () => void {
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const room = new RoomEnvironment();
+  const target = pmrem.fromScene(room, 0.04);
+  scene.environment = target.texture;
+  room.dispose();
+  return () => {
+    scene.environment = null;
+    target.dispose();
+    pmrem.dispose();
+  };
 }

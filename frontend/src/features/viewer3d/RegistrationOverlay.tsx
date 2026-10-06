@@ -4,11 +4,12 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { CameraSelect } from "../../components/CameraSelect";
 import { CameraStatusBadge } from "../../components/CameraStatusBadge";
 import { useCamera } from "../../hooks/useCamera";
-import { ensureVisibleMaterials } from "./ensureVisibleMaterial";
+import { addStudioEnvironment, ensureVisibleMaterials } from "./ensureVisibleMaterial";
 import { applyRenderStyle, type RenderStyle } from "./renderStyle";
 import { applyPartView, EMPTY_PART_VIEW, indexParts, type PartView } from "./parts";
 import type { ProcedureHost, StepGuide } from "./procedure";
 import { FitCheck } from "./FitCheck";
+import { BoxSelector } from "./BoxSelector";
 import { Models3DApi, VisionApi, apiErrorMessage, apiWebSocketUrl } from "../../services/api";
 import { ClassSelect } from "../../components/ClassSelect";
 import type {
@@ -75,7 +76,7 @@ const AR_MODES = [
   [
     "markerless",
     "Markerless",
-    "Finds the object by its class and places the model from its apparent size — position only; the model stays upright.",
+    "Follows the object with optical flow and places the model from its apparent size — position only; the model stays upright.",
   ],
   [
     "marker",
@@ -283,8 +284,13 @@ export function RegistrationOverlay({
   const [targetClassLabel, setTargetClassLabel] = useState(defaultTargetClassLabel || "");
   // Model-based mode: find the object by its 3D model (no class needed — works
   // for anything with a GLB, e.g. a junction box), or by a detector class.
-  const [detectBy, setDetectBy] = useState<"model" | "class">("model");
-  const needsClass = mode === "markerless" || (mode === "model" && detectBy === "class");
+  // How the object is found (both markerless and model-based): by its 3D model,
+  // by a detector class, or from a box drawn around it on the video — the last
+  // works for any object, with no class or model.
+  const [detectBy, setDetectBy] = useState<"model" | "class" | "box">("model");
+  const [initBox, setInitBox] = useState<[number, number, number, number] | null>(null);
+  const needsClass = (mode === "markerless" || mode === "model") && detectBy === "class";
+  const needsBox = (mode === "markerless" || mode === "model") && detectBy === "box";
   const [realWorldHeightM, setRealWorldHeightM] = useState(0.2);
 
   // Re-sync "Object class" whenever the selected asset's own detection class
@@ -419,6 +425,7 @@ export function RegistrationOverlay({
     // Camera stays at the origin, looking down -Z — see module docstring.
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    const removeEnvironment = addStudioEnvironment(scene, renderer);
     renderer.setSize(width, height);
     renderer.setClearColor(0x000000, 0); // transparent, so the video shows through
     container.appendChild(renderer.domElement);
@@ -524,6 +531,7 @@ export function RegistrationOverlay({
 
     return () => {
       cancelAnimationFrame(frameId);
+      removeEnvironment();
       procedureHost?.detach(partsRef.current);
       resizeObserver.disconnect();
       renderer.dispose();
@@ -777,7 +785,7 @@ export function RegistrationOverlay({
     setArResult(null);
     setArEvents([]);
     counterSamplesRef.current = [];
-  }, [mode, targetClassLabel, realWorldHeightM, trackPart, detectBy]);
+  }, [mode, targetClassLabel, realWorldHeightM, trackPart, detectBy, initBox]);
 
   // End the backend session when this view goes away (switching model/asset remounts it).
   useEffect(
@@ -929,7 +937,9 @@ export function RegistrationOverlay({
           frame,
           needsClass ? targetClassLabel : null,
           // model_id in markerless mode only enables the model's calibrated part checks.
-          mode === "model" ? { modelId, trackPart, detectBy } : { realWorldHeightM, modelId, detectBy: "class" }
+          mode === "model"
+            ? { modelId, trackPart, detectBy, initBox: needsBox ? initBox : null }
+            : { realWorldHeightM, modelId, detectBy, initBox: needsBox ? initBox : null }
         );
         if (sessionId !== sessionIdRef.current) return; // tracking was reset while this frame was in flight
         applyArResult(result, performance.now() - frameStarted);
@@ -957,7 +967,8 @@ export function RegistrationOverlay({
     JSON.stringify({
       session_id: sessionIdRef.current,
       mode,
-      detect_by: mode === "model" ? detectBy : "class",
+      detect_by: detectBy,
+      init_box: needsBox ? initBox : null,
       class_label: needsClass ? targetClassLabel : null,
       model_id: modelId,
       track_part: mode === "model" ? trackPart : null,
@@ -974,6 +985,11 @@ export function RegistrationOverlay({
       setApiError("Pick an object class first — it's what the camera looks for.");
       return;
     }
+    if (needsBox && !initBox) {
+      setApiError("Drag a box around the object on the video first.");
+      return;
+    }
+    setApiError(null);
     const ws = new WebSocket(apiWebSocketUrl("/api/vision/ar-session/stream"));
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
@@ -1036,7 +1052,7 @@ export function RegistrationOverlay({
       ws.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveTracking, mode, targetClassLabel, realWorldHeightM, trackPart, detectBy, modelId]);
+  }, [liveTracking, mode, targetClassLabel, realWorldHeightM, trackPart, detectBy, modelId, initBox]);
 
   useEffect(() => {
     // Marker / image-target modes: one HTTP request per frame.
@@ -1082,8 +1098,8 @@ export function RegistrationOverlay({
 
       {mode !== "marker" && (
         <div className="settings-row">
-          {mode === "model" && (
-            <label title="3D model: matches renders of this model against the camera image, so any object with a GLB works — no detector class. Object class: the stock detector's categories (bottle, cup, …).">
+          {(mode === "model" || mode === "markerless") && (
+            <label title="3D model: matches renders of this model against the camera image — any object with a GLB. Object class: the stock detector's categories (bottle, cup, …). Draw a box: drag a rectangle around the object on the video — any object, no class or model; if tracking is lost it's found again by the 3D model.">
               Find object by
               <span className="segmented">
                 <button className={detectBy === "model" ? "active" : ""} onClick={() => setDetectBy("model")}>
@@ -1092,8 +1108,16 @@ export function RegistrationOverlay({
                 <button className={detectBy === "class" ? "active" : ""} onClick={() => setDetectBy("class")}>
                   Object class
                 </button>
+                <button className={detectBy === "box" ? "active" : ""} onClick={() => setDetectBy("box")}>
+                  Draw a box
+                </button>
               </span>
             </label>
+          )}
+          {needsBox && (
+            <span className="hint" style={{ alignSelf: "center" }}>
+              {initBox ? "Box set — drag again on the video to redraw it." : "Drag a box around the object on the video."}
+            </span>
           )}
           {needsClass && (
             <label>
@@ -1181,8 +1205,24 @@ export function RegistrationOverlay({
           style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}
         />
         <canvas ref={canvasRef} style={{ display: "none" }} />
+        {needsBox && (
+          <BoxSelector
+            videoRef={videoRef}
+            box={arResult?.state === "TRACKING" ? null : initBox}
+            onBox={(box) => {
+              setInitBox(box);
+              sessionIdRef.current = newSessionId(); // a new box is a new object to lock onto
+            }}
+          />
+        )}
 
         <div className="hud hud-top-left">
+          {needsBox && !initBox && (
+            <div className="hud-pill">
+              <span className="dot" />
+              Drag a box around the object
+            </div>
+          )}
           {isAr && arResult && (
             <div className={`hud-pill state-${arResult.state}`}>
               <span className="dot" />

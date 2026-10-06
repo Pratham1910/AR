@@ -17,9 +17,10 @@ interface Props {
  * "detected" but never visibly overlapped. Optional for .fbx, which carries
  * its own units.
  *
- * "Detection class" is how the camera finds the object (markerless and
- * model-based modes), so it's picked from the classes the detector actually
- * knows — free-typed labels like "bot" were silently never detected.
+ * "Detection class" is optional: objects are found by their 3D model (or a
+ * box drawn on the video) by default; the class only matters for "Find object
+ * by: Object class". When given, it's picked from the classes the detector
+ * actually knows — free-typed labels like "bot" were silently never detected.
  */
 export function UploadModelForm({ assets, onUploaded }: Props) {
   const [assetChoice, setAssetChoice] = useState<string>("__new__");
@@ -49,10 +50,6 @@ export function UploadModelForm({ assets, onUploaded }: Props) {
     const isFbxFile = file.name.toLowerCase().endsWith(".fbx");
     if (!isFbxFile && !(Number(realHeightM) > 0)) {
       setError("Enter the object's real height in meters — a .glb's own units are rarely meters, so without it the overlay comes out the wrong size.");
-      return;
-    }
-    if (!detectionClassLabel) {
-      setError("Pick a detection class — it's how the camera finds this object.");
       return;
     }
 
@@ -137,8 +134,9 @@ export function UploadModelForm({ assets, onUploaded }: Props) {
       </label>
 
       <label>
-        Detection class — what the camera looks for (pick the closest match)
-        <ClassSelect value={detectionClassLabel} onChange={setDetectionClassLabel} />
+        Detection class — optional; only for "Find object by: Object class" (objects are found by their 3D model
+        by default)
+        <ClassSelect value={detectionClassLabel} onChange={setDetectionClassLabel} placeholder="None (find by 3D model)" />
       </label>
 
       <button type="submit" disabled={busy}>

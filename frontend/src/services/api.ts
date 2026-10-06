@@ -171,7 +171,13 @@ export const VisionApi = {
     mode: ARMode,
     imageBase64: string,
     classLabel: string | null, // null: find the object by its 3D model (model-based mode)
-    options: { modelId?: string; realWorldHeightM?: number; trackPart?: number | null; detectBy?: "model" | "class" }
+    options: {
+      modelId?: string;
+      realWorldHeightM?: number;
+      trackPart?: number | null;
+      detectBy?: "model" | "class" | "box";
+      initBox?: [number, number, number, number] | null;
+    }
   ) =>
     api
       .post<ARFrameResponse>("/api/vision/ar-session/frame", {
@@ -179,6 +185,7 @@ export const VisionApi = {
         mode,
         image_base64: imageBase64,
         detect_by: options.detectBy ?? "class",
+        init_box: options.initBox ?? null,
         class_label: classLabel,
         model_id: options.modelId,
         real_world_height_m: options.realWorldHeightM,

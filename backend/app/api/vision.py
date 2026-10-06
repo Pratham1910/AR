@@ -556,8 +556,55 @@ def _ar_model(request: ARFrameRequest, db: Session) -> Model3D:
     return model
 
 
+def _box_detector(box: tuple[float, ...], name: str, fallback):
+    """The user's drawn box, once (the first lock); after that, when tracking is
+    lost, `fallback` (the 3D-model detector) if there is one, else nothing —
+    the object needs a new box."""
+    used = False
+
+    def detect(frame: Frame) -> SegmentedObject | None:
+        nonlocal used
+        if used:
+            return fallback(frame) if fallback is not None else None
+        used = True
+        x1, y1, x2, y2 = box
+        return SegmentedObject(
+            class_label=name,
+            confidence=1.0,
+            bbox=VisionBoundingBox(x1=x1, y1=y1, x2=x2, y2=y2),
+            polygon=[VisionVector2(x=x, y=y) for x, y in ((x1, y1), (x2, y1), (x2, y2), (x1, y2))],
+        )
+
+    return detect
+
+
+def _finder(request: ARFrameRequest, class_label: str | None, model: Model3D | None):
+    """(detector, label for the tracked object) for request.detect_by."""
+    if request.detect_by == "class":
+        assert class_label is not None
+        return _ar_detector(class_label), class_label
+    cad = None
+    if model is not None:
+        glb_path = Path(_settings.models_3d_dir) / model.storage_key
+        try:
+            # Found by the WHOLE assembly's shape even when tracking one part:
+            # the box then covers the whole object, as part regions assume.
+            _model_pose_client.ensure_registered(str(model.id), glb_path.read_bytes, model.scale)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=f"GLB file missing: {glb_path}") from exc
+        except PoseServiceUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        cad = _cad_detector(str(model.id), model.name)
+    name = model.name if model is not None else "object"
+    if request.detect_by == "box":
+        return _box_detector(tuple(request.init_box or ()), name, cad), name
+    assert cad is not None  # checked in _ar_session_for
+    return cad, name
+
+
 def _build_ar_session(request: ARFrameRequest, class_label: str | None, model: Model3D | None) -> ARSession:
-    """`class_label` None: find the object by its 3D model (model-based mode only)."""
+    """Tracker by mode (optical flow for markerless, MegaPose + flow for model);
+    how the object is found by request.detect_by (see _finder)."""
     common = dict(
         detect_interval_ms=_settings.ar_detect_interval_ms,
         grace_frames=_settings.ar_grace_frames,
@@ -570,7 +617,7 @@ def _build_ar_session(request: ARFrameRequest, class_label: str | None, model: M
             rotation_measurement_noise_deg=_settings.ar_filter_rotation_measurement_noise_deg,
         ),
     )
-    if model is None:
+    if request.mode == "markerless":
         config = ARTrackingConfig(
             good_confidence=_settings.ar_flow_good_confidence,
             lost_confidence=_settings.ar_flow_lost_confidence,
@@ -578,6 +625,7 @@ def _build_ar_session(request: ARFrameRequest, class_label: str | None, model: M
         )
         tracker = FlowPoseTracker(request.real_world_height_m)
     else:
+        assert model is not None
         glb_path = Path(_settings.models_3d_dir) / model.storage_key
         label, node_names = str(model.id), None
         try:
@@ -589,11 +637,6 @@ def _build_ar_session(request: ARFrameRequest, class_label: str | None, model: M
                     raise HTTPException(status_code=400, detail=f"This model has no part {request.track_part}")
                 label, node_names = f"{model.id}__node{part.node_index}", [part.name]
             offset = _model_pose_client.ensure_registered(label, glb_path.read_bytes, model.scale, node_names)
-            if class_label is None:
-                # Found by the WHOLE assembly's shape even when tracking one
-                # part: the box then covers the whole object, as the part
-                # presence regions (fractions of that box) assume.
-                _model_pose_client.ensure_registered(str(model.id), glb_path.read_bytes, model.scale)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"GLB file missing: {glb_path}") from exc
         except PoseServiceUnavailable as exc:
@@ -613,29 +656,36 @@ def _build_ar_session(request: ARFrameRequest, class_label: str | None, model: M
             correction_gain_translation=_settings.model_pose_correction_gain_translation,
             correction_gain_rotation=_settings.model_pose_correction_gain_rotation,
         )
-        if class_label is None:
-            return ARSession(model.name, _cad_detector(str(model.id), model.name), tracker, config)
-    assert class_label is not None  # markerless always detects by class
-    return ARSession(class_label, _ar_detector(class_label), tracker, config)
+    detector, name = _finder(request, class_label, model)
+    return ARSession(name, detector, tracker, config)
 
 
 def _ar_session_for(request: ARFrameRequest, db: Session) -> tuple[ARSession, Model3D | None]:
     """The live session for this request's session_id, rebuilt only if what is tracked changed."""
     class_label: str | None = None
-    if request.mode == "markerless" or request.detect_by == "class":
+    if request.detect_by == "class":
         if not request.class_label:
             raise HTTPException(status_code=400, detail="Pick an object class — it's what the detector looks for.")
         class_label = normalize_class_label(request.class_label)
+    box: tuple[float, ...] = ()
+    if request.detect_by == "box":
+        if not request.init_box or len(request.init_box) != 4:
+            raise HTTPException(status_code=400, detail="Draw a box around the object first.")
+        box = tuple(float(v) for v in request.init_box)
+    model = _ar_model(request, db) if request.model_id else None
     if request.mode == "model":
-        if not request.model_id:
+        if model is None:
             raise HTTPException(status_code=400, detail="model_id is required for model-based tracking")
-        model = _ar_model(request, db)
-        key: tuple = ("model", class_label, str(model.id), model.scale, request.track_part)
+        key: tuple = ("model", request.detect_by, class_label, box, str(model.id), model.scale, request.track_part)
     else:
         if not request.real_world_height_m or request.real_world_height_m <= 0:
             raise HTTPException(status_code=400, detail="real_world_height_m is required for markerless tracking")
-        model = None
-        key = ("markerless", class_label, request.real_world_height_m)
+        if request.detect_by == "model" and model is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Finding the object by its 3D model needs a model — or choose Object class or Draw a box.",
+            )
+        key = ("markerless", request.detect_by, class_label, box, str(model.id) if model else None, request.real_world_height_m)
 
     # Keep the live session while the same thing is being tracked — its
     # tracker state is the whole point; rebuild only if that changed.
@@ -836,8 +886,13 @@ async def ar_session_stream(websocket: WebSocket) -> None:
                 if message["type"] == "websocket.disconnect":
                     break
                 if message.get("text") is not None:
-                    latest["config"] = ARFrameRequest(**{**json.loads(message["text"]), "image_base64": ""})
                     latest.pop("frame", None)
+                    try:
+                        latest["config"] = ARFrameRequest(**{**json.loads(message["text"]), "image_base64": ""})
+                    except (ValueError, TypeError) as exc:  # pydantic's ValidationError is a ValueError
+                        # Report it: a rejected configuration used to end the stream silently.
+                        latest.pop("config", None)
+                        await websocket.send_text(json.dumps({"error": f"Invalid tracking configuration: {exc}", "status": 422}))
                 elif message.get("bytes"):
                     data = message["bytes"]
                     latest["frame"] = (struct.unpack("<d", data[:8])[0], data[8:])  # newest wins

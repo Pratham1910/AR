@@ -122,7 +122,12 @@ class ARFrameRequest(BaseModel):
     # How the object is found (first lock, and after tracking is lost):
     # "model" (model-based mode only) from its 3D model alone — no class needed;
     # "class" with the YOLO detector, by `class_label` (always for markerless).
-    detect_by: Literal["model", "class"] = "model"
+    # How the object is found (first lock, and after tracking is lost), in both modes:
+    # "model" by its 3D model (needs model_id); "class" by the YOLO detector's
+    # `class_label`; "box" from a box the user drew around it (`init_box`) — any
+    # object, no model or class needed; re-found by its 3D model when one is given.
+    detect_by: Literal["model", "class", "box"] = "model"
+    init_box: list[float] | None = None  # [x1, y1, x2, y2] in the frame's pixels, for detect_by="box"
     class_label: str | None = None  # a detectable class; required when detecting by class
     # Required for "model"; optional for "markerless", where it only enables
     # the model's calibrated part checks (e.g. "is the cap still on?").
