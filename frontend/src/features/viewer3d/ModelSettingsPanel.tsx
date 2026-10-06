@@ -44,6 +44,15 @@ export function ModelSettingsPanel({ model, onSaved, onDeleted }: Props) {
       `Renders ${currentHeightCm >= 100 ? (currentHeightCm / 100).toFixed(1) + " m" : currentHeightCm.toFixed(2) + " cm"} tall — ` +
         "almost certainly the wrong real height, so the overlay can't line up."
     );
+  } else if (currentHeightCm !== null && currentHeightCm < 3) {
+    // Model-based tracking infers distance from this size: a hand-sized object
+    // entered as ~1 cm gets posed a few cm from the camera, where perspective is
+    // so strong no candidate orientation fits (seen: a controller at 1.1 cm locked
+    // facing the wrong way). Tiny parts are possible, so this is a warning.
+    problems.push(
+      `Renders only ${currentHeightCm.toFixed(1)} cm tall. If the real object is bigger, set its real height — ` +
+        "distance and orientation are worked out from it, and a wrong size makes the model face the wrong way."
+    );
   }
 
   const heightChanged = heightCm !== "" && currentHeightCm !== null && Math.abs(Number(heightCm) - currentHeightCm) > 0.05;
