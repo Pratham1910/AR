@@ -37,7 +37,13 @@ export function applyRenderStyle(root: THREE.Object3D, style: RenderStyle): void
     if (style === "solid") {
       mesh.material = original;
     } else if (style === "wireframe") {
-      mesh.material = new THREE.MeshBasicMaterial({ color: OVERLAY_COLOR, wireframe: true, transparent: true, opacity: 0.9 });
+      mesh.material = new THREE.MeshBasicMaterial({
+        color: OVERLAY_COLOR,
+        wireframe: true,
+        transparent: true,
+        opacity: 0.9,
+        side: THREE.DoubleSide, // no back-face culling, like the solid style (ensureVisibleMaterials)
+      });
     } else {
       mesh.material = new THREE.MeshBasicMaterial({
         color: OVERLAY_COLOR,
