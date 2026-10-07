@@ -14,6 +14,10 @@ import { ModelSettingsPanel } from "./ModelSettingsPanel";
 interface Props {
   assets: Asset[];
   onAssetsChanged: () => void;
+  /** Preselect this asset (e.g. the product a scanned marker identified). */
+  initialAssetId?: string;
+  /** With initialAssetId: open AR Registration in marker mode, locked onto this marker id. */
+  targetMarkerId?: number;
 }
 
 /**
@@ -23,11 +27,13 @@ interface Props {
  * registration against a live camera feed. UploadModelForm lets you add
  * more assets/models without hand-writing API calls.
  */
-export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
-  const [selectedAssetId, setSelectedAssetId] = useState("");
+export function Viewer3DPage({ assets, onAssetsChanged, initialAssetId, targetMarkerId }: Props) {
+  const [selectedAssetId, setSelectedAssetId] = useState(initialAssetId ?? "");
   const [models, setModels] = useState<Model3DInfo[]>([]);
   const [selectedModelId, setSelectedModelId] = useState("");
-  const [mode, setMode] = useState<"view" | "overlay" | "register">("view");
+  const [mode, setMode] = useState<"view" | "overlay" | "register">(
+    targetMarkerId !== undefined ? "register" : "view"
+  );
   const [error, setError] = useState<string | null>(null);
   const [showUpload, setShowUpload] = useState(false);
 
@@ -192,7 +198,9 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
                     anchor_rotation_w: model.anchor_rotation_w,
                   }}
                   modelScale={model.scale}
-                  defaultTargetClassLabel={model.component_class_label}
+                  targetMarkerId={targetMarkerId}
+                initialMode={targetMarkerId !== undefined ? "marker" : undefined}
+                defaultTargetClassLabel={model.component_class_label}
                   partView={partView}
                   parts={parts}
                   procedureHost={procedureHost}

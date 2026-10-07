@@ -14,14 +14,8 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from app.services.markers.aruco_detector import ArucoDetector
 from app.services.pose.calibration import CameraCalibration
-
-_DICTIONARY_NAMES = {
-    "DICT_4X4_50": cv2.aruco.DICT_4X4_50,
-    "DICT_4X4_100": cv2.aruco.DICT_4X4_100,
-    "DICT_5X5_100": cv2.aruco.DICT_5X5_100,
-    "DICT_6X6_250": cv2.aruco.DICT_6X6_250,
-}
 
 
 @dataclass
@@ -43,11 +37,9 @@ class ArucoPoseEstimator:
     """Detects one ArUco marker per frame and solves its 6DoF pose."""
 
     def __init__(self, dictionary_name: str, marker_length_m: float):
-        if dictionary_name not in _DICTIONARY_NAMES:
-            raise ValueError(f"Unknown ArUco dictionary {dictionary_name!r}; supported: {list(_DICTIONARY_NAMES)}")
-        self._dictionary = cv2.aruco.getPredefinedDictionary(_DICTIONARY_NAMES[dictionary_name])
-        self._detector_params = cv2.aruco.DetectorParameters()
-        self._detector = cv2.aruco.ArucoDetector(self._dictionary, self._detector_params)
+        # Detection is shared with the marker -> product scanner; only the
+        # pose solve below is specific to this class.
+        self._detector = ArucoDetector(dictionary_name)
         self._marker_length_m = marker_length_m
 
         half = marker_length_m / 2.0
@@ -61,21 +53,14 @@ class ArucoPoseEstimator:
     def estimate(
         self, frame: np.ndarray, calibration: CameraCalibration, target_marker_id: int | None = None
     ) -> PoseEstimate:
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
-        corners, ids, _ = self._detector.detectMarkers(gray)
-
-        if ids is None or len(ids) == 0:
-            return PoseEstimate(found=False)
-
-        ids_flat = ids.flatten()
+        detections = self._detector.detect(frame)
         if target_marker_id is not None:
-            if target_marker_id not in ids_flat:
-                return PoseEstimate(found=False)
-            index = int(np.where(ids_flat == target_marker_id)[0][0])
-        else:
-            index = 0  # first detected marker
+            detections = [d for d in detections if d.marker_id == target_marker_id]
+        if not detections:
+            return PoseEstimate(found=False)
+        detection = detections[0]  # first detected marker
 
-        marker_corners = corners[index].reshape(4, 2)
+        marker_corners = np.array(detection.corners_px, dtype=np.float32)
         found, rvec, tvec = cv2.solvePnP(
             self._object_points, marker_corners, calibration.camera_matrix, calibration.dist_coeffs
         )
@@ -89,7 +74,7 @@ class ArucoPoseEstimator:
 
         return PoseEstimate(
             found=True,
-            marker_id=int(ids_flat[index]),
+            marker_id=detection.marker_id,
             rvec=rvec,
             tvec=tvec,
             reprojection_error_px=reprojection_error,

@@ -333,3 +333,123 @@ export interface FeaturePoseResponse {
   rotation_deg: RotationDeg | null;
   axes: PoseAxes | null;
 }
+
+// Marker -> product scanning (backend app/api/markers.py): the detector
+// reports marker ids + pixel corners; the marker_bindings table maps an id to
+// an asset (the product), which leads to its 3D models and procedures.
+export interface MarkerConfig {
+  family: string;
+  dictionary: string;
+  marker_count: number | null; // valid ids are 0..marker_count-1
+  hold_ms: number;
+}
+
+export interface MarkerBinding {
+  id: string;
+  family: string;
+  dictionary: string;
+  marker_id: number;
+  asset_id: string;
+  asset_name: string;
+}
+
+export interface DetectedMarker {
+  marker_id: number;
+  // Image pixels, in the marker's own corner order (top-left, top-right,
+  // bottom-right, bottom-left of the printed pattern). No metric position:
+  // that needs a calibrated camera.
+  corners_px: Vector2[];
+  center_px: Vector2;
+  visible: boolean; // false = not in this frame, held from a moment ago
+  ms_since_seen: number;
+  status: "known" | "unknown"; // unknown = no product bound to this id
+  product: { asset_id: string; name: string } | null;
+}
+
+export interface MarkerDetectResponse {
+  family: string;
+  dictionary: string;
+  frame_width: number;
+  frame_height: number;
+  markers: DetectedMarker[];
+}
+
+export interface ProductStep {
+  step_id_str: string;
+  title: string;
+  action_type: string;
+  component: string | null;
+  starting_state: string;
+  expected_state: string;
+}
+
+export interface ProductProcedure {
+  procedure_id: string;
+  procedure_id_str: string;
+  title: string;
+  revision_id: string;
+  revision_label: string;
+  steps: ProductStep[];
+}
+
+export interface Product {
+  asset_id: string;
+  name: string;
+  description: string | null;
+  procedures: ProductProcedure[]; // latest published revision of each
+}
+
+// Automatic product scan (backend POST /api/markers/scan): the marker names
+// the product, the object detector must see that product at the marker, and
+// the scan confirms by itself once it is well placed and held still.
+export type ScanState =
+  | "SEARCHING"
+  | "MARKER_DETECTED"
+  | "VERIFYING"
+  | "MISMATCH"
+  | "POSITIONING"
+  | "HOLD_STEADY"
+  | "SCANNING"
+  | "CONFIRMED";
+
+export interface ScanStatus {
+  state: ScanState;
+  message: string; // what to tell the user
+  problem: string | null;
+  // move_left / move_right are as seen in the preview (mirroring already applied).
+  hints: string[];
+  progress: number; // 0..1 through the hold
+  confirmation: number; // changes each time a new scan is confirmed
+  stages: { marker: boolean; product: boolean; verified: boolean; position: boolean; steady: boolean };
+  marker_id: number | null;
+  product: { asset_id: string; name: string } | null; // what the marker says this is
+  expected_class: string | null;
+  detected_class: string | null; // what the detector saw at the marker
+  detected_confidence: number | null;
+  product_bbox: [number, number, number, number] | null;
+  scan_area: [number, number, number, number]; // the scan box, frame pixels
+  geometry: ScanGeometry | null; // whenever a single marker is in view
+}
+
+// What the guidance was computed from. All relative (shares of the frame or
+// the scan box), in camera-image coordinates before any mirroring; there are
+// no real-world distances here.
+export interface ScanGeometry {
+  target_center: Vector2;
+  marker_center: Vector2;
+  product_center: Vector2 | null;
+  offset_x: number; // product (else marker) center minus target, in scan-box widths
+  offset_y: number;
+  marker_size: number; // marker side / frame short side
+  product_fill: number | null; // product box / scan box
+  distance: "too_far" | "ok" | "too_close"; // from apparent size only
+  squareness: number; // 1 = marker facing the camera
+  roll_deg: number;
+  inside_area: boolean;
+  complete: boolean;
+  speed: number | null; // marker sides per second
+}
+
+export interface MarkerScanResponse extends MarkerDetectResponse {
+  scan: ScanStatus;
+}

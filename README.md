@@ -56,6 +56,7 @@ docker compose up -d postgres minio
 # 2. Backend
 cd backend
 python -m venv .venv && .venv\Scripts\activate   # Windows
+python -m venv .venv && source .venv/bin/activate #linux
 pip install -r requirements.txt
 alembic upgrade head
 # --reload-dir app: without it, uvicorn's file-watcher also watches .venv/
@@ -89,3 +90,9 @@ in `.env` to match, then in the app open **3D / AR Registration** → select
 `BOTTLE-001` → **3D Viewer** to see the provided bottle model, or
 **AR Registration** to point your camera at the printed marker and see the
 model align to it. See `docs/pose.md` for the details and known limitations.
+
+## Identifying products from markers (Marker Scan)
+
+The **Marker Scan** tab reads printed ArUco markers from the webcam, draws each
+marker's boundary, corners and id, and pulls up the product bound to that id
+with its 3D model and procedure steps. See `docs/markers.md`.

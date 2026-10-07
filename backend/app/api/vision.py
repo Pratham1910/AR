@@ -424,9 +424,14 @@ _AR_MAX_SESSIONS = 16
 _ar_sessions: dict[str, tuple[tuple, ARSession]] = {}  # session_id -> (config key, session)
 
 
+def segment_objects(frame_bgr: np.ndarray, threshold: float | None = None) -> list[SegmentedObject]:
+    """Every object the segmentation model finds in the frame."""
+    return _get_segmenter().segment(frame_bgr, threshold or _settings.segmentation_confidence_threshold)
+
+
 def find_object(frame_bgr: np.ndarray, class_label: str, threshold: float | None = None) -> SegmentedObject | None:
     """The most confident detection of `class_label` in the frame, if any."""
-    objects = _get_segmenter().segment(frame_bgr, threshold or _settings.segmentation_confidence_threshold)
+    objects = segment_objects(frame_bgr, threshold)
     matches = [o for o in objects if o.class_label == class_label]
     return max(matches, key=lambda o: o.confidence) if matches else None
 

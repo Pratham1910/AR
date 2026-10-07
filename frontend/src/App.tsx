@@ -2,10 +2,11 @@ import { useEffect, useState } from "react";
 import { AssetsApi, ProceduresApi } from "./services/api";
 import { InspectionRunner } from "./features/inspection/InspectionRunner";
 import { Viewer3DPage } from "./features/viewer3d/Viewer3DPage";
+import { MarkerScanPage } from "./features/markers/MarkerScanPage";
 import type { Asset, Procedure } from "./types";
 import "./App.css";
 
-type Tab = "inspection" | "3d";
+type Tab = "inspection" | "3d" | "markers";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("inspection");
@@ -15,6 +16,8 @@ export default function App() {
   const [selectedRevisionId, setSelectedRevisionId] = useState<string>("");
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set when a scanned marker hands its product over to the 3D / AR tab.
+  const [scanned3D, setScanned3D] = useState<{ assetId: string; markerId?: number } | null>(null);
 
   const refreshAssets = () => {
     AssetsApi.list()
@@ -45,10 +48,19 @@ export default function App() {
           <button className={tab === "inspection" ? "active" : ""} onClick={() => setTab("inspection")}>
             Procedure inspection
           </button>
-          <button className={tab === "3d" ? "active" : ""} onClick={() => setTab("3d")}>
+          <button
+          className={tab === "3d" ? "active" : ""}
+          onClick={() => {
+            setScanned3D(null);
+            setTab("3d");
+          }}
+        >
             3D &amp; AR workspace
           </button>
-        </nav>
+          <button className={tab === "markers" ? "active" : ""} onClick={() => setTab("markers")}>
+          Marker Scan
+        </button>
+      </nav>
       </header>
 
     <div className="app">
@@ -102,7 +114,30 @@ export default function App() {
         </>
       )}
 
-      {tab === "3d" && <Viewer3DPage assets={assets} onAssetsChanged={refreshAssets} />}
+      {tab === "3d" && (
+        <Viewer3DPage
+          assets={assets}
+          onAssetsChanged={refreshAssets}
+          initialAssetId={scanned3D?.assetId}
+          targetMarkerId={scanned3D?.markerId}
+        />
+      )}
+
+      {tab === "markers" && (
+        <MarkerScanPage
+          assets={assets}
+          onOpenIn3D={(assetId, markerId) => {
+            setScanned3D({ assetId, markerId });
+            setTab("3d");
+          }}
+          onStartProcedure={(assetId, revisionId) => {
+            setSelectedAssetId(assetId);
+            setSelectedRevisionId(revisionId);
+            setRunning(false);
+            setTab("inspection");
+          }}
+        />
+      )}
     </div>
     </>
   );

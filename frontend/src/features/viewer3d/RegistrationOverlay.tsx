@@ -38,6 +38,8 @@ interface Props {
    */
   modelScale?: number;
   targetMarkerId?: number;
+  /** Registration method to open in (default "markerless"). */
+  initialMode?: RegistrationMode;
   /**
    * The currently selected asset's own detection class (Model3DInfo.
    * component_class_label), e.g. "cup" for a coffee mug asset. When this
@@ -133,6 +135,7 @@ export function RegistrationOverlay({
   modelUrl,
   modelScale = 1,
   targetMarkerId,
+  initialMode = "markerless",
   defaultTargetClassLabel,
   initialAnchor,
   partView = EMPTY_PART_VIEW,
@@ -281,7 +284,7 @@ export function RegistrationOverlay({
     }
   };
 
-  const [mode, setMode] = useState<RegistrationMode>("markerless");
+  const [mode, setMode] = useState<RegistrationMode>(initialMode);
   const [targetClassLabel, setTargetClassLabel] = useState(defaultTargetClassLabel || "");
   // Model-based mode: find the object by its 3D model (no class needed — works
   // for anything with a GLB, e.g. a junction box), or by a detector class.
@@ -1417,7 +1420,11 @@ export function RegistrationOverlay({
               </p>
             </>
           ) : (
-            <p>No marker detected in frame.</p>
+            <p>
+              {targetMarkerId !== undefined
+                ? `Marker ${targetMarkerId} not detected in frame.`
+                : "No marker detected in frame."}
+            </p>
           )}
           {markerPose.calibration_is_approximate && (
             <p className="hint">Using an approximate default camera calibration ({markerPose.calibration_source}).</p>

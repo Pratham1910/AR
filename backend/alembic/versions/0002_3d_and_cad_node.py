@@ -21,10 +21,19 @@ branch_labels = None
 depends_on = None
 
 
+def _add_column_if_missing(table: str, column: sa.Column) -> None:
+    # 0001 builds the schema with create_all from the *current* models, so on
+    # a fresh database this column already exists; only databases created
+    # before it was added to the model actually need the ALTER.
+    existing = {c["name"] for c in sa.inspect(op.get_bind()).get_columns(table)}
+    if column.name not in existing:
+        op.add_column(table, column)
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     Base.metadata.create_all(bind=bind)  # creates models_3d
-    op.add_column("components", sa.Column("cad_node_id", sa.String(length=255), nullable=True))
+    _add_column_if_missing("components", sa.Column("cad_node_id", sa.String(length=255), nullable=True))
 
 
 def downgrade() -> None:

@@ -1,0 +1,7 @@
+# Local override, merged automatically by `docker compose`.
+# minio/minio is no longer published on Docker Hub (pull access denied), so
+# use the community-maintained pgsty/minio build: same `minio server` CLI and
+# it bundles `mc`, so the healthcheck in docker-compose.yml works unchanged.
+services:
+  minio:
+    image: pgsty/minio:latest
