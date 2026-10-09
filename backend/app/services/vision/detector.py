@@ -60,11 +60,6 @@ class YoloDetector(Detector):
         self._confidence_threshold = confidence_threshold
         self.model_version = model_path
 
-    @property
-    def class_names(self) -> list[str]:
-        """Every class label this model can ever return."""
-        return list(self._model.names.values())
-
     def detect(self, frame: np.ndarray) -> list[Detection]:
         results = self._model.predict(frame, conf=self._confidence_threshold, verbose=False)
         detections: list[Detection] = []

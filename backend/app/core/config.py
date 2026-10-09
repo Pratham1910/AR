@@ -40,40 +40,6 @@ class Settings(BaseSettings):
     aruco_dictionary: str = "DICT_4X4_50"
     aruco_marker_length_m: float = 0.05
 
-    # Marker -> product identification (app/services/markers, app/api/markers.py).
-    # The dictionary is aruco_dictionary above; any cv2.aruco DICT_* name works.
-    marker_family: str = "aruco"
-    marker_hold_ms: float = 1500.0  # keep reporting a marker this long after it leaves the frame
-
-    # Automatic product scan (app/services/scan, POST /api/markers/scan): the
-    # marker names the product, the object detector must see that product at
-    # the marker, and the scan gate confirms once it is well placed and still.
-    # Unset = verify with the stock COCO segmentation model above the AR views
-    # already use, which only knows everyday objects ("bottle", "cup", ...).
-    # Point this at custom-trained YOLO weights to verify your own equipment;
-    # a product's expected class is its 3D model's detection class.
-    product_model_path: Optional[str] = None
-    scan_min_product_confidence: float = 0.5  # YOLO confidence needed to match or reject
-    scan_candidate_confidence: float = 0.25  # weaker sightings of the expected class show as "verifying"
-    scan_ignored_classes: str = "person"  # comma-separated; never the product (the hand holding it)
-    scan_association_reach: float = 1.0  # marker sides a product's box may be from the marker and still be "its" product
-    # Positioning — all relative to the frame / scan box, never centimeters:
-    # see app/services/scan/positioning.py for exactly what each one measures.
-    scan_area_width: float = 0.6  # scan box, as a share of the frame
-    scan_area_height: float = 0.8
-    scan_center_tolerance: float = 0.15  # share of the scan box
-    scan_min_marker_size: float = 0.06  # marker side / frame short side: below = "move closer"
-    scan_max_marker_size: float = 0.5  # above = "move farther"
-    scan_max_product_fill: float = 1.0  # product box / scan box: above = "move farther"
-    scan_marker_size_waived_fill: float = 0.6  # product this big in the box: a small marker is fine
-    scan_min_squareness: float = 0.6  # tilt: 1 = facing the camera
-    scan_max_roll_deg: float = 180.0  # in-plane rotation allowed; 180 = any
-    scan_frame_edge_margin: float = 0.01  # product box this close to the frame edge = cut off
-    scan_hold_ms: float = 800.0
-    scan_max_speed: float = 0.8  # marker sides per second
-    scan_verification_grace_ms: float = 400.0
-    scan_rearm_ms: float = 1000.0  # confirmed product out of the scan box this long = ready for the next
-
     # Static file mount for served GLB/glTF models (Project.md #20, Phase 4).
     models_3d_dir: str = "../data/models"
     # FBX uploads are converted to GLB with headless Blender. Unset = look on

@@ -6,10 +6,6 @@ import type {
   Asset,
   FeaturePoseResponse,
   InspectionRun,
-  MarkerBinding,
-  MarkerConfig,
-  MarkerDetectResponse,
-  MarkerScanResponse,
   Model3DInfo,
   Model3DPart,
   FitCheckResult,
@@ -19,7 +15,6 @@ import type {
   PoseResponse,
   Procedure,
   ProcedureSummary,
-  Product,
   RegisterReferenceImageResponse,
   StepValidationResponse,
 } from "../types";
@@ -226,35 +221,4 @@ export const VisionApi = {
 
   // Drops the session's tracking state; the next frame starts SEARCHING.
   endArSession: (sessionId: string) => api.delete(`/api/vision/ar-session/${sessionId}`).then(() => undefined),
-};
-
-// Marker -> product scanning (backend app/api/markers.py).
-export const MarkersApi = {
-  config: () => api.get<MarkerConfig>("/api/markers/config").then((r) => r.data),
-
-  // Every marker in the frame. Markers that just left it are still returned
-  // (visible: false) for a moment, per session.
-  detect: (sessionId: string, imageBase64: string) =>
-    api
-      .post<MarkerDetectResponse>("/api/markers/detect", { session_id: sessionId, image_base64: imageBase64 })
-      .then((r) => r.data),
-
-  // One frame of the automatic scan; `scan.state` reaches CONFIRMED by itself
-  // and stays there until the session is ended.
-  // `mirrored`: the user sees the frame flipped, so left/right guidance must be too.
-  scan: (sessionId: string, imageBase64: string, mirrored: boolean) =>
-    api
-      .post<MarkerScanResponse>("/api/markers/scan", { session_id: sessionId, image_base64: imageBase64, mirrored })
-      .then((r) => r.data),
-
-  endSession: (sessionId: string) => api.delete(`/api/markers/sessions/${sessionId}`).then(() => undefined),
-
-  bindings: () => api.get<MarkerBinding[]>("/api/markers/bindings").then((r) => r.data),
-
-  setBinding: (markerId: number, assetId: string) =>
-    api.put<MarkerBinding>("/api/markers/bindings", { marker_id: markerId, asset_id: assetId }).then((r) => r.data),
-
-  removeBinding: (bindingId: string) => api.delete(`/api/markers/bindings/${bindingId}`).then(() => undefined),
-
-  product: (assetId: string) => api.get<Product>(`/api/markers/products/${assetId}`).then((r) => r.data),
 };

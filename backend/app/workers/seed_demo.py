@@ -12,9 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import SessionLocal
 from app.models.asset import Asset, Component
-from app.core.config import get_settings
 from app.models.enums import RevisionStatus
-from app.models.marker import MarkerBinding
 from app.models.model3d import Model3D
 from app.models.procedure import Procedure, ProcedureRevision
 from app.schemas.procedure import ProcedureDefinition
@@ -28,13 +26,6 @@ DEMO_COMPONENTS = [
     ("CONNECTOR-J1", "Connector J1", "connector"),
     ("PCB-001", "PCB", "pcb"),
     ("FAN-001", "Fan", "fan"),
-]
-
-# Printed marker id -> asset name, for the Marker Scan tab. Only a starting
-# point: bindings are edited in that tab (PUT /api/markers/bindings).
-DEMO_MARKER_BINDINGS = [
-    (0, "PUMP-001"),
-    (1, "BOTTLE-001"),
 ]
 
 
@@ -82,36 +73,8 @@ def seed() -> None:
             print(f"Seeded and published procedure {procedure.procedure_id_str} (revision {latest_revision.id})")
 
         _seed_bottle_3d_demo(db)
-        _seed_marker_bindings(db)
     finally:
         db.close()
-
-
-def _seed_marker_bindings(db: Session) -> None:
-    """Binds the demo markers, leaving alone any id that already has a binding."""
-    settings = get_settings()
-    for marker_id, asset_name in DEMO_MARKER_BINDINGS:
-        existing = (
-            db.query(MarkerBinding)
-            .filter(
-                MarkerBinding.family == settings.marker_family,
-                MarkerBinding.dictionary == settings.aruco_dictionary,
-                MarkerBinding.marker_id == marker_id,
-            )
-            .one_or_none()
-        )
-        asset = db.query(Asset).filter(Asset.name == asset_name).one_or_none()
-        if existing is None and asset is not None:
-            db.add(
-                MarkerBinding(
-                    family=settings.marker_family,
-                    dictionary=settings.aruco_dictionary,
-                    marker_id=marker_id,
-                    asset_id=asset.id,
-                )
-            )
-            print(f"  + marker {settings.aruco_dictionary} id {marker_id} -> {asset_name}")
-    db.commit()
 
 
 def _seed_bottle_3d_demo(db: Session) -> None:
