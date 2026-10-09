@@ -51,6 +51,7 @@ from app.services.model3d.glb_inspect import (
     list_glb_parts,
 )
 from app.services.model3d.vishwa_procedure import ProcedureFormatError, normalize_package, summarize
+from app.services.vision.qa_engine import PartInspection, inspect_parts, qa_overlay
 
 router = APIRouter(prefix="/api/models3d", tags=["3d"])
 _settings = get_settings()
@@ -666,6 +667,122 @@ def check_model_fit(model_id: uuid.UUID, payload: FitCheckRequest, db: Session =
         parts=[PartFitOut(**{**vars(p), "from_top_cm": list(p.from_top_cm)}) for p in report.parts],
         bands=[FitBandOut(from_top_cm=b.from_top_cm, real_cm=b.real_cm, model_cm=b.model_cm, part=b.part) for b in report.bands],
         overlay_jpeg_base64=base64.b64encode(fit_overlay(frame, real, model_mask)).decode("ascii"),
+    )
+
+
+class QAInspectRequest(BaseModel):
+    image_base64: str  # raw camera frame showing the object
+
+
+class PartInspectionOut(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    name: str
+    node_index: int
+    status: Literal["present", "missing", "partial", "occluded", "unknown"]
+    coverage: float    # fraction of projected area covered by real object (0–1)
+    visibility: float  # fraction of part faces facing the camera (0–1)
+    projected_area: int
+    outline: list[list[float]]  # [[x, y], …] projected outline for the frontend
+
+
+class QAInspectOut(BaseModel):
+    model_config = {"protected_namespaces": ()}
+
+    parts: list[PartInspectionOut]
+    # PASS: all required parts present · FAIL: at least one missing/partial · UNCERTAIN: any unknown
+    verdict: Literal["PASS", "FAIL", "UNCERTAIN"]
+    missing_count: int
+    partial_count: int
+    present_count: int
+    overlay_jpeg_base64: str  # camera frame with coloured part outlines
+
+
+@router.post("/{model_id}/qa-inspect", response_model=QAInspectOut)
+def qa_inspect(model_id: uuid.UUID, payload: QAInspectRequest, db: Session = Depends(get_db)) -> QAInspectOut:
+    """
+    Phase 5 QA: are all named assembly parts present on the real object?
+
+    Finds the object by its 3D model, solves the 6DoF pose, then projects
+    every named part into the camera and compares it against the detected
+    object mask.  Named parts only — unnamed mesh nodes are skipped (name
+    them via PUT /parts/{node_index}).
+
+    Returns per-part status (present/missing/partial/occluded/unknown) and
+    an overlay JPEG with each part highlighted in its status colour.
+    """
+    model = db.get(Model3D, model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    frame = decode_frame(payload.image_base64)
+    height, width = frame.shape[:2]
+    try:
+        register_model_mesh(str(model.id), lambda: _glb_path(model).read_bytes(), model.scale)
+        located = locate_object_and_pose(
+            base64.b64decode(payload.image_base64), width, height, str(model.id), model.name
+        )
+    except PoseServiceUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if isinstance(located, str):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Could not locate the object: {located}. Point the camera at it and try again.",
+        )
+    obj, t_co, camera_matrix = located
+
+    # Only inspect parts that have been explicitly named by the user
+    named = _part_components(db, model)
+    if not named:
+        raise HTTPException(
+            status_code=400,
+            detail="No named parts found.  Name the assembly parts first via the Parts panel.",
+        )
+
+    meshes, center = assembly_geometry(_glb_path(model))
+    # Only include nodes that have a user-supplied display name
+    named_indices = {p.node_index for p in list_glb_parts(_glb_path(model).read_bytes()) if p.name in named}
+    inspectable_meshes = {idx: meshes[idx] for idx in named_indices if idx in meshes}
+    part_names = {p.node_index: named[p.name].name for p in list_glb_parts(_glb_path(model).read_bytes()) if p.name in named}
+
+    # Build the real object mask from the detected polygon
+    real = np.zeros((height, width), np.uint8)
+    cv2.fillPoly(real, [np.round([[p.x, p.y] for p in obj.polygon]).astype(np.int32)], 1)
+    real_mask = real.astype(bool)
+
+    results = inspect_parts(real_mask, inspectable_meshes, part_names, center, model.scale, t_co, camera_matrix)
+
+    missing = sum(1 for r in results if r.status == "missing")
+    partial = sum(1 for r in results if r.status == "partial")
+    present = sum(1 for r in results if r.status == "present")
+    has_unknown = any(r.status in ("unknown", "occluded") for r in results)
+
+    if missing > 0 or partial > 0:
+        verdict: Literal["PASS", "FAIL", "UNCERTAIN"] = "FAIL"
+    elif has_unknown:
+        verdict = "UNCERTAIN"
+    else:
+        verdict = "PASS"
+
+    overlay = qa_overlay(frame, results)
+    return QAInspectOut(
+        parts=[
+            PartInspectionOut(
+                name=r.name,
+                node_index=r.node_index,
+                status=r.status,
+                coverage=r.coverage,
+                visibility=r.visibility,
+                projected_area=r.projected_area,
+                outline=r.outline,
+            )
+            for r in results
+        ],
+        verdict=verdict,
+        missing_count=missing,
+        partial_count=partial,
+        present_count=present,
+        overlay_jpeg_base64=base64.b64encode(overlay).decode("ascii"),
     )
 
 

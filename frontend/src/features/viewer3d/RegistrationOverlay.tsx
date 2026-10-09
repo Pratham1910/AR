@@ -9,6 +9,7 @@ import { applyRenderStyle, type RenderStyle } from "./renderStyle";
 import { applyPartView, EMPTY_PART_VIEW, indexParts, type PartView } from "./parts";
 import type { ProcedureHost, StepGuide } from "./procedure";
 import { FitCheck } from "./FitCheck";
+import { QAInspectionPanel } from "./QAInspectionPanel";
 import { BoxSelector } from "./BoxSelector";
 import { Models3DApi, VisionApi, apiErrorMessage, apiWebSocketUrl } from "../../services/api";
 import { ClassSelect } from "../../components/ClassSelect";
@@ -1357,6 +1358,8 @@ export function RegistrationOverlay({
       </div>
 
       {mode === "model" && <FitCheck modelId={modelId} captureFrame={captureFrameBase64} disabled={!ready} />}
+
+      {mode === "model" && <QAInspectionPanel modelId={modelId} captureFrame={captureFrameBase64} disabled={!ready} />}
 
       {(mode === "marker" || mode === "feature") && (
         <div className="anchor-calibration">

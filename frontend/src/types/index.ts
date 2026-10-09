@@ -239,6 +239,25 @@ export interface PartCheck {
   region_polygon?: Vector2[] | null; // "pose" checks: the part's exact outline at the tracked pose
 }
 
+export interface QAPartResult {
+  name: string;
+  node_index: number;
+  status: "present" | "missing" | "partial" | "occluded" | "unknown";
+  coverage: number;    // 0–1 fraction of projected area covered by real object
+  visibility: number;  // 0–1 fraction of part faces facing the camera
+  projected_area: number;
+  outline: [number, number][]; // [[x,y],…] projected outline
+}
+
+export interface QAInspectResult {
+  parts: QAPartResult[];
+  verdict: "PASS" | "FAIL" | "UNCERTAIN";
+  missing_count: number;
+  partial_count: number;
+  present_count: number;
+  overlay_jpeg_base64: string;
+}
+
 export interface PresenceCalibrationResult {
   node_index: number;
   part_name: string;

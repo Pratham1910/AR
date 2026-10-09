@@ -9,6 +9,7 @@ import type {
   Model3DInfo,
   Model3DPart,
   FitCheckResult,
+  QAInspectResult,
   ObserveResponse,
   PresenceCalibrationResult,
   PoseResponse,
@@ -118,6 +119,12 @@ export const Models3DApi = {
   fitCheck: (modelId: string, imageBase64: string) =>
     api
       .post<FitCheckResult>(`/api/models3d/${modelId}/fit-check`, { image_base64: imageBase64 })
+      .then((r) => r.data),
+
+  // Phase 5 QA: are all named assembly parts present?
+  qaInspect: (modelId: string, imageBase64: string) =>
+    api
+      .post<QAInspectResult>(`/api/models3d/${modelId}/qa-inspect`, { image_base64: imageBase64 })
       .then((r) => r.data),
 
   // Procedure authored in Vishwa (.procedure.json), one per model.
