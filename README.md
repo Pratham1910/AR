@@ -47,7 +47,27 @@ tests/       Backend + vision tests
 3D-models/   Reference GLB/glTF assets (Phase 4+)
 ```
 
+## Running with Docker
+
+```bash
+cp .env.example .env            # optional; development defaults work as they are
+docker compose up -d            # postgres, minio, migrations, backend (Python 3.11), frontend
+curl http://localhost:8000/health
+```
+
+The first run builds the images; after that they are reused. The source
+trees are mounted into the containers and reload on save, so code changes need
+no rebuild — add `--build` only after changing `requirements.txt`,
+`package.json` or a Dockerfile.
+
+Then open http://localhost:5173. Database migrations are applied by the
+one-shot `migrate` service before the backend starts. Configuration, GPU and
+offline use, and how to verify the environment: [`docs/docker.md`](docs/docker.md).
+
 ## Running locally (development)
+
+The backend needs **Python 3.11** — the pinned dependencies have no wheels for
+newer interpreters.
 
 ```bash
 # 1. Infra
@@ -55,7 +75,7 @@ docker compose up -d postgres minio
 
 # 2. Backend
 cd backend
-python -m venv .venv && .venv\Scripts\activate   # Windows
+python3.11 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 alembic upgrade head
 # --reload-dir app: without it, uvicorn's file-watcher also watches .venv/

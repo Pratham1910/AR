@@ -1,0 +1,31 @@
+# Build context is backend/. Everything here stays out of the image.
+
+# Local secrets and per-machine config. The container is configured through
+# environment variables (docker-compose.yml), never a baked-in .env.
+.env
+.env.*
+
+# Virtual environments and Python caches — the image installs its own packages.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+
+# VCS / editor
+.git/
+.gitignore
+.vscode/
+.idea/
+.claude/
+
+# Docker files themselves (editing them should not invalidate the code layer)
+Dockerfile
+.dockerignore
+
+# Model weights are large and machine-specific; mount them at /models instead.
+# The one exception is the stock segmentation model the Dockerfile bakes in.
+*.pt
+*.onnx
+!yolov8n-seg.pt

@@ -14,8 +14,12 @@ from app.core.config import get_settings
 
 
 class EvidenceStore:
-    def __init__(self, client: Minio, bucket: str):
+    def __init__(self, client: Minio, bucket: str, presign_client: Minio | None = None):
         self._client = client
+        # Signs links for the address the browser uses, when that differs from
+        # the one the backend uses (Settings.minio_public_endpoint). It only
+        # ever computes signatures; all I/O goes through `client`.
+        self._presign_client = presign_client or client
         self._bucket = bucket
         self._ensure_bucket()
 
@@ -39,7 +43,9 @@ class EvidenceStore:
     def get_frame_url(self, key: str, expires_seconds: int = 3600) -> str:
         from datetime import timedelta
 
-        return self._client.presigned_get_object(self._bucket, key, expires=timedelta(seconds=expires_seconds))
+        return self._presign_client.presigned_get_object(
+            self._bucket, key, expires=timedelta(seconds=expires_seconds)
+        )
 
 
 def build_evidence_store() -> EvidenceStore:
@@ -50,4 +56,15 @@ def build_evidence_store() -> EvidenceStore:
         secret_key=settings.minio_secret_key,
         secure=settings.minio_secure,
     )
-    return EvidenceStore(client, settings.minio_evidence_bucket)
+    presign_client = None
+    if settings.minio_public_endpoint and settings.minio_public_endpoint != settings.minio_endpoint:
+        presign_client = Minio(
+            settings.minio_public_endpoint,
+            access_key=settings.minio_access_key,
+            secret_key=settings.minio_secret_key,
+            secure=settings.minio_secure,
+            # With a region given, presigning is pure computation — no request
+            # to an address this process may be unable to reach.
+            region=settings.minio_region,
+        )
+    return EvidenceStore(client, settings.minio_evidence_bucket, presign_client=presign_client)

@@ -54,7 +54,9 @@ class ModelPoseClient:
         except httpx.HTTPError as exc:
             raise PoseServiceUnavailable(
                 f"Model-based pose service not reachable at {self._client.base_url} ({exc}). "
-                "Start it in WSL — see pose_service/README.md."
+                "It runs on the host, outside docker-compose: start it with pose_service/start.sh "
+                "(pose_service/README.md). A timeout from the backend container while the service is "
+                "running means the host firewall is dropping it — see docs/docker.md."
             ) from exc
         if response.status_code >= 400:
             try:

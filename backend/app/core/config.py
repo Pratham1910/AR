@@ -16,6 +16,11 @@ class Settings(BaseSettings):
 
     # Database
     database_url: str = "postgresql+psycopg2://tvasta:tvasta@localhost:5432/tvasta"
+    # Server on which tests/backend/test_migrations.py may create and drop its
+    # own throwaway databases (the database named in the URL is only used to
+    # connect; it is never migrated). Unset by default so `pytest` needs no
+    # database: the tests that run real DDL are skipped.
+    migration_test_database_url: Optional[str] = None
 
     # Object storage (MinIO / S3-compatible)
     minio_endpoint: str = "localhost:9000"
@@ -23,6 +28,18 @@ class Settings(BaseSettings):
     minio_secret_key: str = "tvasta12345"
     minio_secure: bool = False
     minio_evidence_bucket: str = "evidence"
+    # Host:port a *browser* uses to reach MinIO, for the presigned evidence
+    # links (GET /api/evidence/{id}). Unset = minio_endpoint, which is right
+    # whenever the backend and the browser reach MinIO the same way (local
+    # dev: both use localhost:9000). In docker-compose the backend talks to
+    # "minio:9000", a name that only resolves inside the compose network, and
+    # a link signed for that host cannot simply be rewritten: the host is part
+    # of the signature.
+    minio_public_endpoint: Optional[str] = None
+    # Region used to sign those links. Signing for the public endpoint must
+    # not ask the server for the bucket's region, since the backend may not be
+    # able to reach that address at all. "us-east-1" is MinIO's default.
+    minio_region: str = "us-east-1"
 
     # Vision
     model_path: Optional[str] = None

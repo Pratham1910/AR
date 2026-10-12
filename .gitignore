@@ -42,6 +42,9 @@ Thumbs.db
 
 ## Docker
 docker/volumes/
+# Pre-downloaded wheels for the backend image build (docs/docker.md)
+docker/wheelhouse/*
+!docker/wheelhouse/.gitkeep
 
 ## Frontend build artifacts
 *.tsbuildinfo

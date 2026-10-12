@@ -1,0 +1,28 @@
+# Optional: run backend inference on an NVIDIA GPU.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.override.yml \
+#     -f docker-compose.gpu.yml up -d --build
+#
+# Needs the NVIDIA driver and the NVIDIA Container Toolkit on the host
+# (`docker info` must list an "nvidia" runtime). Without this file the image
+# carries CPU-only torch and ultralytics runs on the CPU; with it the image is
+# built with CUDA torch (several GB larger) and ultralytics uses the GPU when
+# torch reports one, falling back to the CPU otherwise.
+x-gpu-image: &gpu-image
+  image: ${TVASTA_BACKEND_IMAGE:-tvasta-backend:gpu}
+  build:
+    args:
+      TORCH_INDEX_URL: https://download.pytorch.org/whl/cu124
+
+services:
+  migrate:
+    <<: *gpu-image
+  backend:
+    <<: *gpu-image
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -1,12 +1,40 @@
+# Credentials come from the environment (a root .env next to this file, see
+# .env.example). The fallbacks are the project's development defaults and must
+# be overridden for any deployment that is reachable by others.
+
+# Shared by `migrate` and `backend`: same image, built once.
+x-backend-image: &backend-image
+  image: ${TVASTA_BACKEND_IMAGE:-tvasta-backend:local}
+  build:
+    context: ./backend
+    # Wheels placed here are used instead of being downloaded; the directory
+    # is empty in a fresh clone (docs/docker.md, "Slow or metered connections").
+    additional_contexts:
+      wheels: ./docker/wheelhouse
+    args:
+      # Owner of files the container writes into ./data.
+      APP_UID: ${TVASTA_UID:-1000}
+      APP_GID: ${TVASTA_GID:-1000}
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "5"
+
+x-backend-environment: &backend-environment
+  # "postgres" is the service name below. A password with URL-special
+  # characters (@ : / %) must be percent-encoded here.
+  DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-tvasta}:${POSTGRES_PASSWORD:-tvasta}@postgres:5432/${POSTGRES_DB:-tvasta}
+
 services:
   postgres:
     image: postgres:16
     container_name: tvasta-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: tvasta
-      POSTGRES_PASSWORD: tvasta
-      POSTGRES_DB: tvasta
+      POSTGRES_USER: ${POSTGRES_USER:-tvasta}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-tvasta}
+      POSTGRES_DB: ${POSTGRES_DB:-tvasta}
     ports:
       - "5432:5432"
     volumes:
@@ -23,8 +51,8 @@ services:
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: tvasta
-      MINIO_ROOT_PASSWORD: tvasta12345
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-tvasta}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-tvasta12345}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -36,27 +64,83 @@ services:
       timeout: 5s
       retries: 10
 
-  backend:
-    build:
-      context: ./backend
-    container_name: tvasta-backend
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      DATABASE_URL: postgresql+psycopg2://tvasta:tvasta@postgres:5432/tvasta
-      MINIO_ENDPOINT: minio:9000
-      MINIO_ACCESS_KEY: tvasta
-      MINIO_SECRET_KEY: tvasta12345
-    ports:
-      - "8000:8000"
+  # One-shot schema migration. It is the only thing that changes the schema:
+  # the backend starts only after this has exited 0 (see its depends_on), so
+  # it never serves requests against a half-migrated database, and a failed
+  # migration is visible as a failed container (`docker compose logs migrate`)
+  # instead of a crash-looping API. It never restarts on its own.
+  migrate:
+    <<: *backend-image
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    # Same source mount as the backend, so a migration added on the host is
+    # applied without rebuilding the image.
     volumes:
       - ./backend:/app
-      - ./data:/data
-      - ./models:/models
+    environment:
+      <<: *backend-environment
     depends_on:
       postgres:
+        # "healthy" = pg_isready succeeds, i.e. the server accepts
+        # connections; "started" alone only means the process exists.
         condition: service_healthy
+
+  backend:
+    <<: *backend-image
+    container_name: tvasta-backend
+    restart: unless-stopped
+    # Root .env (see .env.example) supplies app settings such as MODEL_PATH or
+    # JWT_SECRET_KEY. Optional so a fresh clone starts on the defaults in
+    # backend/app/core/config.py.
+    env_file:
+      - path: .env
+        required: false
+    # These win over env_file: inside the compose network the services are
+    # reached by service name, never localhost.
+    environment:
+      <<: *backend-environment
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-tvasta}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-tvasta12345}
+      # Evidence links are opened by the browser, which cannot resolve
+      # "minio"; they are signed for this address instead. Set it to the
+      # server's LAN name/IP when the browser runs on another machine.
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-localhost:9000}
+      # pose_service/ (MegaPose, CUDA) runs on the host, not in compose.
+      POSE_SERVICE_URL: ${POSE_SERVICE_URL:-http://host.docker.internal:8765}
+      # The copy of the stock segmentation weights that the image keeps
+      # outside /app (which the source mount below covers).
+      SEGMENTATION_MODEL_NAME: ${SEGMENTATION_MODEL_NAME:-/opt/tvasta/weights/yolov8n-seg.pt}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8000:8000"
+    # The image is the *environment* (Python 3.11 + every dependency); the
+    # code comes from the working tree and uvicorn reloads on each edit, so
+    # adding a feature never needs a rebuild. Rebuild only when
+    # requirements.txt, constraints.txt or the Dockerfile change.
+    # --reload-dir app: without it the watcher also walks .venv/ and data.
+    command:
+      - uvicorn
+      - app.main:app
+      - --host=0.0.0.0
+      - --port=8000
+      - --reload
+      - --reload-dir=app
+      - --timeout-graceful-shutdown=10
+    volumes:
+      - ./backend:/app
+      # Runtime data the app reads and writes (uploaded GLBs, reference
+      # images, calibrations, procedures): the app's "../data/..." defaults
+      # resolve to /data from WORKDIR /app.
+      - ./data:/data
+      # Trained detector weights, for MODEL_PATH=/models/yolo/<file>.pt
+      - ./models:/models
+    # uvicorn gets 10s to close open WebSockets (see backend/Dockerfile CMD).
+    stop_grace_period: 20s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
       minio:
         condition: service_healthy
 
