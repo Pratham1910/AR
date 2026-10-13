@@ -10,10 +10,13 @@ import { SimpleCameraOverlay } from "./SimpleCameraOverlay";
 import { RegistrationOverlay } from "./RegistrationOverlay";
 import { UploadModelForm } from "./UploadModelForm";
 import { ModelSettingsPanel } from "./ModelSettingsPanel";
+import { MarkerScanner } from "../markers/MarkerScanner";
 
 interface Props {
   assets: Asset[];
   onAssetsChanged: () => void;
+  /** Opens the Procedure inspection tab (from a product found by its ArUco tags). */
+  onOpenInspection?: (assetId: string, revisionId: string) => void;
 }
 
 /**
@@ -23,7 +26,7 @@ interface Props {
  * registration against a live camera feed. UploadModelForm lets you add
  * more assets/models without hand-writing API calls.
  */
-export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
+export function Viewer3DPage({ assets, onAssetsChanged, onOpenInspection }: Props) {
   const [selectedAssetId, setSelectedAssetId] = useState("");
   const [models, setModels] = useState<Model3DInfo[]>([]);
   const [selectedModelId, setSelectedModelId] = useState("");
@@ -196,6 +199,7 @@ export function Viewer3DPage({ assets, onAssetsChanged }: Props) {
                   partView={partView}
                   parts={parts}
                   procedureHost={procedureHost}
+                  markerPanel={(ctx) => <MarkerScanner {...ctx} onOpenInspection={onOpenInspection} />}
                 />
               )}
             </div>

@@ -52,6 +52,16 @@ class EvidenceType(str, enum.Enum):
     JSON = "json"
 
 
+class MarkerCorner(str, enum.Enum):
+    """Which corner of a product an ArUco tag is fixed to (app/models/marker_tag.py).
+    Stored as these lowercase values in marker_tags.corner."""
+
+    TOP_LEFT = "top_left"
+    TOP_RIGHT = "top_right"
+    BOTTOM_RIGHT = "bottom_right"
+    BOTTOM_LEFT = "bottom_left"
+
+
 class UserRole(str, enum.Enum):
     ADMIN = "admin"
     ENGINEER = "engineer"

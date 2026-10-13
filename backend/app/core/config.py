@@ -57,6 +57,38 @@ class Settings(BaseSettings):
     aruco_dictionary: str = "DICT_4X4_50"
     aruco_marker_length_m: float = 0.05
 
+    # ArUco product tags (app/services/markers, docs/marker-tags.md). Tags use
+    # aruco_dictionary above; a product carries four, one per corner.
+    # Single-tag product scan: frames in a row naming the same product before
+    # it is shown — 2 rides out a one-frame misread without feeling slow.
+    marker_tag_identify_frames: int = 2
+    # Four-tag tracking: consecutive frames in which the four tags AND the
+    # object inside them agree before tracking is declared — 3 frames is
+    # ~0.5-1 s at the scan's request rate.
+    marker_tag_confirm_frames: int = 3
+    # How long a locked product survives tags being covered (a hand over a
+    # corner): hidden tags are re-projected from the visible ones for up to
+    # this long, and the last object is kept while YOLO misses it.
+    marker_tag_hold_ms: float = 1500.0
+    # Visible tags needed to re-project hidden ones. Two tags give 8 corner
+    # correspondences for the homography; one tag's 4 corners make the
+    # estimate swing wildly with tiny corner noise.
+    marker_tag_min_visible_for_hold: int = 2
+    # Share of a detected object's segmentation mask that must lie inside the
+    # tag region for it to count as the object between the tags. 0.8 allows a
+    # mask that slightly overruns the tags' outer edge; an object that merely
+    # touches the region is rejected.
+    marker_tag_min_mask_inside: float = 0.8
+    # The detector also sees a band around the tag region, the region scaled
+    # up by 1 + this about its centre (0.5: a quarter of the region's size on
+    # every side). Without it, an object reaching into the region from
+    # outside is cut to the sliver inside, which then looks fully inside.
+    marker_tag_context: float = 0.5
+    # The tag region must cover at least this many tag areas — rejects four
+    # tags bunched together (or a printed sheet held far away) that cannot
+    # have an object between them.
+    marker_tag_min_region_in_tags: float = 6.0
+
     # Static file mount for served GLB/glTF models (Project.md #20, Phase 4).
     models_3d_dir: str = "../data/models"
     # FBX uploads are converted to GLB with headless Blender. Unset = look on

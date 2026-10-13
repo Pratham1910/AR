@@ -1300,3 +1300,290 @@ label {
   background: rgba(76, 141, 255, 0.12);
   pointer-events: none;
 }
+
+/* --- ArUco product tags (features/markers) --- */
+a.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 34px;
+  padding: 0 0.85rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: 500 13px var(--font);
+  text-decoration: none;
+  white-space: nowrap;
+}
+a.button:hover {
+  background: var(--surface-2);
+}
+button.link {
+  border: none;
+  background: none;
+  height: auto;
+  padding: 0;
+  color: var(--accent);
+}
+.mono {
+  font-family: var(--mono);
+}
+.tag-page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.tag-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+.tag-header h2 {
+  margin: 0 0 0.25rem;
+}
+.tag-dictionary {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 0.25rem;
+}
+.tag-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+  max-width: 520px;
+}
+.tag-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75rem;
+}
+.tag-cell {
+  display: flex;
+  gap: 0.6rem;
+  align-items: flex-end;
+  padding: 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.tag-cell .field {
+  flex: 1;
+}
+.tag-cell input {
+  width: 100%;
+}
+.tag-thumb {
+  width: 72px;
+  height: 72px;
+  display: grid;
+  place-items: center;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--muted);
+}
+.tag-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.tag-problems {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+.tag-actions,
+.product-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+.tag-preview .panel-title,
+.product-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+}
+.tag-sheet {
+  display: block;
+  max-width: 100%;
+  max-height: 520px;
+  margin: 0.75rem 0;
+  background: #fff;
+  border: 1px solid var(--border);
+}
+.tag-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.tag-table th,
+.tag-table td {
+  text-align: left;
+  padding: 0.45rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+.tag-table th {
+  color: var(--muted);
+  font-weight: 600;
+}
+.tag-table tr.selected td {
+  background: var(--accent-soft);
+}
+.row-actions {
+  display: flex;
+  gap: 0.35rem;
+  justify-content: flex-end;
+}
+.tag-single {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.tag-single img {
+  width: 140px;
+  background: #fff;
+  border: 1px solid var(--border);
+}
+.marker-layer,
+.marker-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.marker-scanner {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.marker-scanner-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+.scan-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.scan-steps > li {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid var(--border-strong);
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+.scan-steps > li.ok {
+  border-left-color: var(--ok);
+}
+.scan-steps > li.warn {
+  border-left-color: var(--warn);
+}
+.scan-steps > li.bad {
+  border-left-color: var(--bad);
+}
+.corner-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+.corner-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  padding: 0.4rem 0.5rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 12px;
+}
+.corner-name {
+  font-weight: 600;
+}
+.corner-seen {
+  border-color: var(--ok);
+  color: var(--ok);
+}
+.corner-estimated {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+.corner-missing {
+  border-color: var(--bad);
+  color: var(--bad);
+}
+.scan-debug summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+}
+.tag-hud .dot {
+  background: var(--warn);
+}
+.tag-hud-ok .dot {
+  background: var(--ok);
+}
+.tag-hud-bad .dot {
+  background: var(--bad);
+}
+.scan-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+.scan-details {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  width: 100%;
+}
+.product-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.product-panel p {
+  margin: 0.15rem 0;
+}
+.product-missing {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+.product-inline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.product-inspections {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.product-inspection {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+}

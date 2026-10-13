@@ -16,7 +16,7 @@ import numpy as np
 
 from app.services.pose.calibration import CameraCalibration
 
-_DICTIONARY_NAMES = {
+ARUCO_DICTIONARIES = {
     "DICT_4X4_50": cv2.aruco.DICT_4X4_50,
     "DICT_4X4_100": cv2.aruco.DICT_4X4_100,
     "DICT_5X5_100": cv2.aruco.DICT_5X5_100,
@@ -43,9 +43,9 @@ class ArucoPoseEstimator:
     """Detects one ArUco marker per frame and solves its 6DoF pose."""
 
     def __init__(self, dictionary_name: str, marker_length_m: float):
-        if dictionary_name not in _DICTIONARY_NAMES:
-            raise ValueError(f"Unknown ArUco dictionary {dictionary_name!r}; supported: {list(_DICTIONARY_NAMES)}")
-        self._dictionary = cv2.aruco.getPredefinedDictionary(_DICTIONARY_NAMES[dictionary_name])
+        if dictionary_name not in ARUCO_DICTIONARIES:
+            raise ValueError(f"Unknown ArUco dictionary {dictionary_name!r}; supported: {list(ARUCO_DICTIONARIES)}")
+        self._dictionary = cv2.aruco.getPredefinedDictionary(ARUCO_DICTIONARIES[dictionary_name])
         self._detector_params = cv2.aruco.DetectorParameters()
         self._detector = cv2.aruco.ArucoDetector(self._dictionary, self._detector_params)
         self._marker_length_m = marker_length_m
@@ -57,6 +57,16 @@ class ArucoPoseEstimator:
             [[-half, half, 0], [half, half, 0], [half, -half, 0], [-half, -half, 0]],
             dtype=np.float64,
         )
+
+    def detect_markers(self, frame: np.ndarray) -> list[tuple[int, np.ndarray]]:
+        """Every marker in the frame as (id, 4x2 pixel corners), corners in
+        cv2.aruco's order (top-left, top-right, bottom-right, bottom-left of
+        the printed tag). Same detector and dictionary as estimate()."""
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+        corners, ids, _ = self._detector.detectMarkers(gray)
+        if ids is None:
+            return []
+        return [(int(i), c.reshape(4, 2).astype(np.float64)) for i, c in zip(ids.flatten(), corners)]
 
     def estimate(
         self, frame: np.ndarray, calibration: CameraCalibration, target_marker_id: int | None = None

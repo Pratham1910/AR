@@ -333,3 +333,140 @@ export interface FeaturePoseResponse {
   rotation_deg: RotationDeg | null;
   axes: PoseAxes | null;
 }
+
+// ArUco product tags — backend app/api/marker_tags.py, docs/marker-tags.md.
+export type TagCorner = "top_left" | "top_right" | "bottom_right" | "bottom_left";
+
+export interface TagConfig {
+  dictionary: string;
+  dictionary_size: number;
+  supported_dictionaries: string[];
+  used_ids: number[];
+  free_ids: number;
+  identify_frames: number;
+  confirm_frames: number;
+  hold_ms: number;
+}
+
+export interface TagSet {
+  asset_id: string;
+  asset_name: string;
+  dictionary: string;
+  top_left: number;
+  top_right: number;
+  bottom_right: number;
+  bottom_left: number;
+  detection_class: string | null;
+  model_name: string | null;
+  has_model_procedure: boolean;
+  procedure_count: number;
+}
+
+export type TagSetIds = Record<TagCorner, number>;
+
+export interface ProductModel {
+  id: string;
+  name: string;
+  url: string;
+  scale: number;
+}
+
+export interface ProductProcedure {
+  id: string;
+  procedure_id_str: string;
+  title: string;
+  published_revision_id: string | null;
+  step_count: number;
+}
+
+export interface TagProduct {
+  asset_id: string;
+  asset_name: string;
+  description: string | null;
+  detection_class: string | null;
+  model: ProductModel | null;
+  procedure_model: ProductModel | null;
+  procedure_title: string | null;
+  procedures: ProductProcedure[];
+}
+
+export interface ScannedTag {
+  marker_id: number;
+  corners_px: Vector2[];
+  asset_id: string | null;
+  asset_name: string | null;
+  corner: TagCorner | null;
+  estimated: boolean;
+}
+
+export type IdentifyState = "NO_MARKERS" | "UNKNOWN_MARKERS" | "AMBIGUOUS" | "IDENTIFYING" | "IDENTIFIED";
+
+export interface IdentifyResponse {
+  state: IdentifyState;
+  message: string;
+  identified: boolean;
+  tags: ScannedTag[];
+  candidate_asset_id: string | null;
+  candidate_asset_name: string | null;
+  stable_frames: number;
+  required_frames: number;
+  product: TagProduct | null;
+  frame_width: number;
+  frame_height: number;
+}
+
+export type TagTrackState =
+  | "NO_MARKERS"
+  | "UNKNOWN_MARKERS"
+  | "DUPLICATE_MARKERS"
+  | "INCOMPLETE"
+  | "MIXED_PRODUCTS"
+  | "MULTIPLE_PRODUCTS"
+  | "LAYOUT_INVALID"
+  | "OBJECT_NOT_FOUND"
+  | "WRONG_OBJECT"
+  | "VERIFYING"
+  | "TRACKING";
+
+export interface RegionObject {
+  class_label: string;
+  confidence: number;
+  bbox: [number, number, number, number];
+  polygon: Vector2[];
+  inside: number;
+  held: boolean;
+}
+
+export interface CornerStatus {
+  corner: TagCorner;
+  marker_id: number;
+  status: "seen" | "estimated" | "missing";
+  center_px: Vector2 | null;
+}
+
+export interface TagTrackResponse {
+  state: TagTrackState;
+  message: string;
+  tracking: boolean;
+  asset_id: string | null;
+  asset_name: string | null;
+  tags: ScannedTag[];
+  corners: CornerStatus[];
+  arrangement: "valid" | "invalid" | "incomplete" | null;
+  arrangement_problem: string | null;
+  missing_corners: TagCorner[];
+  estimated_corners: TagCorner[];
+  region: Vector2[] | null;
+  search_rect: [number, number, number, number] | null;
+  search_area: Vector2[] | null;
+  expected_class: string | null;
+  object: RegionObject | null;
+  rejected: RegionObject[];
+  stable_frames: number;
+  required_frames: number;
+  product: TagProduct | null;
+  frame_width: number;
+  frame_height: number;
+  markers_ms: number;
+  yolo_ms: number | null;
+}

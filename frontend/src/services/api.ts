@@ -17,6 +17,11 @@ import type {
   ProcedureSummary,
   RegisterReferenceImageResponse,
   StepValidationResponse,
+  TagConfig,
+  TagSet,
+  TagSetIds,
+  IdentifyResponse,
+  TagTrackResponse,
 } from "../types";
 import type { ProcedurePackage } from "../features/viewer3d/procedure";
 
@@ -221,4 +226,37 @@ export const VisionApi = {
 
   // Drops the session's tracking state; the next frame starts SEARCHING.
   endArSession: (sessionId: string) => api.delete(`/api/vision/ar-session/${sessionId}`).then(() => undefined),
+};
+
+// ArUco product tags: four tags per product (top-left … bottom-left), the
+// single-tag product scan and four-tag tracking. Backend app/api/marker_tags.py.
+export const MarkerTagsApi = {
+  config: () => api.get<TagConfig>("/api/marker-tags/config").then((r) => r.data),
+  sets: () => api.get<TagSet[]>("/api/marker-tags/sets").then((r) => r.data),
+  suggest: (assetId?: string) =>
+    api
+      .get<{ dictionary: string; ids: number[] }>("/api/marker-tags/suggest", { params: assetId ? { asset_id: assetId } : {} })
+      .then((r) => r.data),
+  saveSet: (assetId: string, ids: TagSetIds) => api.put<TagSet>(`/api/marker-tags/sets/${assetId}`, ids).then((r) => r.data),
+  removeSet: (assetId: string) => api.delete(`/api/marker-tags/sets/${assetId}`).then(() => undefined),
+  // Image URLs (for <img>, download links and printing).
+  tagPngUrl: (markerId: number, options: { sizePx?: number; download?: boolean } = {}) =>
+    resolveApiUrl(
+      `/api/marker-tags/markers/${markerId}.png?size_px=${options.sizePx ?? 400}${options.download ? "&download=true" : ""}`
+    ),
+  sheetPngUrl: (assetId: string, options: { sizePx?: number; download?: boolean; bust?: string } = {}) =>
+    resolveApiUrl(
+      `/api/marker-tags/sets/${assetId}/sheet.png?size_px=${options.sizePx ?? 400}${options.download ? "&download=true" : ""}` +
+        (options.bust ? `&v=${encodeURIComponent(options.bust)}` : "")
+    ),
+  identify: (sessionId: string, imageBase64: string) =>
+    api
+      .post<IdentifyResponse>("/api/marker-tags/identify", { session_id: sessionId, image_base64: imageBase64 })
+      .then((r) => r.data),
+  endIdentify: (sessionId: string) => api.delete(`/api/marker-tags/identify/${sessionId}`).then(() => undefined),
+  track: (sessionId: string, imageBase64: string) =>
+    api
+      .post<TagTrackResponse>("/api/marker-tags/track", { session_id: sessionId, image_base64: imageBase64 })
+      .then((r) => r.data),
+  endTrack: (sessionId: string) => api.delete(`/api/marker-tags/track/${sessionId}`).then(() => undefined),
 };

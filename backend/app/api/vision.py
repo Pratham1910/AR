@@ -126,6 +126,18 @@ def detectable_classes() -> list[str]:
     return _get_segmenter().class_names
 
 
+def detect_aruco_markers(frame_bgr: np.ndarray) -> list[tuple[int, np.ndarray]]:
+    """Every ArUco marker in the frame, from the same detector /pose uses.
+    Public for the product-tag module (app/api/marker_tags.py)."""
+    return _pose_estimator.detect_markers(frame_bgr)
+
+
+def segment_objects(frame_bgr: np.ndarray) -> list[SegmentedObject]:
+    """The AR object finder's segmentation of a frame (same weights and
+    threshold as /segment and the AR session). Public for app/api/marker_tags.py."""
+    return _get_segmenter().segment(frame_bgr, _settings.segmentation_confidence_threshold)
+
+
 def normalize_class_label(label: str) -> str:
     """Case-insensitive match to a detectable class, or a 400 listing the choices."""
     classes = detectable_classes()

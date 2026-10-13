@@ -2,10 +2,11 @@ import { useEffect, useState } from "react";
 import { AssetsApi, ProceduresApi } from "./services/api";
 import { InspectionRunner } from "./features/inspection/InspectionRunner";
 import { Viewer3DPage } from "./features/viewer3d/Viewer3DPage";
+import { MarkerTagsPage } from "./features/markers/MarkerTagsPage";
 import type { Asset, Procedure } from "./types";
 import "./App.css";
 
-type Tab = "inspection" | "3d";
+type Tab = "inspection" | "3d" | "tags";
 
 export default function App() {
   const [tab, setTab] = useState<Tab>("inspection");
@@ -47,6 +48,9 @@ export default function App() {
           </button>
           <button className={tab === "3d" ? "active" : ""} onClick={() => setTab("3d")}>
             3D &amp; AR workspace
+          </button>
+          <button className={tab === "tags" ? "active" : ""} onClick={() => setTab("tags")}>
+            ArUco tags
           </button>
         </nav>
       </header>
@@ -97,12 +101,28 @@ export default function App() {
           )}
 
           {running && selectedAssetId && selectedRevisionId && (
-            <InspectionRunner assetId={selectedAssetId} procedureRevisionId={selectedRevisionId} />
+            <InspectionRunner
+              key={`${selectedAssetId}:${selectedRevisionId}`}
+              assetId={selectedAssetId}
+              procedureRevisionId={selectedRevisionId}
+            />
           )}
         </>
       )}
 
-      {tab === "3d" && <Viewer3DPage assets={assets} onAssetsChanged={refreshAssets} />}
+      {tab === "3d" && (
+        <Viewer3DPage
+          assets={assets}
+          onAssetsChanged={refreshAssets}
+          onOpenInspection={(assetId, revisionId) => {
+            setSelectedAssetId(assetId);
+            setSelectedRevisionId(revisionId);
+            setRunning(true);
+            setTab("inspection");
+          }}
+        />
+      )}
+      {tab === "tags" && <MarkerTagsPage assets={assets} />}
     </div>
     </>
   );

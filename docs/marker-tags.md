@@ -1,229 +1,242 @@
-# ArUco product tags (four corners + YOLO verification)
+# ArUco product tags
 
-A product is identified by **four printed ArUco tags, one per corner**, and
-the identification is accepted only if the object detector also sees that
-product's own class at the tags.
+A product carries **four printed ArUco tags, one on each corner, placed around
+the physical object**. The tags are used in two separate ways:
+
+| | **Identify by one tag** | **Four-tag scan** |
+|---|---|---|
+| Needs in view | Any **one** of the product's tags | All **four** tags, on their registered corners |
+| Answers | Which product is this? | Which object is physically between the tags, and where? |
+| Object detection | None | YOLO segmentation, restricted to the area the tags enclose |
+| Endpoint | `POST /api/marker-tags/identify` | `POST /api/marker-tags/track` |
+| Started by | *Identify by one tag* | **▶ Start scanning** |
+| Result | Product → **View 3D model** / **View procedure** | Region, the object's mask and box, tracking state, and the product with the same actions |
+
+They share the tag mapping and the camera and nothing else: separate
+endpoints, sessions and thresholds.
 
 ```
-camera frame
-   │  ArUco detector (the one /api/vision/pose uses)
+camera frame (browser camera, AR tracking → ArUco marker)
+   │  ArUco detector (the same one /api/vision/pose uses), plain + contrast-equalized pass
    ▼
-tag ids + pixel corners ──► marker_tags table: id → (product, corner)
+tag ids + their 4 pixel corners ──► marker_tags table: id → (product, corner)
    │
-   ▼  identification.py   one product, all four tags, corners in registered order, plausible layout
-candidate product + region (outline around the four tags)
-   │  everything outside the region is blanked; YOLO (yolov8n-seg, the AR
-   │  object finder) runs on that crop only — and only at this point
-   ▼  verification.py     product's detection class found inside the region
-verified this frame ──► same result for 3 consecutive frames ──► CONFIRMED
+   ├─ one mapped tag ──────────────────────────────► product (scan)
    │
-   ▼
-Asset → newest Model3D (+ its Vishwa procedure) and the asset's inspection procedures
+   └─ all four of one product, clockwise TL→TR→BR→BL, enclosing a real area
+        │  region = quadrilateral through each tag's outermost corner
+        ▼
+      YOLO segmentation (the AR modes' yolov8n-seg) on region + context band;
+      everything farther away is blanked to gray before the model runs
+        │  each mask measured against the quadrilateral: ≥ 80 % inside to count
+        ▼
+      object inside the tags ──► 3 agreeing frames ──► TRACKING
+        (a covered tag is re-projected from the visible ones for 1.5 s;
+         a missed detection keeps the last object for 1.5 s)
 ```
 
 ## Using it
 
-### 1. Give the product a detection class
+### 1. Map and print the tags — navbar → **ArUco tags**
 
-The class YOLO must see is the product's **detection class**, set when a 3D
-model is uploaded or later in *3D & AR workspace → Model settings*. Without
-one, the tags are recognized but the product is never confirmed
-(`CANNOT_VERIFY`). It must be a class the detector knows
-(`GET /api/vision/classes`; the stock model has the 80 COCO classes).
+1. Pick the product (an existing asset; upload a 3D model or create a
+   procedure for it elsewhere as usual).
+2. **Suggest free ids** fills four unused ids; or type your own. Each corner
+   shows a preview of its tag.
+3. **Save mapping**. Refused with a message: an id already on another
+   product, the same id on two corners, an id outside the dictionary.
+4. **Sheet** shows the four tags in their corner positions: **Download sheet**,
+   **Print sheet**, or download each tag. *Single tag* prints any id.
+5. Print at 100 %. Cut each tag out with its white margin (the detector needs
+   it), keep it upright as printed, and fix it to the corner named under it,
+   **around** the object, all four facing the camera.
 
-### 2. Generate and map tags — navbar → **ArUco tags**
+The table lists every tagged product with its ids, the object class tracking
+will look for, and what it can open; **Edit** loads a set into the form,
+**Delete** removes it. Mappings are rows in `marker_tags`, so they survive
+restarts; every change is written to the audit log.
 
-1. Pick the product.
-2. **Suggest free ids** fills in four unused ids (or type your own).
-3. **Save mapping**. Clashes are refused: an id already on another product,
-   the same id on two corners, an id outside the dictionary.
-4. Download each tag, or **all four as one sheet**, as PNG.
-5. Print at 100% with the white margin intact. Fix each tag to the corner
-   named under it, upright as printed, all on one face so the camera can see
-   the four together. They can be on the product's corners or on a mat or
-   fixture around it.
+### 2. The object class (optional)
 
-The table below the form lists every tagged product with its ids, YOLO class
-and model; *Edit* loads a set back into the form, *Remove* deletes it.
+Four-tag tracking looks for the product's **detection class** — set when its
+3D model is uploaded or in *3D & AR workspace → Model settings*. With one set
+(e.g. `bottle`), only that class between the tags counts; any other object
+there is reported as `WRONG_OBJECT`. Without one, the most prominent object
+between the tags is taken and its class reported.
 
 ### 3. Use the tags — **3D & AR workspace → AR tracking → ArUco marker**
 
-Open any asset that has a 3D model to get to the camera and choose the
-**ArUco marker** tab. It has two separate modes; starting one stops the other.
+Open any asset that has a 3D model (the camera view lives in the AR tracking
+page) and choose **ArUco marker**:
 
-| | **Start product scan** | **Start live tracking** |
-|---|---|---|
-| Purpose | Open a product's 3D model or procedure | Track the physical product and overlay its model |
-| Needs | **Any one** registered tag | **All four** tags of one product, on their corners |
-| YOLO | Not used | Must find the product's class **inside** the four tags |
-| Backend | `POST /api/marker-tags/identify` | `POST /api/marker-tags/scan`, then `POST /api/vision/pose` |
-| Proves | Which product the tag belongs to | That the product is physically there |
+- **▶ Start scanning** (the main button under the video) runs the four-tag
+  scan. One click is all it takes: every frame the tags are read, their
+  arrangement is checked, and as soon as it is valid the object detector runs
+  on the region between them; after three agreeing frames the state becomes
+  *Tracking* by itself. The panel under the video shows each step — the four
+  corners with their registered id, ✓ detected / ~ covered / ✕ missing and
+  pixel position; whether the arrangement is valid (and why not); what the
+  detector found inside; and the tracking state — and a pill on the video
+  shows the current state.
+- **Identify by one tag** (in that panel) is the separate lookup: any one
+  registered tag names its product.
+- **Single-marker pose** and **Detect & align** are the 6DoF pose of one
+  marker (`/api/vision/pose`, first marker only). They are *not* the product
+  scan; before this change the pose loop was the mode's only "Start" button,
+  which is why a scan could run for minutes without ever looking for four
+  tags.
 
-**Product scan.** Show one tag. After two agreeing frames the product's name
-appears with **View 3D model** and **View procedure**. Both open **in place,
-directly below the scan panel** — nothing navigates, and the scanner, its
-controls and the identified product stay on screen:
+On the video: the boundary through the four tags (cyan when it is the
+detection region, red dashed when the arrangement is wrong), each tag
+(green: this product's; amber: another product's; red: unmapped; dashed:
+covered, position estimated), the object's segmentation mask and box with the
+share of it inside the region, and objects seen but rejected (red dashed,
+"outside"). Everything the detector was not given is dimmed.
 
-- *View 3D model* shows the product's newest model in the application's own
-  viewer (`ThreeViewer`: orbit, zoom, pan, click a part).
-- *View procedure* shows the procedure attached to that model in the
-  application's own player (`ProcedurePanel`), together with the model it
-  animates. A product's inspection procedures are listed there too; running
-  one needs its own camera view, so that opens the Procedure inspection tab,
-  only when its button is pressed.
-- The two can be switched freely (the model is not reloaded), and *Hide*
-  closes the view. A product with no model or no procedure gets a message
-  saying so.
+**Debugging without being able to see the screen:** the panel's *Debug*
+section lists every tag read in the last frame (id, product, corner, centre in
+pixels) and the frame size and timings, and the server logs one line per
+state change:
 
-The inline view (`ProductInlineView.tsx`) has its own `ProcedureHost`, so
-playing a step there never moves the model in the AR view above. An unmapped
-tag selects nothing; tags of two products at once are reported as ambiguous
-rather than picked between. This is a lookup only — it says nothing about
-what is in front of the camera.
+```bash
+docker compose logs backend | grep four-tag
+# four-tag tags-…: INCOMPLETE | tags read [0, 1, 3] | BOTTLE-001: 3 of 4 tags in view — missing bottom-right.
+```
 
-**Live tracking.** Every frame goes through the strict check below. Only
-while it is `CONFIRMED` is the 3D model placed, using the tab's existing
-marker pose and *Model alignment* on the product's top-left tag; anything
-less hides the model and shows why. If the confirmed product is not the one
-whose model is loaded, its model is loaded and tracking resumes (and
-re-confirms) automatically. The video shows each tag (green: the candidate
-product's, amber: another product's, red: unmapped; dashed: held from a
-moment ago), the area the four tags enclose, and what YOLO found. While YOLO
-is running, everything outside the tags is dimmed and the enclosed area is
-labelled *YOLO search area* — that is literally all the detector is given.
+The product card offers **View 3D model** (the product's newest model, in the
+application's `ThreeViewer`) and **View procedure** (the procedure attached to
+its model, in the application's `ProcedurePanel` with the model it animates),
+both opened below the scanner without leaving the page. The product's
+inspection procedures are listed there with **Run inspection**, which opens the
+Procedure inspection tab with that procedure selected (it needs its own camera
+view). An action the product cannot offer is disabled and the card says why.
 
-The two modes share the camera feed and the tag mapping, and nothing else:
-separate endpoints, separate sessions and thresholds
-(`MARKER_TAG_IDENTIFY_FRAMES` vs `MARKER_TAG_CONFIRM_FRAMES`). Loosening the
-product scan cannot loosen tracking; `test_what_satisfies_the_lookup_never_satisfies_tracking`
-pins that.
+Only one of scanning, identifying and the single-marker pose runs at a time;
+starting one stops the others.
 
-Live tracking states:
+### Tracking states
 
 | State | Meaning |
 |---|---|
-| `NO_MARKERS` / `UNKNOWN_MARKERS` | Nothing in view / tags not assigned to any product |
+| `NO_MARKERS` / `UNKNOWN_MARKERS` | No tags / tags not mapped to any product |
+| `DUPLICATE_MARKERS` | A mapped id appears twice in the frame |
 | `INCOMPLETE` | Some of one product's tags; the missing corners are named |
-| `MIXED_PRODUCTS` | Tags of different products with no complete set, or a foreign tag inside a set |
-| `MULTIPLE_PRODUCTS` | Two or more complete sets in view — show one at a time |
-| `DUPLICATE_MARKERS` | The same tag id twice in the frame |
-| `LAYOUT_INVALID` | All four tags, but not on their registered corners / implausible geometry |
-| `CANNOT_VERIFY` | Product has no detection class, or one the detector doesn't know |
-| `WRONG_OBJECT` | A different class is inside the tags, the expected one is not |
-| `OBJECT_NOT_FOUND` | Nothing detected inside the tags (an object elsewhere in view is not looked at) |
-| `VERIFYING` | Tags and YOLO agree; counting consecutive frames |
-| `CONFIRMED` | Product identified |
+| `MIXED_PRODUCTS` | Tags of several products without a complete set, or another product's tag inside the set |
+| `MULTIPLE_PRODUCTS` | Two complete sets in view |
+| `LAYOUT_INVALID` | Four tags, but not on their registered corners, or bunched together with no room for an object |
+| `OBJECT_NOT_FOUND` | Valid region, nothing detected inside it |
+| `WRONG_OBJECT` | Something other than the product's detection class is inside |
+| `VERIFYING` | Object found inside; counting consecutive frames |
+| `TRACKING` | Tags and object agree; product card shown |
 
-Only `CONFIRMED` places the model. Product scan states: `NO_MARKERS`,
-`UNKNOWN_MARKERS`, `AMBIGUOUS`, `IDENTIFYING`, `IDENTIFIED`.
+Product scan states: `NO_MARKERS`, `UNKNOWN_MARKERS`, `AMBIGUOUS` (tags of two
+products), `IDENTIFYING`, `IDENTIFIED`.
 
-## How it decides
+## How the region and the object are found
 
-- **Identity** needs all four tags of one product. Tags of two products are
-  never combined; a complete set is still accepted with another product's tag
-  elsewhere in view, but not with one inside its four corners.
-- **Corner arrangement**: walking top-left → top-right → bottom-right →
-  bottom-left must turn clockwise at every corner. That is true at any
-  rotation or tilt and false if two tags are swapped or the set is mirrored.
-- **Spatial consistency** (ratios, so distance doesn't matter): tag sizes
-  within 2.5× of each other, opposite edges within 2.5×, shortest edge at
-  least 1.5 tag sides.
-- **Detection region**: the convex outline around all 16 corners of the
-  four tags (`identification.enclosed_region`) — from the tags' outer edges
-  inward, following the product's rotation and tilt.
-- **YOLO sees only that region** (`verification.crop_to_region`): the frame
-  is cropped to the region's bounding rectangle and every pixel outside the
-  region itself is set to neutral gray before the model runs. Detections are
-  then mapped back to frame coordinates. An object anywhere else in the
-  camera view is never detected, so it can neither verify nor contradict.
-- **Inside test**: independently of the crop, at least 60% of a detected
-  object's box must lie inside the region (`MARKER_TAG_MIN_INSIDE`). A large
-  object that merely contains the tagged area does not count.
-- **Robustness**: detection runs on the frame and on a contrast-equalized
-  copy (shadow, uneven light); a tag lost briefly is held for 600 ms and
-  flagged; confirmation needs 3 consecutive verified frames.
+- **Region.** The four tags' centres must run clockwise top-left → top-right →
+  bottom-right → bottom-left (true at any rotation or perspective, false if two
+  tags are swapped or the set is mirrored), and enclose at least six tag
+  areas. The region's vertices are each tag's **outermost detected corner**,
+  so it is a true quadrilateral that follows perspective — not the bounding
+  box of the tags — and the tags lie inside it
+  (`services/markers/geometry.py`).
+- **What YOLO sees.** The region scaled up by 1.5 about its centre (a band
+  of a quarter of its size on each side), cropped to its bounding rectangle,
+  with everything outside that blanked to the gray YOLO pads with
+  (`region_detection.masked_crop`). Objects farther away are never seen.
+  The band is there so an object that only *reaches into* the region is seen
+  whole and can be rejected; blanking exactly at the edge would cut it down to
+  the sliver inside, which would then look entirely inside.
+- **Which object counts.** Each detection's segmentation mask is rasterized
+  against the quadrilateral; it counts only if at least 80 % of it is inside
+  (`MARKER_TAG_MIN_MASK_INSIDE`). Everything else is returned in `rejected`.
+  Coordinates are mapped back to the full frame by the crop's offset — a pure
+  translation, so masks line up with the video exactly.
+- **No perspective rectification.** Warping the region to a rectangle would
+  distort the object into a shape the COCO-trained model has not seen; the
+  mask-against-quadrilateral test already handles perspective.
+- **Continuity** (`services/markers/tracking.py`). Tracking starts only after
+  3 consecutive frames in which the four tags and the object agree, and only
+  from four tags actually read. While tracking, a covered tag is re-projected:
+  the homography from the visible tags' corners at the last full read to their
+  corners now is applied to the covered tag's last corners. That needs at
+  least 2 visible tags and lasts at most 1.5 s after the last full read. A
+  frame in which YOLO misses the object keeps the last object for 1.5 s,
+  flagged `held`.
 
-Settings (`app/core/config.py`): `MARKER_TAG_HOLD_MS`,
-`MARKER_TAG_CONFIRM_FRAMES`, `MARKER_TAG_MAX_SIZE_RATIO`,
-`MARKER_TAG_MAX_OPPOSITE_SIDE_RATIO`, `MARKER_TAG_MIN_SIDE_IN_TAGS`,
-`MARKER_TAG_MIN_INSIDE`. Tags use `ARUCO_DICTIONARY`.
+Settings (`app/core/config.py`): `MARKER_TAG_IDENTIFY_FRAMES` (2),
+`MARKER_TAG_CONFIRM_FRAMES` (3), `MARKER_TAG_HOLD_MS` (1500),
+`MARKER_TAG_MIN_VISIBLE_FOR_HOLD` (2), `MARKER_TAG_MIN_MASK_INSIDE` (0.8),
+`MARKER_TAG_CONTEXT` (0.5), `MARKER_TAG_MIN_REGION_IN_TAGS` (6). Tags use
+`ARUCO_DICTIONARY` (default `DICT_4X4_50`).
 
 ## Code
 
 | Piece | Where |
 |---|---|
-| Table `marker_tags` (id → product corner; unique per dictionary+id and per product+corner) | `app/models/marker_tag.py`, migration `0005` |
-| Tag detection (two-pass) and printable PNGs | `app/services/markers/tags.py` |
-| Product identification and layout check | `app/services/markers/identification.py` |
-| YOLO verification | `app/services/markers/verification.py` |
-| Held tags and confirmation streak | `app/services/markers/scan_session.py` |
-| Mapping rules | `app/services/markers/registry.py` |
-| API | `app/api/marker_tags.py`, schemas `app/schemas/marker_tag.py` |
-| Product lookup by one tag | `lookup_product_by_tag` in `app/services/markers/identification.py` |
+| Table `marker_tags` (unique per dictionary + id, and per product + corner) | `app/models/marker_tag.py`, migration `0005` |
+| `MarkerCorner` | `app/models/enums.py` |
+| Reading tags (two passes, duplicates) and printable PNGs | `app/services/markers/tags.py` |
+| Region geometry, inside tests | `app/services/markers/geometry.py` |
+| One-tag lookup, four-tag set validation | `app/services/markers/identification.py` |
+| Object inside the region | `app/services/markers/region_detection.py` |
+| Confirmation, covered tags, held object | `app/services/markers/tracking.py` |
+| Mapping rules | `app/services/markers/mapping.py` |
+| API + schemas | `app/api/marker_tags.py`, `app/schemas/marker_tag.py` |
+| Detector / segmenter access | `ArucoPoseEstimator.detect_markers`, `detect_aruco_markers` and `segment_objects` in `app/api/vision.py` |
 | Management page | `frontend/src/features/markers/MarkerTagsPage.tsx` |
-| Marker tab: coordinator, product scan, inline model/procedure view, live tracking, drawing | `MarkerTab.tsx`, `ProductScanPanel.tsx`, `ProductInlineView.tsx`, `TagTrackingPanel.tsx`, `scanOverlay.ts` in the same folder |
+| Scanner, product card, overlay | `MarkerScanner.tsx`, `ProductPanel.tsx`, `overlay.ts` (same folder), plugged into `RegistrationOverlay` via its `markerPanel` prop |
 | Tests | `tests/backend/test_marker_tags.py` |
 
 ### API (`/api/marker-tags`)
 
 | Method | Path | |
 |---|---|---|
-| GET | `/config` | Dictionary, size, used ids |
-| GET | `/suggest?asset_id=` | Four free ids (409 if fewer than four are left) |
+| GET | `/config` | Dictionary, its size, supported dictionaries, used ids, thresholds |
+| GET | `/suggest?asset_id=` | Four free ids (409 if fewer are left) |
 | GET | `/sets` | All tagged products |
 | PUT | `/sets/{asset_id}` | Assign or replace a product's four tags (400 invalid, 409 clash) |
 | DELETE | `/sets/{asset_id}` | Remove a product's tags |
-| GET | `/markers/{id}.png?size_px=` | One tag |
-| GET | `/sets/{asset_id}/sheet.png?size_px=` | The four tags on one page |
-| POST | `/identify` | Product scan, one frame: any one registered tag → product |
-| DELETE | `/identify/{session_id}` | Forget a product scan's streak |
-| POST | `/scan` | Live tracking, one frame: `{image_base64, session_id}` → state, tags, region, verification, product |
-| DELETE | `/scan/{session_id}` | Forget a tracking session's held tags and streak |
-
-Changes to existing code are additive: `ArucoPoseEstimator.detect_markers()`
-and two helpers in `app/api/vision.py` expose the existing detector and
-segmenter; `RegistrationOverlay` gained three optional props (`initialMode`,
-`initialLiveTracking`, `markerPanel`); with `markerPanel` given, the marker
-tab's "Start live tracking" is run by that panel instead of the built-in
-single-marker loop ("Detect & align" still uses the built-in one). No
-existing endpoint or response changed.
+| GET | `/markers/{id}.png?size_px=&download=` | One tag (inline, or as a download) |
+| GET | `/sets/{asset_id}/sheet.png?size_px=&download=` | The product's four tags on one page |
+| POST | `/identify` | `{session_id, image_base64}` → product scan state and product |
+| DELETE | `/identify/{session_id}` | End a scan session |
+| POST | `/track` | `{session_id, image_base64}` → tags, region, search area, object, rejected objects, state, product |
+| DELETE | `/track/{session_id}` | End a tracking session |
 
 ## Limitations
 
-- **Identification is 2D.** It works in image pixels and needs no camera
-  calibration and no per-product calibration. It does not measure distance.
-- **3D pose** in the marker tab is still the existing single-marker solve
-  (`/api/vision/pose`), now pointed at the product's top-left tag. Its
-  accuracy depends on `ARUCO_MARKER_LENGTH_M` matching the printed tag size
-  and on a real camera calibration (`CAMERA_CALIBRATION_PATH`); without one
-  the response is flagged `calibration_is_approximate`. The model sits on
-  that tag until aligned once with the tab's *Model alignment* controls. A
-  pose from all four tags would need their physical spacing per product,
-  which is not stored.
-- **The product must sit inside its tags.** Because the detector only sees
-  the enclosed area, put the tags at or beyond the product's extremities (on
-  its outer corners, or on a mat/fixture around it). A product that extends
-  well past its tags is cut off in what YOLO sees and may not be recognized.
-  The region is 2D: anything visible *through* it in the image — an object
-  behind or in front of the product — is inside it as far as the camera can
-  tell.
-- **YOLO classes**: the stock model knows COCO classes (bottle, cup, …), not
-  industrial parts. Such a product needs custom weights
-  (`SEGMENTATION_MODEL_NAME`) with a class for it. Several products sharing
-  one class are told apart by their tags only.
-- **Occlusion**: a tag must be fully visible to be read. A missing tag is
-  bridged for 600 ms, never guessed; three tags do not identify a product.
-- **Capacity**: `DICT_4X4_50` has 50 ids = 12 products. A larger dictionary
-  (`DICT_6X6_250`) gives 62; mappings are per dictionary, so switching means
-  re-mapping and re-printing.
-- **Viewing side**: seen mirrored or from behind (tags on glass), the
-  layout check rejects the set.
+- **No 6DoF object pose.** Four-tag tracking identifies the product and
+  locates and segments the object in the image (2D). It does not estimate the
+  object's 3D position or orientation, and nothing here places the 3D model
+  on the object. For a pose use *Detect & align* (one marker), Model-based
+  (CAD) or Markerless tracking.
+- **The object must sit between its tags.** Put them at or beyond the
+  object's outer corners. A part of the object outside the region counts
+  against it (80 % must be inside), so tags placed too tightly can reject the
+  real object. The region is 2D: anything visible *through* it — in front of
+  or behind the product — is inside it as far as the camera can tell.
+- **Occlusion.** A tag must be fully visible to be read. While tracking, up
+  to two covered tags are bridged for 1.5 s from the others; tracking never
+  starts from fewer than four read tags. The re-projection assumes the tags
+  move together (a rigid product); it drifts if the product bends or the
+  camera moves a lot while a tag is covered.
+- **Perspective.** Steep viewing angles shrink the tags until the detector
+  cannot read them; the region itself handles perspective. Seen mirrored or
+  from behind (tags on glass), the corner order check rejects the set.
+- **Segmentation.** The stock `yolov8n-seg.pt` knows the 80 COCO classes
+  (bottle, cup, person, …), not industrial parts; such products need custom
+  weights (`SEGMENTATION_MODEL_NAME`). An object YOLO cannot segment is
+  `OBJECT_NOT_FOUND` even if it is there. Masks are approximate at the edges.
+- **Capacity.** `DICT_4X4_50` has 50 ids = 12 products. Mappings are per
+  dictionary: switching `ARUCO_DICTIONARY` means re-mapping and re-printing.
+- **Sessions are in server memory** like the other AR sessions: single uvicorn
+  worker, and a reload restarts any confirmation in progress.
 - **Access**: the mapping endpoints are unauthenticated, like the asset and
-  model endpoints; changes are written to the audit log without a user.
-- **Scan state is in server memory** (as AR sessions are): single worker, and
-  a reload restarts any confirmation in progress.
-- To reach the scan you must first open an asset that has a 3D model, since
-  the camera view lives inside the AR tracking page.
-- Verified with synthetic frames and a real photo through the real detector;
-  **not yet tried with printed tags and a physical camera** (this machine has
-  no camera device).
+  model endpoints beside them; changes are audited without a user.
+- **Verified with**: unit tests on synthetic frames read by the real ArUco
+  detector; API tests against PostgreSQL; the real YOLO model on a photo with
+  four tags around one of several people; and the full UI in Chromium with a
+  fake camera playing that photo. **Not yet verified with printed tags in
+  front of a physical camera** — this machine has no camera.

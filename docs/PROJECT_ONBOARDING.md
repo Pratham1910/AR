@@ -49,7 +49,7 @@ backend/
       auth.py  assets.py  procedures.py  inspection.py  evidence.py
       vision.py        detection, tracking, pose, AR session (HTTP + WebSocket), clips
       models3d.py      GLB upload/registry, parts, presence calibration, fit check, QA inspect, procedures
-      marker_tags.py   four-corner ArUco product tags: mapping, printable tags, scan
+      marker_tags.py   four-corner ArUco product tags: mapping, printable tags, identify, track
       video.py  metrology.py  deps.py (get_current_user, require_role)
     models/            SQLAlchemy models + enums.py (shared vocabulary)
     schemas/           Pydantic contracts shared across routers/services
@@ -66,7 +66,7 @@ frontend/
     components/        Camera select/status, class select
     features/inspection/InspectionRunner.tsx
     features/viewer3d/ Viewer3DPage, ThreeViewer, RegistrationOverlay (AR, ~1500 lines), panels
-    features/markers/  MarkerTagsPage (navbar "ArUco tags"), ProductScanPanel (ArUco marker tab)
+    features/markers/  MarkerTagsPage (navbar "ArUco tags"), MarkerScanner + ProductPanel (ArUco marker tab)
 pose_service/          Standalone MegaPose server (not part of the backend venv)
 tests/backend/         pytest suite (run from backend/, see pytest.ini)
 data/
@@ -141,7 +141,7 @@ Roles: `admin`, `engineer`, `technical_author`, `qa_inspector`, `maintainer`,
 | `/api/inspection` | `start`, `/{id}`, `step/{id}/observe`, `validate`, `override` (role-gated), `complete` |
 | `/api/vision` | `classes`, `detect`, `track`, `state`, `segment`, `pose` (ArUco), `reference-image` + `feature-pose`, `object-registration`, `ar-session/frame`, `ar-session/stream` (WebSocket), `clips`, `debug-frame` |
 | `/api/models3d` | List/register/upload/delete, settings, anchor, parts, presence calibration, per-model procedure, `fit-check`, `qa-inspect` |
-| `/api/marker-tags` | Four ArUco tags per product: `config`, `suggest`, `sets`, tag/sheet PNGs, `scan` (tags → YOLO-verified product) |
+| `/api/marker-tags` | Four ArUco tags per product: `config`, `suggest`, `sets`, tag/sheet PNGs, `identify` (one tag → product), `track` (four tags → region → YOLO object inside it) |
 | `/api/video` | `extract-candidates` (video → candidate steps for human review) |
 | `/api/metrology` | `measure-gap` |
 | `/api/evidence` | Presigned URL for a stored frame |
@@ -218,11 +218,13 @@ planar feature tracking (`reference-image` + `feature-pose`).
 ### 5.5 Product identification by ArUco tags
 
 A product carries four tags, one per corner (`marker_tags` table, managed on
-the "ArUco tags" page). In AR tracking → ArUco marker, the product scan posts
-frames to `/api/marker-tags/scan`: tags → one product with all four on their
-registered corners → YOLO must see the product's detection class at the tags
-→ three consecutive agreeing frames → `CONFIRMED`, and the workspace opens
-that product's model. Details and limits: [marker-tags.md](marker-tags.md).
+the "ArUco tags" page). In AR tracking → ArUco marker, **Identify by one tag** posts
+frames to `/api/marker-tags/identify` (any one mapped tag → the product → View
+3D model / View procedure, shown inline), and **▶ Start scanning** posts them
+to `/api/marker-tags/track`: all four tags → the quadrilateral they enclose →
+YOLO segmentation on that area only → the object whose mask lies inside it →
+`TRACKING` after three agreeing frames, with covered tags re-projected for
+1.5 s. Details and limits: [marker-tags.md](marker-tags.md).
 
 ### 5.6 Part presence, fit check, QA inspect
 

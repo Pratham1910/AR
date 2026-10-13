@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { CameraSelect } from "../../components/CameraSelect";
@@ -11,6 +11,7 @@ import type { ProcedureHost, StepGuide } from "./procedure";
 import { FitCheck } from "./FitCheck";
 import { QAInspectionPanel } from "./QAInspectionPanel";
 import { BoxSelector } from "./BoxSelector";
+import type { MarkerPanelContext } from "../markers/MarkerScanner";
 import { Models3DApi, VisionApi, apiErrorMessage, apiWebSocketUrl } from "../../services/api";
 import { ClassSelect } from "../../components/ClassSelect";
 import type {
@@ -64,6 +65,12 @@ interface Props {
   parts?: Model3DPart[];
   /** Plays an attached procedure on the overlaid model and receives the camera's part checks. */
   procedureHost?: ProcedureHost;
+  /**
+   * Extra content for the ArUco marker mode (the product-tag scanner,
+   * features/markers): gets this view's camera and a layer over the video to
+   * draw on. Without it the mode is the single-marker pose tool alone.
+   */
+  markerPanel?: (ctx: MarkerPanelContext) => ReactNode;
 }
 
 type RegistrationMode = "marker" | "markerless" | "feature" | "model";
@@ -82,7 +89,7 @@ const AR_MODES = [
   [
     "marker",
     "ArUco marker",
-    "Accurate 6DoF from a printed marker next to the object (python -m app.workers.generate_marker; set ARUCO_MARKER_LENGTH_M to its printed size).",
+    "Start scanning: finds the product's four registered tags (ArUco tags tab), checks they are on their corners, then detects and tracks the object between them. Single-marker pose / Detect & align: 6DoF from one marker (set ARUCO_MARKER_LENGTH_M to its printed size).",
   ],
   ["feature", "Image target", "6DoF from a registered photo of a flat, textured surface on the object (e.g. a label)."],
 ] as const;
@@ -138,7 +145,16 @@ export function RegistrationOverlay({
   partView = EMPTY_PART_VIEW,
   parts = [],
   procedureHost,
+  markerPanel,
 }: Props) {
+  // Layer over the video for markerPanel's drawing (state, so the panel
+  // re-renders once it exists).
+  const [markerLayer, setMarkerLayer] = useState<HTMLDivElement | null>(null);
+  // Marker mode with product tags: "Start scanning" runs the four-tag scan
+  // (markerPanel), which is the mode's main action. The single-marker pose
+  // loop below used to be the only "Start" button here, so pressing it ran
+  // /api/vision/pose (first marker only) and never the four-tag scan.
+  const [tagScanning, setTagScanning] = useState(false);
   // Model-based only: match just this part (e.g. the body, which looks the
   // same with the cap on or off); the whole assembly is still rendered.
   const [trackPart, setTrackPart] = useState<number | null>(null);
@@ -1082,6 +1098,10 @@ export function RegistrationOverlay({
   }, [liveTracking, mode, targetClassLabel, realWorldHeightM, trackPart, detectBy]);
 
   const isAr = mode === "markerless" || mode === "model";
+  const productTags = mode === "marker" && markerPanel !== undefined;
+  useEffect(() => {
+    if (mode !== "marker") setTagScanning(false);
+  }, [mode]);
   const modeInfo = AR_MODES.find(([value]) => value === mode)!;
 
   return (
@@ -1206,6 +1226,7 @@ export function RegistrationOverlay({
           style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }}
         />
         <canvas ref={canvasRef} style={{ display: "none" }} />
+        {mode === "marker" && markerPanel && <div ref={setMarkerLayer} className="marker-layer" />}
         {needsBox && (
           <BoxSelector
             videoRef={videoRef}
@@ -1284,13 +1305,41 @@ export function RegistrationOverlay({
       </div>
 
       <div className="control-bar">
+        {productTags && (
+          <button
+            className={`big ${tagScanning ? "stop" : "primary"}`}
+            onClick={() => {
+              setLiveTracking(false);
+              setTagScanning((v) => !v);
+            }}
+            disabled={!ready && !tagScanning}
+            title="Finds the product's four tags, checks their arrangement, then detects and tracks the object between them"
+          >
+            {tagScanning ? "■ Stop scanning" : "▶ Start scanning"}
+          </button>
+        )}
         <button
-          className={`big ${liveTracking ? "stop" : "primary"}`}
-          onClick={() => setLiveTracking((v) => !v)}
+          className={productTags ? (liveTracking ? "stop" : "") : `big ${liveTracking ? "stop" : "primary"}`}
+          onClick={() => {
+            setTagScanning(false);
+            setLiveTracking((v) => !v);
+          }}
           disabled={!ready && !liveTracking}
-          title={isAr ? "Detect once, then track every frame" : "As fast as detection responds, smoothed"}
+          title={
+            productTags
+              ? "6DoF pose of one marker, every frame (ARUCO_MARKER_LENGTH_M must match its printed size) — not the product scan"
+              : isAr
+                ? "Detect once, then track every frame"
+                : "As fast as detection responds, smoothed"
+          }
         >
-          {liveTracking ? "■ Stop tracking" : "▶ Start live tracking"}
+          {productTags
+            ? liveTracking
+              ? "■ Stop marker pose"
+              : "Single-marker pose"
+            : liveTracking
+              ? "■ Stop tracking"
+              : "▶ Start live tracking"}
         </button>
         <button onClick={detectAndAlign} disabled={busy || !ready || liveTracking}>
           {isAr ? (arResult?.state === "TRACKING" ? "Track one frame" : "Detect one frame") : busy ? "Detecting…" : "Detect & align"}
@@ -1360,6 +1409,16 @@ export function RegistrationOverlay({
       {mode === "model" && <FitCheck modelId={modelId} captureFrame={captureFrameBase64} disabled={!ready} />}
 
       {mode === "model" && <QAInspectionPanel modelId={modelId} captureFrame={captureFrameBase64} disabled={!ready} />}
+
+      {mode === "marker" &&
+        markerPanel?.({
+          captureFrame: captureFrameBase64,
+          ready,
+          stage: markerLayer,
+          busy: liveTracking,
+          scanning: tagScanning,
+          onScanningChange: setTagScanning,
+        })}
 
       {(mode === "marker" || mode === "feature") && (
         <div className="anchor-calibration">
