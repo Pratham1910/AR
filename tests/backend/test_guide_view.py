@@ -66,3 +66,13 @@ def test_saving_the_resting_side_keeps_a_saved_guide_view(tmp_path, monkeypatch)
     saved = vision.station_settings("m1")
     assert saved.resting == "upright" and saved.guide_pose == guide.tolist()
     assert vision.reset_guide_view("m1").guide_pose is None
+
+
+def test_a_lock_that_passed_the_guide_check_is_not_thrown_away_by_the_session():
+    """Edge score 0.45 passes a 0.40 guide threshold; as a lock confidence it must clear 'lost' (0.5)."""
+    from app.api.vision import guide_lock_confidence
+    from app.services.tracking.ar_session import ARTrackingConfig
+
+    config = ARTrackingConfig(good_confidence=0.7, lost_confidence=0.5)
+    assert guide_lock_confidence(0.45, config.good_confidence) >= config.lost_confidence
+    assert guide_lock_confidence(0.9, config.good_confidence) == 0.9

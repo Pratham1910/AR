@@ -6,13 +6,18 @@ scatter os.environ / os.getenv calls through the codebase (Project.md #68, #62).
 """
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore", protected_namespaces=())
+    # backend/.env wherever the server is started from (then a .env in the
+    # current folder, which wins — as before).
+    model_config = SettingsConfigDict(
+        env_file=(Path(__file__).resolve().parents[2] / ".env", ".env"), extra="ignore", protected_namespaces=()
+    )
 
     # Database
     database_url: str = "postgresql+psycopg2://tvasta:tvasta@localhost:5432/tvasta"

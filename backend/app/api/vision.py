@@ -612,6 +612,16 @@ def _pose_features_out(features: list[dict] | None) -> list[PoseFeatureOut]:
     ]
 
 
+def guide_lock_confidence(edge_score: float, good_confidence: float) -> float:
+    """The lock confidence of a pose that passed the guide check. The edge-fit
+    score is on its own scale (0.4-0.7 for a correct fit) and was already
+    judged against the guide thresholds; used directly as a confidence, it
+    fell below the session's "lost" level and every guide lock was thrown
+    away. A verified lock counts as a good one; tracking confidence takes
+    over from the next frame."""
+    return max(float(edge_score), float(good_confidence))
+
+
 def _guide_detection(edge_model: EdgeModel, t_co: np.ndarray, camera_matrix: np.ndarray, name: str, score: float) -> SegmentedObject:
     """The posed model's outline in the image, as the detection a lock starts from."""
     cam = edge_model.vertices @ t_co[:3, :3].T + t_co[:3, 3]
@@ -1194,7 +1204,10 @@ def process_ar_frame(
             locked = matcher.poll(edge_model, guide_pose, gray, hand.mask if hand else None, calibration.camera_matrix)
             if locked is not None:
                 session.seed(
-                    _guide_detection(edge_model, locked.t_co, calibration.camera_matrix, model.name, locked.score),
+                    _guide_detection(
+                        edge_model, locked.t_co, calibration.camera_matrix, model.name,
+                        guide_lock_confidence(locked.score, session.config.good_confidence),
+                    ),
                     select_events, initial_pose=locked.t_co,
                 )
                 select_events.insert(0, f"[GUIDE] Lined up with the guide view (edge fit {locked.score:.0%}) — locking")
