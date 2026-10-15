@@ -47,6 +47,11 @@ tests/       Backend + vision tests
 3D-models/   Reference GLB/glTF assets (Phase 4+)
 ```
 
+## Setting up a new PC
+
+See [`docs/setup.md`](docs/setup.md): `scripts\setup.ps1`, `pose_service/setup_wsl.sh`,
+`scripts\start.ps1`, `scripts\doctor.ps1`.
+
 ## Running locally (development)
 
 ```bash

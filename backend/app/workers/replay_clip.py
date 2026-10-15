@@ -29,7 +29,7 @@ from fastapi.testclient import TestClient
 from app.api.vision import assembly_geometry, find_object_by_model, register_model_mesh
 from app.core.config import get_settings
 from app.main import app
-from app.services.pose.calibration import load_calibration
+from app.services.pose.calibration import effective_calibration_path, load_calibration
 from app.services.tracking.replay import (
     HIGHER_IS_BETTER,
     LOWER_IS_BETTER,
@@ -96,7 +96,7 @@ def measure_overlap(records: list[ReplayRecord], frames, model: dict, every: int
             continue
         real = np.zeros((h, w), np.uint8)
         cv2.fillPoly(real, [np.round([[p.x, p.y] for p in obj.polygon]).astype(np.int32)], 1)
-        k = load_calibration(settings.camera_calibration_path, w, h, settings.camera_assumed_hfov_deg).camera_matrix
+        k = load_calibration(effective_calibration_path(settings.camera_calibration_path), w, h, settings.camera_assumed_hfov_deg).camera_matrix
         pose = threejs_pose_to_cv(record.position, record.quaternion)
         drawn = np.zeros((h, w), bool)
         for mesh in meshes.values():

@@ -9,31 +9,13 @@ a registered 3D model's own mesh against a webcam frame and returns its full
 ## One-time setup (WSL, Ubuntu 22.04)
 
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh && export PATH="$HOME/.local/bin:$PATH"
-mkdir -p ~/tvasta-pose && cd ~/tvasta-pose
-git clone --branch dev --recurse-submodules https://github.com/agimus-project/happypose.git
-cd happypose
-echo "setuptools<70" > ../build-constraints.txt   # visdom still needs pkg_resources to build
-uv venv --python 3.10 .venv
-UV_HTTP_TIMEOUT=900 uv pip install --python .venv/bin/python \
-  -r requirements/pypi.txt -r requirements/cu124.txt \
-  --build-constraints ../build-constraints.txt \
-  --extra-index-url https://download.pytorch.org/whl/cu124 --index-strategy unsafe-best-match
-uv pip install --python .venv/bin/python fastapi uvicorn fast-simplification
-HAPPYPOSE_DATA_DIR=~/tvasta-pose/data .venv/bin/python -m happypose.toolbox.utils.download --megapose_models
+bash pose_service/setup_wsl.sh      # from the repository folder inside WSL
 ```
 
-Finding objects by their 3D model (no object class) also needs FastSAM and
-DINOv2. `--no-deps`: ultralytics would otherwise add a second OpenCV build next
-to HappyPose's.
-
-```bash
-uv pip install --python .venv/bin/python --no-deps ultralytics==8.3.10 ultralytics-thop==2.2.2 py-cpuinfo==9.0.0
-mkdir -p ~/tvasta-pose/weights && cd ~/tvasta-pose/weights
-curl -LO https://github.com/ultralytics/assets/releases/download/v8.2.0/FastSAM-s.pt
-curl -O https://dl.fbaipublicfiles.com/dinov2/dinov2_vits14/dinov2_vits14_pretrain.pth
-curl -L -o dinov2.zip https://github.com/facebookresearch/dinov2/zipball/main && unzip -q dinov2.zip && mv facebookresearch-dinov2-* dinov2
-```
+Installs HappyPose at a pinned commit with the pinned package versions
+(`requirements-lock.txt`, frozen from the working PC), the MegaPose models,
+and the FastSAM + DINOv2 weights for finding objects by their 3D model; then
+self-tests CUDA. See `docs/setup.md` for the whole PC setup.
 
 Larger, somewhat more accurate variants: `FastSAM-x.pt` and
 `dinov2_vitl14_pretrain.pth` (1.2 GB), selected with
@@ -42,7 +24,7 @@ Larger, somewhat more accurate variants: `FastSAM-x.pt` and
 ## Run
 
 ```bash
-bash /mnt/c/Users/PRATHAMESH/Desktop/Toolkit/AR/TVASTA/pose_service/start.sh
+bash pose_service/start.sh      # from the repository folder inside WSL (or scripts\start.ps1 on Windows)
 curl http://localhost:8765/health   # expect "cuda": true
 ```
 

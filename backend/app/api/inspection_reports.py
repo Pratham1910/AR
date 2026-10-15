@@ -18,7 +18,7 @@ from app.core.config import get_settings
 from app.core.database import get_db
 from app.models.model3d import Model3D
 from app.services.component_inspection.reports import ReportStore, evidence_image, new_report_id
-from app.services.pose.calibration import load_calibration
+from app.services.pose.calibration import effective_calibration_path, load_calibration
 
 router = APIRouter(tags=["reports"])
 _settings = get_settings()
@@ -126,7 +126,7 @@ def system_status() -> dict:
     """What the workstation is running with: lens model, pose service, hand and component detectors."""
     from app.api import vision  # imported here: vision builds detectors at import
 
-    calibration = load_calibration(_settings.camera_calibration_path, 1280, 720, _settings.camera_assumed_hfov_deg)
+    calibration = load_calibration(effective_calibration_path(_settings.camera_calibration_path), 1280, 720, _settings.camera_assumed_hfov_deg)
     pose: dict = {"url": _settings.pose_service_url, "ok": False}
     try:
         response = httpx.get(f"{_settings.pose_service_url}/health", timeout=2.0)
