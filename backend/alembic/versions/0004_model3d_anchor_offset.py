@@ -23,14 +23,23 @@ branch_labels = None
 depends_on = None
 
 
+def _add_column_if_missing(table: str, column: sa.Column) -> None:
+    # 0001 builds the schema with create_all from the *current* models, so on
+    # a fresh database this column already exists; only databases created
+    # before it was added to the model actually need the ALTER.
+    existing = {c["name"] for c in sa.inspect(op.get_bind()).get_columns(table)}
+    if column.name not in existing:
+        op.add_column(table, column)
+
+
 def upgrade() -> None:
-    op.add_column("models_3d", sa.Column("anchor_offset_x", sa.Float(), nullable=False, server_default="0.0"))
-    op.add_column("models_3d", sa.Column("anchor_offset_y", sa.Float(), nullable=False, server_default="0.0"))
-    op.add_column("models_3d", sa.Column("anchor_offset_z", sa.Float(), nullable=False, server_default="0.0"))
-    op.add_column("models_3d", sa.Column("anchor_rotation_x", sa.Float(), nullable=False, server_default="0.0"))
-    op.add_column("models_3d", sa.Column("anchor_rotation_y", sa.Float(), nullable=False, server_default="0.0"))
-    op.add_column("models_3d", sa.Column("anchor_rotation_z", sa.Float(), nullable=False, server_default="0.0"))
-    op.add_column("models_3d", sa.Column("anchor_rotation_w", sa.Float(), nullable=False, server_default="1.0"))
+    _add_column_if_missing("models_3d", sa.Column("anchor_offset_x", sa.Float(), nullable=False, server_default="0.0"))
+    _add_column_if_missing("models_3d", sa.Column("anchor_offset_y", sa.Float(), nullable=False, server_default="0.0"))
+    _add_column_if_missing("models_3d", sa.Column("anchor_offset_z", sa.Float(), nullable=False, server_default="0.0"))
+    _add_column_if_missing("models_3d", sa.Column("anchor_rotation_x", sa.Float(), nullable=False, server_default="0.0"))
+    _add_column_if_missing("models_3d", sa.Column("anchor_rotation_y", sa.Float(), nullable=False, server_default="0.0"))
+    _add_column_if_missing("models_3d", sa.Column("anchor_rotation_z", sa.Float(), nullable=False, server_default="0.0"))
+    _add_column_if_missing("models_3d", sa.Column("anchor_rotation_w", sa.Float(), nullable=False, server_default="1.0"))
 
 
 def downgrade() -> None:

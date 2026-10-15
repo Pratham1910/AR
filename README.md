@@ -56,6 +56,7 @@ docker compose up -d postgres minio
 # 2. Backend
 cd backend
 python -m venv .venv && .venv\Scripts\activate   # Windows
+python -m venv .venv && source .venv/bin/activate #linux
 pip install -r requirements.txt
 alembic upgrade head
 # --reload-dir app: without it, uvicorn's file-watcher also watches .venv/
