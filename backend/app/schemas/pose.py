@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from app.schemas.component_inspection import ComponentInspectionOut
+
 
 class PoseRequest(BaseModel):
     image_base64: str
@@ -126,7 +128,9 @@ class ARFrameRequest(BaseModel):
     # "model" by its 3D model (needs model_id); "class" by the YOLO detector's
     # `class_label`; "box" from a box the user drew around it (`init_box`) — any
     # object, no model or class needed; re-found by its 3D model when one is given.
-    detect_by: Literal["model", "class", "box"] = "model"
+    # "guide": nothing is detected — the operator lines the object up with the
+    # model's outline shown at the guide pose (guide_view.py), model mode only.
+    detect_by: Literal["model", "class", "box", "guide"] = "model"
     init_box: list[float] | None = None  # [x1, y1, x2, y2] in the frame's pixels, for detect_by="box"
     class_label: str | None = None  # a detectable class; required when detecting by class
     # Required for "model"; optional for "markerless", where it only enables
@@ -137,6 +141,28 @@ class ARFrameRequest(BaseModel):
     # bottle's body, which looks the same with or without its cap); the whole
     # assembly is still posed and rendered. None = match the whole model.
     track_part: int | None = None
+    # Which side of the model faces where, for objects whose top and bottom
+    # look alike (a flat box): "camera" = camera above, top facing it;
+    # "upright" = camera at the side, top up in the image; "any" = no constraint.
+    resting: Literal["any", "camera", "upright", "flat"] = "any"
+    # The operator clicked the object (frame pixels): lock onto the segment
+    # there instead of searching (model mode). Sent with one frame only.
+    select_point: list[float] | None = None
+    # The camera the frames come from (browser device label): a calibration
+    # recorded for another camera isn't used for it.
+    camera_label: str | None = None
+    # Component inspection on this session's frames (needs model_id and a
+    # 6DoF pose, i.e. model-based mode): "inspect" judges each component,
+    # "learn" records the good state's appearance, "paused" keeps results.
+    # A new `inspection_run` id starts the inspection over.
+    inspection: Literal["off", "inspect", "learn", "paused"] = "off"
+    inspection_run: str | None = None
+    # Only these component IDs are inspected (the current procedure step's
+    # parts); None = every required component.
+    inspection_focus: list[str] | None = None
+    # Fixed-station mode: use the model's locked pose instead of detecting and
+    # tracking (POST /api/vision/station-lock saves one).
+    station_lock: bool = False
 
 
 class TrackedObjectOut(BaseModel):
@@ -201,8 +227,85 @@ class PartCheckOut(BaseModel):
     region_polygon: list[Vector2] | None = None
 
 
+class HandsOut(BaseModel):
+    """Hands seen in this frame (the mask the tracker excluded), for the debug view."""
+
+    available: bool  # a hand detector is configured and loaded
+    sources: list[str]  # "mediapipe" / "person"
+    hands: int  # hands MediaPipe found
+    persons: int  # person regions from the segmentation model
+    age_ms: float | None  # how old the mask used for this frame is
+    outlines: list[list[Vector2]]  # the hand mask's outlines, frame pixels
+    error: str | None = None
+
+
+class StationOut(BaseModel):
+    """Fixed-station mode: the frozen pose in use, and whether the part has moved off it."""
+
+    locked: bool
+    shift_px: float | None = None  # object region's shift since locking (frame pixels)
+    moved: bool = False
+    created_at: str | None = None
+    max_shift_px: float | None = None
+
+
+class TrackingQualityOut(BaseModel):
+    """What the tracking confidence is made of (model-based mode)."""
+
+    overlap: float | None = None  # posed model vs the tracked object region
+    flow_support: float | None = None  # share of visible optical-flow points agreeing on the motion
+    occlusion: float | None = None  # share of the object's outline covered by a hand
+    held_ms: float | None = None  # how long the pose has been held because of occlusion
+    refine_skipped_for_hand: bool = False
+    # 3D edge fit of the shown pose: share of the model's visible edges on
+    # image edges and of the object's image edges explained by the model
+    # (0..1, both averaged); None = no edge model / too few edges in view.
+    edge_fit: float | None = None
+    edge_adjusted: bool = False  # the last edge alignment moved the pose
+    # Orientation of the tracked pose (Phase 8): "unique" (model has no
+    # symmetric twin), "confirmed" (features / edges pick this twin),
+    # "ambiguous" (they don't — inspection pauses when features are configured).
+    orientation_status: str | None = None
+    orientation_reason: str | None = None
+    twin_flips_suppressed: int = 0  # background corrections turned back from a symmetric twin
+    corrections_rejected: int = 0  # large corrections the 3D edges didn't support
+    orientation_switches: int = 0  # verified orientation changes adopted outright
+
+
+class PoseFeatureOut(BaseModel):
+    """A pose feature where the tracked pose puts it, and what the image shows there (diagnostics)."""
+
+    feature_id: str
+    status: str  # detected / not_detected / occluded / hidden / facing_away / outside
+    evidence: float
+    predicted_center_px: Vector2 | None = None
+    predicted_contour_px: list[Vector2] = []
+    observed_center_px: Vector2 | None = None  # the circle actually found near it
+    residual_px: float | None = None
+
+
+class GuideOut(BaseModel):
+    """Guide view: where to draw the model's outline for the operator to line the object up with."""
+
+    position: Vector3  # Three.js convention, like ARFrameResponse.position
+    quaternion: Quaternion
+    saved: bool  # the guide was saved for this model (else the default view)
+    score: float | None = None  # the last check's edge fit at the guide, 0..1
+    min_score: float  # what a lock needs
+
+
 class ARFrameResponse(BaseModel):
-    state: Literal["SEARCHING", "INITIALIZING", "TRACKING", "LOST", "RECOVERING"]
+    state: Literal["SEARCHING", "INITIALIZING", "TRACKING", "TRACKING_OCCLUDED", "LOST", "RECOVERING"]
+    # The same, in the operator's terms: TRACKING / TRACKING_OCCLUDED /
+    # REACQUIRING (lost, looking for it again) / TRACKING_LOST / SEARCHING / INITIALIZING.
+    tracking_status: Literal[
+        "SEARCHING", "INITIALIZING", "TRACKING", "TRACKING_OCCLUDED", "REACQUIRING", "TRACKING_LOST"
+    ] = "SEARCHING"
+    hands: HandsOut | None = None
+    quality: TrackingQualityOut | None = None
+    station: StationOut | None = None
+    guide: GuideOut | None = None  # while searching in guide-view mode
+    pose_features: list[PoseFeatureOut] = []  # at the last orientation decision (diagnostics)
     # Streamed frames: when the camera captured the frame this answers (sender's clock, ms),
     # so the client can predict the pose for the moment it draws.
     capture_ms: float | None = None
@@ -232,8 +335,16 @@ class ARFrameResponse(BaseModel):
     intrinsics: CameraIntrinsics
     calibration_is_approximate: bool
     calibration_source: str
+    calibration_note: str | None = None  # why this calibration is (or isn't) in use
+    calibration_rms_px: float | None = None  # the calibration's own reprojection error
+    # Lens distortion removed from the frame before pose estimation (worst
+    # case, px). The video on screen still has it, so the overlay can be off
+    # by up to this much near the image corners.
+    distortion_removed_px: float = 0.0
     camera_vertical_fov_deg: float
     camera_aspect: float
+    # Component inspection results, when requested (ARFrameRequest.inspection).
+    inspection: ComponentInspectionOut | None = None
 
 
 class PoseResponse(BaseModel):

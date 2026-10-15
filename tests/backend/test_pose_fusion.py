@@ -98,7 +98,13 @@ def test_moving_frames_are_answered_by_flow_without_waiting_for_megapose():
     tracker = _locked(service)
     k = _textured_frame().calibration.camera_matrix
     m = tracker.update(_textured_frame(dx=10))  # moved: refine starts in the background, frame answered now
-    assert service.refines == 1 and m.extra["refine_pending"]
+    assert m.extra["refine_pending"]
+    # The refine runs on the pool's thread, which may not have picked it up yet.
+    for _ in range(100):
+        if service.refines:
+            break
+        threading.Event().wait(0.01)
+    assert service.refines == 1
     expected_x = 10 / k[0, 0] * 0.5
     assert m.extra["t_camera_mesh"][0, 3] == pytest.approx(expected_x, abs=1e-3)
     m = tracker.update(_textured_frame(dx=20))  # MegaPose still busy: flow carries on
@@ -156,3 +162,66 @@ def test_a_correction_only_pulls_part_way_so_one_bad_refine_cannot_jump_the_mode
     tracker.async_refine = False
     m = tracker.update(_textured_frame(dx=10))
     assert m.extra["t_camera_mesh"][2, 3] == pytest.approx(0.55, abs=1e-3)  # half way
+
+
+def test_a_lock_outside_the_working_distance_is_rejected():
+    """A box "found" in a ceiling light fits it by being far away: refuse that lock."""
+    class FarService(SlowPoseService):
+        def full_search(self, label, jpeg, k, bbox, outline=None):
+            return PoseServiceResult(_pose(z=3.5), 0.9, "coarse+refine", 900.0, (240, 160, 360, 320))
+
+    tracker = MegaPoseTracker(FarService(refine_pose=_pose()), "m1", refine_iterations=2, max_distance_m=2.0)
+    detection = SegmentedObject(class_label="cpu", confidence=0.6, bbox=BoundingBox(x1=240, y1=160, x2=360, y2=320), polygon=[])
+    m = tracker.initialize(_textured_frame(), detection)
+    assert m.confidence == 0.0 and "3.50 m away" in m.extra["reject_reason"]
+    near = MegaPoseTracker(SlowPoseService(refine_pose=_pose()), "m1", refine_iterations=2, max_distance_m=2.0)
+    assert near.initialize(_textured_frame(), detection).confidence > 0.5  # 0.5 m: within range
+
+
+def _rotation(axis, deg):
+    import cv2
+
+    r = np.eye(4)
+    r[:3, :3] = cv2.Rodrigues(np.asarray(axis, float) * np.radians(deg))[0]
+    return r
+
+
+def test_resting_side_reads_where_the_models_top_points():
+    from app.services.tracking.trackers import resting_side_ok
+
+    looking_down = _pose(z=0.5) @ _rotation((1, 0, 0), -90)  # model +Y turned towards the camera (-Z)
+    assert resting_side_ok(looking_down, "camera")
+    assert not resting_side_ok(looking_down @ np.diag([1.0, -1.0, -1.0, 1.0]), "camera")  # upside down
+    upright = _pose(z=0.5) @ _rotation((1, 0, 0), 180)  # model +Y along image up (-y)
+    assert resting_side_ok(upright, "upright") and not resting_side_ok(_pose(z=0.5), "upright")
+    assert resting_side_ok(_pose(z=0.5), "any")
+
+
+def test_an_upside_down_lock_is_turned_over_to_the_resting_side():
+    """A flat box seen from above: the search returned its underside; the station says top faces the camera."""
+    upside_down = _pose(z=0.5) @ _rotation((1, 0, 0), 90)
+
+    class UpsideDown(SlowPoseService):
+        def full_search(self, label, jpeg, k, bbox, outline=None):
+            return PoseServiceResult(upside_down, 0.9, "coarse+refine", 900.0, (240, 160, 360, 320))
+
+    tracker = MegaPoseTracker(UpsideDown(refine_pose=_pose()), "m1", refine_iterations=2, resting="camera")
+    detection = SegmentedObject(class_label="case", confidence=0.6, bbox=BoundingBox(x1=240, y1=160, x2=360, y2=320), polygon=[])
+    m = tracker.initialize(_textured_frame(), detection)
+    from app.services.tracking.trackers import resting_side_ok
+
+    assert m.extra["flipped_to_resting_side"] and resting_side_ok(m.extra["t_camera_mesh"], "camera")
+    assert m.extra["t_camera_mesh"][:3, 3] == pytest.approx(upside_down[:3, 3])  # same place, turned over
+    assert m.confidence > 0.5
+
+
+def test_level_pose_removes_tilt_and_keeps_the_turn_on_the_table():
+    from app.services.tracking.trackers import level_pose
+
+    flat = _pose(z=0.4) @ _rotation((1, 0, 0), -90) @ _rotation((0, 1, 0), 35)  # top at the camera, turned 35 deg on the table
+    tilted = _pose(z=0.4) @ _rotation((1, 0, 0), -90 + 15) @ _rotation((0, 1, 0), 35)  # same, leaning 15 deg
+    levelled = level_pose(tilted)
+    assert levelled[:3, 1] == pytest.approx([0, 0, -1], abs=1e-9)  # top straight at the camera
+    assert levelled[:3, :3] == pytest.approx(flat[:3, :3], abs=1e-6)  # and the same turn on the table
+    assert levelled[:3, 3] == pytest.approx(tilted[:3, 3])  # turned about its own centre
+    assert level_pose(flat)[:3, :3] == pytest.approx(flat[:3, :3])

@@ -45,7 +45,7 @@ from fastapi import FastAPI, HTTPException
 from PIL import Image
 from pydantic import BaseModel
 
-from cad_detector import CadDetector
+from cad_detector import CadDetector, mask_box, mask_polygon, Templates
 from happypose.toolbox.datasets.object_dataset import RigidObject, RigidObjectDataset
 from happypose.toolbox.inference.types import ObservationTensor
 from happypose.toolbox.utils.load_model import NAMED_MODELS, load_named_model
@@ -70,6 +70,9 @@ MAX_MESH_FACES = int(os.getenv("TVASTA_POSE_MAX_FACES", "10000"))
 TEMPLATE_DIR = MESH_DIR / "templates"
 TEMPLATE_VIEWS = int(os.getenv("TVASTA_TEMPLATE_VIEWS", "42"))
 SERVICE_DIR = Path(__file__).resolve().parent
+# The last frame /detect was given, overwritten each call: a wrong detection
+# seen live can be replayed against the detector afterwards.
+LAST_DETECT_FRAME = Path(os.getenv("TVASTA_LAST_DETECT_FRAME", Path.home() / "tvasta-pose" / "last_detect.jpg"))
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 app = FastAPI(title="TVASTA model-based pose service")
@@ -86,7 +89,7 @@ _faces: dict[str, np.ndarray] = {}  # per label, for drawing its silhouette at a
 SILHOUETTE_HYPOTHESES = int(os.getenv("TVASTA_SILHOUETTE_HYPOTHESES", "5"))
 log = logging.getLogger("uvicorn.error")  # shows up in the service's console/log
 _detector = CadDetector(device)
-_template_descriptors: dict[str, tuple[float, torch.Tensor]] = {}  # label -> (templates file mtime, descriptors)
+_template_descriptors: dict[str, tuple[float, Templates]] = {}  # label -> (templates file mtime, descriptors + outlines)
 _template_lock = threading.Lock()  # one template render at a time
 
 
@@ -98,14 +101,64 @@ def _meta_path(label: str) -> Path:
     return MESH_DIR / f"{label}.json"
 
 
+# Bump when the way meshes are simplified changes, so existing registrations are redone.
+SIMPLIFY_VERSION = 4  # 3 tried flat shading: it lowered the PC case's match (0.43 vs ~0.47-0.52)
+
+
 def _registration_key(glb: bytes, scale: float) -> dict:
-    return {"glb_sha256": hashlib.sha256(glb).hexdigest(), "scale": scale, "max_faces": MAX_MESH_FACES}
+    return {
+        "glb_sha256": hashlib.sha256(glb).hexdigest(),
+        "scale": scale,
+        "max_faces": MAX_MESH_FACES,
+        "simplify": SIMPLIFY_VERSION,
+    }
 
 
-def _simplified(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
-    if len(mesh.faces) <= MAX_MESH_FACES:
+def _welded(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Vertices merged across UV / normal seams. Exporters split them there,
+    and quadric decimation treats every split as an open edge: on the user's
+    1.36 M-face PC case it then stopped at 282 k faces having deleted whole
+    side panels (the detector's renders came out as loose fragments)."""
+    mesh = mesh.copy()
+    mesh.merge_vertices(merge_tex=True, merge_norm=True)
+    mesh.remove_unreferenced_vertices()
+    return mesh
+
+
+def _simplified(mesh: trimesh.Trimesh, face_count: int = MAX_MESH_FACES) -> trimesh.Trimesh:
+    if len(mesh.faces) <= face_count:
         return mesh
-    return mesh.simplify_quadric_decimation(face_count=MAX_MESH_FACES)
+    return _welded(mesh).simplify_quadric_decimation(face_count=face_count)
+
+
+def _simplified_parts(pieces: list[trimesh.Trimesh]) -> trimesh.Trimesh:
+    """The model under MAX_MESH_FACES, part by part, keeping its shape.
+
+    Each part gets a share of the budget in proportion to its surface area
+    (what its silhouette is made of). A part that can't get near its share —
+    a perforated panel is thousands of tiny hole rims that don't merge — is
+    replaced by its convex hull: MegaPose and the detector match outlines and
+    shading, and a perforated flat panel's outline is a solid slab. On the PC
+    case: 15 of 24 parts hulled, 1.36 M -> 8.3 k faces, silhouettes from six
+    viewpoints identical to the original."""
+    total = sum(len(p.faces) for p in pieces)
+    if total <= MAX_MESH_FACES:
+        return trimesh.util.concatenate(pieces)
+    areas = np.array([max(p.area, 1e-12) for p in pieces])
+    shares = np.maximum(60, areas / areas.sum() * MAX_MESH_FACES * 0.9).astype(int)
+    out = []
+    hulls = 0
+    for piece, share in zip(pieces, shares):
+        simple = _simplified(piece, int(share))
+        if len(simple.faces) > 2 * share:
+            simple = piece.convex_hull
+            hulls += 1
+        out.append(simple)
+    mesh = trimesh.util.concatenate(out)
+    if len(mesh.faces) > MAX_MESH_FACES:  # many tiny parts at the 60-face floor
+        mesh = _simplified(mesh)
+    log.info("simplified %d parts, %d -> %d faces (%d replaced by their convex hull)", len(pieces), total, len(mesh.faces), hulls)
+    return mesh
 
 
 def _simplify_existing_meshes() -> None:
@@ -199,11 +252,11 @@ def health() -> dict:
     }
 
 
-def _scene_mesh(loaded, node_names: list[str] | None) -> trimesh.Trimesh | None:
-    """The GLB's geometry in world coordinates (node transforms baked in, as
-    Three.js's Box3.setFromObject sees it) — all of it, or only the named nodes."""
+def _scene_pieces(loaded, node_names: list[str] | None) -> list[trimesh.Trimesh]:
+    """The GLB's parts in world coordinates (node transforms baked in, as
+    Three.js's Box3.setFromObject sees it) — all of them, or only the named nodes."""
     if not isinstance(loaded, trimesh.Scene):
-        return loaded if node_names is None else None
+        return [loaded] if node_names is None else []
     pieces = []
     for node in loaded.graph.nodes_geometry:
         if node_names is not None and node not in node_names:
@@ -211,7 +264,13 @@ def _scene_mesh(loaded, node_names: list[str] | None) -> trimesh.Trimesh | None:
         transform, geometry = loaded.graph[node]
         piece = loaded.geometry[geometry].copy()
         piece.apply_transform(transform)
-        pieces.append(piece)
+        if isinstance(piece, trimesh.Trimesh) and len(piece.faces):
+            pieces.append(piece)
+    return pieces
+
+
+def _scene_mesh(loaded, node_names: list[str] | None) -> trimesh.Trimesh | None:
+    pieces = _scene_pieces(loaded, node_names)
     return trimesh.util.concatenate(pieces) if pieces else None
 
 
@@ -241,18 +300,21 @@ def register_object(req: RegisterObjectRequest) -> RegisterObjectResponse:
     lo, hi = assembly.bounds * req.scale
     assembly_center = (lo + hi) / 2.0  # what the frontend recenters the rendered model on
 
-    mesh = _scene_mesh(loaded, req.node_names)
-    if mesh is None or len(mesh.vertices) == 0:
+    pieces = _scene_pieces(loaded, req.node_names)
+    if not pieces:
         raise HTTPException(status_code=400, detail=f"No geometry for parts {req.node_names}")
-    mesh = mesh.copy()
-    mesh.apply_scale(req.scale)
+    pieces = [p.copy() for p in pieces]
+    for piece in pieces:
+        piece.apply_scale(req.scale)
     # Recenter on the FULL-detail bounds of what MegaPose will match, then
     # simplify. For a part, its center sits at `offset` from the assembly's
     # center; the caller converts the part's pose back to the assembly frame.
-    lo, hi = mesh.bounds
+    lo = np.min([p.bounds[0] for p in pieces], axis=0)
+    hi = np.max([p.bounds[1] for p in pieces], axis=0)
     center = (lo + hi) / 2.0
-    mesh.apply_translation(-center)
-    mesh = _simplified(mesh)
+    for piece in pieces:
+        piece.apply_translation(-center)
+    mesh = _simplified_parts(pieces)
     offset = [float(v) for v in center - assembly_center]
 
     MESH_DIR.mkdir(parents=True, exist_ok=True)
@@ -419,8 +481,8 @@ def _silhouette_iou(label: str, pose: np.ndarray, K: np.ndarray, target: np.ndar
     return float(np.count_nonzero(drawn & target)) / union if union else 0.0
 
 
-def _templates_for(label: str) -> torch.Tensor:
-    """DINOv2 descriptors of the label's mesh rendered from TEMPLATE_VIEWS
+def _templates_for(label: str) -> Templates:
+    """DINOv2 descriptors and outlines of the label's mesh rendered from TEMPLATE_VIEWS
     viewpoints. Rendering (~10 s) happens once per mesh, in a separate
     process (Panda3D can't be driven from these worker threads); re-registering
     the mesh makes the cached renders stale."""
@@ -443,20 +505,25 @@ def _templates_for(label: str) -> torch.Tensor:
             return cached[1]
     data = np.load(npz)
     with _lock, torch.no_grad():
-        descriptors = _detector.template_descriptors(data["rgb"], data["mask"])
-    _template_descriptors[label] = (mtime, descriptors)
-    return descriptors
+        templates = _detector.templates(data["rgb"], data["mask"])
+    _template_descriptors[label] = (mtime, templates)
+    return templates
 
 
 class DetectRequest(BaseModel):
     label: str  # a registered mesh; detection needs only the mesh, no object class
     image_base64: str  # JPEG/PNG, RGB
-    min_score: float = 0.0  # candidates scoring below this are dropped
+    min_score: float = 0.0  # the best region's appearance score must reach this...
+    # ...and its appearance x shape this. Appearance alone misjudges plain
+    # objects: on the user's white PC case the right region scored 0.43
+    # (shape 0.78) while small ceiling patches scored 0.52-0.60 (shape 0.43-0.48).
+    min_combined: float = 0.0
 
 
 class DetectCandidate(BaseModel):
     bbox: list[float]  # [x1, y1, x2, y2]
     score: float  # mean cosine similarity of the region to its best-matching templates
+    shape: float  # outline IoU with those templates; candidates are ranked by score x shape
     area_fraction: float
     polygon: list[list[float]]  # the region's outline, [[x, y], ...]
 
@@ -467,6 +534,37 @@ class DetectResponse(BaseModel):
     candidates: list[DetectCandidate]  # best first, for debugging close calls
     elapsed_ms: float
     timings_ms: dict[str, float]
+
+
+class SegmentsAtRequest(BaseModel):
+    image_base64: str
+    x: float  # image pixel the operator pointed at
+    y: float
+    max_area: float = 0.6  # share of the image; larger segments are background
+
+
+class SegmentOut(BaseModel):
+    bbox: list[float]
+    area_fraction: float
+    polygon: list[list[float]]
+
+
+@app.post("/segments_at", response_model=list[SegmentOut])
+def segments_at(req: SegmentsAtRequest) -> list[SegmentOut]:
+    """The image's segments (FastSAM) containing a point, smallest first — for
+    picking the object by pointing at it, where matching renders by
+    appearance can't tell it from its surroundings (a plain black case)."""
+    gpu_problem = _gpu_problem()
+    if gpu_problem:
+        raise HTTPException(status_code=503, detail=gpu_problem)
+    rgb = np.array(Image.open(io.BytesIO(base64.b64decode(req.image_base64))).convert("RGB"), dtype=np.uint8)
+    with _lock:
+        masks = _detector.segments_at(rgb, req.x, req.y, req.max_area)
+    total = rgb.shape[0] * rgb.shape[1]
+    return [
+        SegmentOut(bbox=[float(v) for v in mask_box(m)], area_fraction=float(m.sum() / total), polygon=[list(p) for p in mask_polygon(m)])
+        for m in masks
+    ]
 
 
 @app.post("/detect", response_model=DetectResponse)
@@ -485,20 +583,29 @@ def detect(req: DetectRequest) -> DetectResponse:
 
     started = time.perf_counter()
     templates = _templates_for(req.label)
-    rgb = np.array(Image.open(io.BytesIO(base64.b64decode(req.image_base64))).convert("RGB"), dtype=np.uint8)
+    image_bytes = base64.b64decode(req.image_base64)
+    try:
+        LAST_DETECT_FRAME.write_bytes(image_bytes)
+    except OSError:
+        pass  # debugging aid only
+    rgb = np.array(Image.open(io.BytesIO(image_bytes)).convert("RGB"), dtype=np.uint8)
     with _lock:
         ranked, timings = _detector.detect(rgb, templates)
     candidates = [
-        DetectCandidate(bbox=list(c.bbox), score=c.score, area_fraction=c.area_fraction, polygon=[list(p) for p in c.polygon])
+        DetectCandidate(bbox=list(c.bbox), score=c.score, shape=c.shape, area_fraction=c.area_fraction, polygon=[list(p) for p in c.polygon])
         for c in ranked
     ]
     elapsed_ms = (time.perf_counter() - started) * 1000.0
-    best = candidates[0] if candidates and candidates[0].score >= req.min_score else None
+    best = (
+        candidates[0]
+        if candidates and candidates[0].score >= req.min_score and candidates[0].score * candidates[0].shape >= req.min_combined
+        else None
+    )
     log.info(
         "detect %s best=%s second=%s total=%.0fms [%s]",
         req.label[:8],
-        f"{candidates[0].score:.3f}" if candidates else "none",
-        f"{candidates[1].score:.3f}" if len(candidates) > 1 else "none",
+        f"{candidates[0].score:.3f}/shape {candidates[0].shape:.2f}" if candidates else "none",
+        f"{candidates[1].score:.3f}/shape {candidates[1].shape:.2f}" if len(candidates) > 1 else "none",
         elapsed_ms,
         ", ".join(f"{k}={v:.0f}ms" for k, v in timings.items()),
     )

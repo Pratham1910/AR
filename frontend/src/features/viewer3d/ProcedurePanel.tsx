@@ -237,6 +237,12 @@ export function ProcedurePanel({ modelId, parts, host, cameraChecks }: Props) {
       instruction: step.description ?? null,
       state,
       statusText,
+      parts: [
+        ...new Set([
+          ...facts.map((f) => f.part),
+          ...(step.actions ?? []).flatMap((a) => a.targetParts ?? []),
+        ]),
+      ],
     });
   }, [procedure, step, index, allDone, stepPassed, cameraChecks, armed, streak, checks, host]);
   useEffect(() => () => host.publishGuide(null), [host]);

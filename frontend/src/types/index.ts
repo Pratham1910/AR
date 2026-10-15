@@ -182,7 +182,10 @@ export interface PoseResponse {
 // only runs while SEARCHING/LOST; while TRACKING only the tracker runs —
 // optical flow ("markerless") or the MegaPose refiner ("model").
 export type ARMode = "markerless" | "model";
-export type TrackingState = "SEARCHING" | "INITIALIZING" | "TRACKING" | "LOST" | "RECOVERING";
+export type TrackingState = "SEARCHING" | "INITIALIZING" | "TRACKING" | "TRACKING_OCCLUDED" | "LOST" | "RECOVERING";
+
+// The tracking state in the operator's terms (backend vision._tracking_status).
+export type TrackingStatus = "SEARCHING" | "INITIALIZING" | "TRACKING" | "TRACKING_OCCLUDED" | "REACQUIRING" | "TRACKING_LOST";
 
 // The exact pinhole camera the backend computed the pose with; the overlay
 // builds its projection from these (see docs/coordinates.md).
@@ -309,6 +312,60 @@ export interface ARFrameResponse {
   calibration_source: string;
   camera_vertical_fov_deg: number;
   camera_aspect: number;
+  inspection?: ComponentInspection | null; // when ARFrameRequest.inspection is on
+  tracking_status?: TrackingStatus;
+  // Hands found in this frame (the mask kept out of tracking and inspection).
+  hands?: {
+    available: boolean;
+    sources: string[];
+    hands: number;
+    persons: number;
+    age_ms: number | null;
+    outlines: Vector2[][];
+    error: string | null;
+  } | null;
+  // Guide view (find by "guide"): where to draw the model's outline for the
+  // operator to line the object up with, and how well it fits right now.
+  guide?: {
+    position: { x: number; y: number; z: number };
+    quaternion: { x: number; y: number; z: number; w: number };
+    saved: boolean;
+    score: number | null;
+    min_score: number;
+  } | null;
+  // Fixed-station mode: the frozen pose in use, and whether the part moved off it.
+  station?: { locked: boolean; shift_px: number | null; moved: boolean; created_at: string | null; max_shift_px: number | null } | null;
+  // What the model-based tracking confidence is made of.
+  quality?: {
+    overlap: number | null;
+    flow_support: number | null;
+    occlusion: number | null;
+    held_ms: number | null;
+    refine_skipped_for_hand: boolean;
+    edge_fit?: number | null;
+    edge_adjusted?: boolean;
+    // Phase 8: which way round the tracked pose is, and how sure.
+    orientation_status?: "unique" | "confirmed" | "ambiguous" | null;
+    orientation_reason?: string | null;
+    twin_flips_suppressed?: number;
+    corrections_rejected?: number;
+    orientation_switches?: number;
+  } | null;
+  // Pose features where the pose puts them vs what the image shows (diagnostics).
+  pose_features?: PoseFeatureView[];
+  calibration_note?: string | null;
+  calibration_rms_px?: number | null;
+  distortion_removed_px?: number;
+}
+
+export interface PoseFeatureView {
+  feature_id: string;
+  status: "detected" | "not_detected" | "occluded" | "hidden" | "facing_away" | "outside";
+  evidence: number;
+  predicted_center_px: Vector2 | null;
+  predicted_contour_px: Vector2[];
+  observed_center_px: Vector2 | null;
+  residual_px: number | null;
 }
 
 // Feature/keypoint ("image target") tracking — see backend
@@ -332,4 +389,129 @@ export interface FeaturePoseResponse {
   camera_aspect: number;
   rotation_deg: RotationDeg | null;
   axes: PoseAxes | null;
+}
+
+// Component-level missing-part inspection (backend app/services/component_inspection).
+export type ComponentStatus =
+  | "NOT_INSPECTED"
+  | "PRESENT"
+  | "MISSING_CANDIDATE"
+  | "MISSING_CONFIRMED"
+  | "UNCERTAIN"
+  | "OCCLUDED";
+
+export type InspectionMode = "off" | "inspect" | "learn" | "paused";
+
+export interface RegisteredComponent {
+  id: string;
+  type: string;
+  display_name: string;
+  required: boolean;
+  inspection_mode: string;
+  source: "mapping" | "named-part" | "name-match";
+  node_index: number | null;
+  node_name: string | null;
+  piece: number | null; // which body of a combined mesh node
+  mesh_status: "ok" | "missing" | "ambiguous" | "piece-missing" | "empty";
+  problem: string | null;
+  center_m: number[] | null; // in the tracked object's frame = the overlay group's local frame
+  size_m: number[] | null;
+  node_matrix: number[][] | null; // row-major 4x4, same frame
+  color: string | null; // chosen in the mapping; null = automatic
+  reference_samples: number;
+  calibrated: boolean;
+}
+
+export interface ComponentRegistry {
+  model_id: string;
+  object_id: string;
+  source: "mapping" | "auto";
+  mapping_path: string | null;
+  components: RegisteredComponent[];
+  nodes: { node_index: number; name: string; sanitized_name: string; pieces: number; faces: number; component_ids: string[] }[];
+  warnings: string[];
+  detector: string | null;
+}
+
+export interface ComponentResult {
+  id: string;
+  status: ComponentStatus;
+  reason: string;
+  required: boolean;
+  score: number | null; // smoothed probability present
+  confidence: number | null;
+  observable: boolean;
+  visibility: string | null;
+  visibility_reasons: string[];
+  last_valid: string | null;
+  valid_observations: number;
+  center_px: number[] | null;
+  bbox_px: number[] | null;
+  outline_px: number[][] | null;
+  verdicts: { verifier: string; decision: "present" | "absent" | "uncertain"; confidence: number; reason: string }[];
+  history: string[];
+  learn_samples: number | null;
+}
+
+export interface ComponentInspection {
+  run_id: string;
+  mode: "inspect" | "learn" | "paused";
+  passes: number;
+  inspected_this_frame: boolean;
+  summary: {
+    required: number;
+    present: number;
+    missing: number;
+    candidates: number;
+    uncertain: number;
+    not_inspected: number;
+    verdict: "PASS" | "FAIL" | "INCOMPLETE";
+  };
+  components: ComponentResult[];
+  message: string | null;
+  notes: string[];
+}
+
+// Saved inspection reports (backend app/api/inspection_reports.py).
+export interface InspectionReportComponent {
+  id: string;
+  type: string | null;
+  display_name: string;
+  required: boolean;
+  status: ComponentStatus;
+  reason: string;
+  score: number | null;
+  valid_observations: number;
+  last_valid: string | null;
+  visibility: string | null;
+  verdicts: { verifier: string; decision: string; confidence: number; reason: string }[];
+}
+
+export interface InspectionReport {
+  id: string;
+  created_at: string;
+  model_id: string;
+  model_name: string;
+  object_id: string;
+  station: string | null;
+  operator: string | null;
+  run_id: string;
+  passes: number;
+  verdict: "PASS" | "FAIL" | "INCOMPLETE";
+  summary: ComponentInspection["summary"];
+  components?: InspectionReportComponent[]; // detail only, not in the list
+  notes: string[];
+  note: string;
+  disposition: "approved" | "rework" | null;
+  disposition_at?: string;
+  disposition_by?: string | null;
+  evidence: boolean;
+}
+
+export interface SystemStatus {
+  camera: { assumed_hfov_deg: number; vertical_fov_deg_720p: number; calibration_source: string; approximate: boolean };
+  pose_service: { url: string; ok: boolean; device?: string; cuda?: boolean; model?: string; objects?: number; error?: string | null };
+  hands: { method: string; available: boolean; mediapipe: boolean; person: boolean; error: string | null } | null;
+  component_detector: string | null;
+  inspection: { confirm_missing_after: number; confirm_present_after: number; interval_s: number };
 }

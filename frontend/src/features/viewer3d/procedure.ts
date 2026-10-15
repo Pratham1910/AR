@@ -303,6 +303,8 @@ export interface StepGuide {
   instruction: string | null;
   state: "waiting" | "holding" | "done" | "complete" | "manual";
   statusText: string;
+  /** Part names this step is about: its animated parts and its expected end state's parts. */
+  parts: string[];
 }
 
 type HostEvent =

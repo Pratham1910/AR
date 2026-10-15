@@ -13,6 +13,12 @@ RANSAC, and the box/outline are moved by it. Scale is what carries depth:
 the cup getting bigger in the image means closer. Confidence is the share of
 points that both survived and agree with the fitted motion — it drops when
 the object is occluded, leaves the frame, or moves too fast to follow.
+
+Hands (Phase 7): given a hand mask (hand_mask.py), no point is seeded on a
+hand, and points that land on one are dropped before the motion fit — a
+hand moving past or over the object never drags it. Points hidden by a
+hand count as occluded, not as tracking failures. `occlusion` is the share
+of the tracked outline the hand covers.
 """
 
 from __future__ import annotations
@@ -33,6 +39,8 @@ class FlowUpdate:
     polygon: list[Vector2] | None = None
     scale: float = 1.0  # this frame's size change; > 1 = moved closer
     points: int = 0
+    occlusion: float = 0.0  # share of the tracked outline covered by the hand mask
+    hand_points: int = 0  # points dropped this frame because they landed on a hand
 
 
 class FlowBoxTracker:
@@ -62,9 +70,11 @@ class FlowBoxTracker:
         # 6DoF pose forward between pose estimates (trackers.propagate_pose).
         self._motion = np.eye(3)
 
-    def _seed(self, gray: np.ndarray, polygon: np.ndarray) -> np.ndarray | None:
+    def _seed(self, gray: np.ndarray, polygon: np.ndarray, exclude: np.ndarray | None = None) -> np.ndarray | None:
         mask = np.zeros(gray.shape, dtype=np.uint8)
         cv2.fillPoly(mask, [polygon.astype(np.int32)], 255)
+        if exclude is not None:
+            mask[exclude] = 0  # never seed on a hand
         points = cv2.goodFeaturesToTrack(
             gray, maxCorners=self.max_points, qualityLevel=0.01, minDistance=5, mask=mask
         )
@@ -72,7 +82,9 @@ class FlowBoxTracker:
             return None
         return points.astype(np.float32)
 
-    def initialize(self, gray: np.ndarray, bbox: BoundingBox, polygon: list[Vector2] | None) -> bool:
+    def initialize(
+        self, gray: np.ndarray, bbox: BoundingBox, polygon: list[Vector2] | None, exclude: np.ndarray | None = None
+    ) -> bool:
         """Lock onto the object the detector found. False if it has too
         little visible texture to follow (a plain, featureless surface)."""
         if polygon and len(polygon) >= 3:
@@ -81,7 +93,7 @@ class FlowBoxTracker:
             outline = np.array(
                 [[bbox.x1, bbox.y1], [bbox.x2, bbox.y1], [bbox.x2, bbox.y2], [bbox.x1, bbox.y2]], dtype=np.float32
             )
-        points = self._seed(gray, outline)
+        points = self._seed(gray, outline, exclude)
         if points is None:
             return False
         self._prev_gray, self._points, self._polygon = gray, points, outline
@@ -92,6 +104,39 @@ class FlowBoxTracker:
 
     def reset_motion(self) -> None:
         self._motion = np.eye(3)
+
+    def occlusion(self, exclude: np.ndarray | None) -> float:
+        """Share of the current outline that `exclude` (a hand mask) covers."""
+        if exclude is None or self._polygon is None:
+            return 0.0
+        h, w = exclude.shape
+        x1, y1 = np.floor(self._polygon.min(axis=0)).astype(int)
+        x2, y2 = np.ceil(self._polygon.max(axis=0)).astype(int) + 1
+        x1, y1, x2, y2 = max(0, x1), max(0, y1), min(w, x2), min(h, y2)
+        if x2 <= x1 or y2 <= y1:
+            return 0.0
+        inside = np.zeros((y2 - y1, x2 - x1), np.uint8)
+        cv2.fillPoly(inside, [(self._polygon - (x1, y1)).astype(np.int32)], 1)
+        area = int(inside.sum())
+        return float((inside.astype(bool) & exclude[y1:y2, x1:x2]).sum() / area) if area else 0.0
+
+    def resume(self, gray: np.ndarray, exclude: np.ndarray | None = None) -> bool:
+        """After the points were lost (e.g. a hand covered the object): seed
+        again inside the last known outline, off the hand, keeping the motion
+        so far. False if too little of the object is visible yet."""
+        if self._polygon is None:
+            return False
+        points = self._seed(gray, self._polygon, exclude)
+        if points is None:
+            return False
+        self._prev_gray, self._points = gray, points
+        self._seeded_count = len(points)
+        self.set_anchor()
+        return True
+
+    @property
+    def polygon(self) -> np.ndarray | None:
+        return None if self._polygon is None else self._polygon.copy()
 
     @property
     def motion_matrix(self) -> np.ndarray:
@@ -129,9 +174,12 @@ class FlowBoxTracker:
             int(min(height, y2 + margin)),
         )
 
-    def update(self, gray: np.ndarray) -> FlowUpdate:
+    def update(self, gray: np.ndarray, exclude: np.ndarray | None = None) -> FlowUpdate:
+        """Follow the object into `gray`. `exclude`: hand pixels — points on
+        it (before or after moving) are left out of the motion fit."""
         if self._prev_gray is None or self._points is None or self._polygon is None:
             return FlowUpdate(ok=False, confidence=0.0)
+        occlusion = self.occlusion(exclude)
 
         # Flow only on the region the object can be in (its outline plus room
         # to move): building image pyramids of the whole 1280x720 frame was
@@ -150,8 +198,24 @@ class FlowBoxTracker:
         good = (status_f.ravel() == 1) & (status_b.ravel() == 1) & (fb_error < self.fb_threshold)
 
         attempted = len(self._points)
+        hand_points = 0
+        if exclude is not None:
+            h, w = exclude.shape
+            on_hand = np.zeros(attempted, bool)
+            for pts in (self._points.reshape(-1, 2), forward.reshape(-1, 2)):
+                xi = np.clip(np.round(pts[:, 0]).astype(int), 0, w - 1)
+                yi = np.clip(np.round(pts[:, 1]).astype(int), 0, h - 1)
+                on_hand |= exclude[yi, xi]
+            hand_points = int(on_hand.sum())
+            good &= ~on_hand
+            # Hidden by a hand is occlusion, not a tracking failure: judge
+            # agreement among the points that could be seen.
+            attempted = max(1, attempted - hand_points)
         if good.sum() < self.min_points:
-            return FlowUpdate(ok=False, confidence=float(good.sum()) / attempted, points=int(good.sum()))
+            return FlowUpdate(
+                ok=False, confidence=float(good.sum()) / attempted, points=int(good.sum()),
+                occlusion=occlusion, hand_points=hand_points,
+            )
 
         old_pts, new_pts = self._points[good].reshape(-1, 2), forward[good].reshape(-1, 2)
         matrix, inliers = cv2.estimateAffinePartial2D(old_pts, new_pts, method=cv2.RANSAC, ransacReprojThreshold=3.0)
@@ -174,11 +238,12 @@ class FlowBoxTracker:
         self._points = new_pts[inlier_mask].reshape(-1, 1, 2).astype(np.float32)
         if self._anchor is not None:
             self._anchor = self._anchor[good][inlier_mask]
+        occlusion = self.occlusion(exclude)
         # Points are lost over time (occlusion, rotation turning a surface
         # away). Re-seed inside the tracked outline — from the tracker's own
         # estimate, not the detector — so tracking can continue indefinitely.
         if len(self._points) < self._seeded_count * self.reseed_fraction:
-            reseeded = self._seed(gray, self._polygon)
+            reseeded = self._seed(gray, self._polygon, exclude)
             if reseeded is not None:
                 carried = self.motion_since_anchor
                 self._points = reseeded
@@ -194,4 +259,6 @@ class FlowBoxTracker:
             polygon=[Vector2(x=float(x), y=float(y)) for x, y in polygon],
             scale=scale,
             points=len(self._points),
+            occlusion=occlusion,
+            hand_points=hand_points,
         )

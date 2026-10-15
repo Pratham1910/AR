@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { CameraSelect } from "../../components/CameraSelect";
@@ -10,13 +11,28 @@ import { applyPartView, EMPTY_PART_VIEW, indexParts, type PartView } from "./par
 import type { ProcedureHost, StepGuide } from "./procedure";
 import { FitCheck } from "./FitCheck";
 import { QAInspectionPanel } from "./QAInspectionPanel";
+import { ComponentInspectionPanel } from "./ComponentInspectionPanel";
+import { canvasMarkerTextures, componentColor, DiscrepancyRenderer, STATUS_COLOR } from "./discrepancy";
 import { BoxSelector } from "./BoxSelector";
-import { Models3DApi, VisionApi, apiErrorMessage, apiWebSocketUrl } from "../../services/api";
+import { CalibrationPanel } from "./CalibrationPanel";
+import {
+  InspectionReportsApi,
+  Models3DApi,
+  StationApi,
+  StationSettingsApi,
+  VisionApi,
+  apiErrorMessage,
+  apiWebSocketUrl,
+  GuideViewApi,
+} from "../../services/api";
+import { readWorkstation } from "../../workstation";
 import { ClassSelect } from "../../components/ClassSelect";
 import type {
   AnchorOffset,
   ARFrameResponse,
   CameraIntrinsics,
+  ComponentRegistry,
+  InspectionMode,
   Model3DPart,
   FeaturePoseResponse,
   PoseAxes,
@@ -64,6 +80,12 @@ interface Props {
   parts?: Model3DPart[];
   /** Plays an attached procedure on the overlaid model and receives the camera's part checks. */
   procedureHost?: ProcedureHost;
+  /** Shown in the sidebar's Procedure tab (the page's procedure and parts panels). */
+  sidebarExtra?: ReactNode;
+  /** The page toolbar's slot: the tracking controls render there, in the same row as asset and view. */
+  toolbarSlot?: HTMLElement | null;
+  /** Opens a saved inspection report (Reports screen). */
+  onOpenReport?: (reportId: string) => void;
 }
 
 type RegistrationMode = "marker" | "markerless" | "feature" | "model";
@@ -91,13 +113,30 @@ const STATE_LABEL: Record<ARFrameResponse["state"], string> = {
   SEARCHING: "Searching…",
   INITIALIZING: "Initializing pose…",
   TRACKING: "Tracking",
-  LOST: "Lost — holding last pose",
+  TRACKING_OCCLUDED: "Occluded — holding last pose",
+  LOST: "Tracking lost — holding last pose",
   RECOVERING: "Re-acquiring…",
 };
 
 const DIAGNOSTICS_KEY = "tvasta.ar.diagnosticsOpen";
 
 const newSessionId = () => `s-${Math.random().toString(36).slice(2)}`;
+
+/** Chaikin corner cutting: a rounder closed outline through the same shape (display only). */
+function chaikin(points: Vector2[], iterations: number): Vector2[] {
+  let out = points;
+  for (let k = 0; k < iterations && out.length >= 3; k++) {
+    const next: Vector2[] = [];
+    for (let i = 0; i < out.length; i++) {
+      const a = out[i];
+      const b = out[(i + 1) % out.length];
+      next.push({ x: 0.75 * a.x + 0.25 * b.x, y: 0.75 * a.y + 0.25 * b.y });
+      next.push({ x: 0.25 * a.x + 0.75 * b.x, y: 0.25 * a.y + 0.75 * b.y });
+    }
+    out = next;
+  }
+  return out;
+}
 
 /**
  * Phase 5 (Project.md #23-#26): physical <-> 3D registration.
@@ -138,10 +177,26 @@ export function RegistrationOverlay({
   partView = EMPTY_PART_VIEW,
   parts = [],
   procedureHost,
+  sidebarExtra,
+  onOpenReport,
+  toolbarSlot,
 }: Props) {
   // Model-based only: match just this part (e.g. the body, which looks the
   // same with the cap on or off); the whole assembly is still rendered.
   const [trackPart, setTrackPart] = useState<number | null>(null);
+  // Which side of the model faces where (settles top/bottom for symmetric
+  // objects like a flat box). Saved per model on the server: it's a property
+  // of the station, the same in every browser.
+  const [resting, setRestingState] = useState<"any" | "camera" | "upright" | "flat">("any");
+  useEffect(() => {
+    StationSettingsApi.get(modelId)
+      .then((s) => setRestingState(s.resting))
+      .catch(() => undefined);
+  }, [modelId]);
+  const setResting = (value: "any" | "camera" | "upright" | "flat") => {
+    setRestingState(value);
+    StationSettingsApi.save(modelId, { resting: value }).catch((err) => setApiError(apiErrorMessage(err)));
+  };
   // The procedure's current step, shown over the video.
   const [guide, setGuide] = useState<StepGuide | null>(procedureHost?.guide ?? null);
   useEffect(() => {
@@ -281,14 +336,17 @@ export function RegistrationOverlay({
     }
   };
 
-  const [mode, setMode] = useState<RegistrationMode>("markerless");
+  const [mode, setMode] = useState<RegistrationMode>("model");
   const [targetClassLabel, setTargetClassLabel] = useState(defaultTargetClassLabel || "");
   // Model-based mode: find the object by its 3D model (no class needed — works
   // for anything with a GLB, e.g. a junction box), or by a detector class.
   // How the object is found (both markerless and model-based): by its 3D model,
   // by a detector class, or from a box drawn around it on the video — the last
   // works for any object, with no class or model.
-  const [detectBy, setDetectBy] = useState<"model" | "class" | "box">("model");
+  const [detectBy, setDetectBy] = useState<"model" | "class" | "box" | "guide">("model");
+  // Guide view on screen: the model drawn as an outline at the guide pose (X-Ray style).
+  const guideShownRef = useRef(false);
+  const [guideBusy, setGuideBusy] = useState(false);
   const [initBox, setInitBox] = useState<[number, number, number, number] | null>(null);
   const needsClass = (mode === "markerless" || mode === "model") && detectBy === "class";
   const needsBox = (mode === "markerless" || mode === "model") && detectBy === "box";
@@ -396,6 +454,53 @@ export function RegistrationOverlay({
     }
   };
   const [liveTracking, setLiveTracking] = useState(false);
+  const [sideTab, setSideTab] = useState<"inspect" | "procedure" | "tracking" | "tools">("inspect");
+  // Fixed-station mode: this model's pose is locked (camera + fixtured part don't move).
+  const [stationLocked, setStationLocked] = useState(false);
+  // Where the operator last clicked to pick the object (stage %, shown briefly).
+  const [pickMark, setPickMark] = useState<{ left: number; top: number } | null>(null);
+  const [stationBusy, setStationBusy] = useState(false);
+  // Inspect only the current procedure step's components.
+  const [stepFocus, setStepFocus] = useState(true);
+  // "Save report": records the live inspection (Reports screen).
+  const [reportStatus, setReportStatus] = useState<{ id?: string; error?: string; saving?: boolean } | null>(null);
+  const saveReport = async () => {
+    setReportStatus({ saving: true });
+    try {
+      const { station, operator } = readWorkstation();
+      const report = await InspectionReportsApi.save(sessionIdRef.current, station || null, operator || null);
+      setReportStatus({ id: report.id });
+    } catch (err) {
+      setReportStatus({ error: apiErrorMessage(err) });
+    }
+  };
+  // Debug: draw the hand mask the tracker excludes (read by the stream handler).
+  const [showHands, setShowHands] = useState(false);
+  const showHandsRef = useRef(showHands);
+  showHandsRef.current = showHands;
+  // Phase 8 diagnostics: pose features predicted (dashed) vs found (solid), model corners.
+  const [showPoseFeatures, setShowPoseFeatures] = useState(true);
+  const showPoseFeaturesRef = useRef(showPoseFeatures);
+  showPoseFeaturesRef.current = showPoseFeatures;
+  const [calibrationOpen, setCalibrationOpen] = useState(false);
+
+  // Component inspection (model-based mode): runs on the tracking stream's
+  // frames; results come back with each frame. Kept apart from the overlay
+  // itself — its markers are drawn by DiscrepancyRenderer, cleared when off.
+  const [inspectionMode, setInspectionMode] = useState<InspectionMode>("off");
+  const [inspectionRun, setInspectionRun] = useState(() => newSessionId());
+  const [componentRegistry, setComponentRegistry] = useState<ComponentRegistry | null>(null);
+  const [registryError, setRegistryError] = useState<string | null>(null);
+  const [selectedComponent, setSelectedComponent] = useState<string | null>(null);
+  const [showAllMarkers, setShowAllMarkers] = useState(false);
+  const [inspectionDebug, setInspectionDebug] = useState(false);
+  // Each component's outline with its name on the video, coloured by status.
+  const [outlineNames, setOutlineNames] = useState(true);
+  const discrepancyRef = useRef<DiscrepancyRenderer | null>(null);
+  // Read by the stream's message handler, which outlives renders.
+  const inspectionViewRef = useRef({ selected: selectedComponent, showAll: showAllMarkers, debug: inspectionDebug, names: outlineNames });
+  inspectionViewRef.current = { selected: selectedComponent, showAll: showAllMarkers, debug: inspectionDebug, names: outlineNames };
+  const componentRegistryRef = useRef<ComponentRegistry | null>(null);
   const [apiError, setApiError] = useState<string | null>(null);
   const [renderStyle, setRenderStyle] = useState<RenderStyle>("solid");
   // Read by the model loader too, so a model (re)loaded while in X-Ray or
@@ -475,6 +580,9 @@ export function RegistrationOverlay({
         partsRef.current = indexParts(gltf);
         applyPartView(partsRef.current, partViewRef.current);
         procedureHost?.attach(partsRef.current);
+        discrepancyRef.current?.dispose();
+        discrepancyRef.current = new DiscrepancyRenderer(group, partsRef.current, canvasMarkerTextures);
+        if (componentRegistryRef.current) discrepancyRef.current.setComponents(componentRegistryRef.current.components);
         modelObjectRef.current = group;
         scene.add(group);
         setModelStatus("loaded");
@@ -534,6 +642,8 @@ export function RegistrationOverlay({
       cancelAnimationFrame(frameId);
       removeEnvironment();
       procedureHost?.detach(partsRef.current);
+      discrepancyRef.current?.dispose();
+      discrepancyRef.current = null;
       resizeObserver.disconnect();
       renderer.dispose();
       container.removeChild(renderer.domElement);
@@ -546,7 +656,7 @@ export function RegistrationOverlay({
     if (ctx && canvas) ctx.clearRect(0, 0, canvas.width, canvas.height);
   };
 
-  const drawPolygon = (points: Vector2[], color: string, label?: string) => {
+  const drawPolygon = (points: Vector2[], color: string, label?: string, smooth = false) => {
     const canvas = outlineCanvasRef.current;
     const video = videoRef.current;
     if (!canvas || !video || video.videoWidth === 0 || points.length === 0) return;
@@ -562,16 +672,22 @@ export function RegistrationOverlay({
     ctx.strokeStyle = color;
     ctx.lineWidth = 3;
     ctx.beginPath();
-    points.forEach((pt, i) => (i === 0 ? ctx.moveTo(pt.x, pt.y) : ctx.lineTo(pt.x, pt.y)));
+    // Display only: the tracked outline drawn rounded, without its vertex
+    // dots; the geometry the backend works with is unchanged.
+    const drawn = smooth ? chaikin(points, 2) : points;
+    drawn.forEach((pt, i) => (i === 0 ? ctx.moveTo(pt.x, pt.y) : ctx.lineTo(pt.x, pt.y)));
     ctx.closePath();
     ctx.stroke();
 
+    if (!smooth) {
+      ctx.fillStyle = color;
+      points.forEach((pt) => {
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 4, 0, Math.PI * 2);
+        ctx.fill();
+      });
+    }
     ctx.fillStyle = color;
-    points.forEach((pt) => {
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, 4, 0, Math.PI * 2);
-      ctx.fill();
-    });
 
     if (label) {
       ctx.font = "24px sans-serif";
@@ -812,9 +928,33 @@ export function RegistrationOverlay({
     clearOutline();
   };
 
+  // Components the inspection has decided also answer the procedure's "part
+  // present / removed" facts, for parts without their own calibration.
+  const withInspectionChecks = (result: ARFrameResponse) => {
+    const checks = [...(result.part_checks ?? [])];
+    const registry = componentRegistryRef.current;
+    for (const c of result.inspection?.components ?? []) {
+      const info = registry?.components.find((r) => r.id === c.id);
+      const name = info?.display_name ?? c.id;
+      if (checks.some((k) => k.part_name === name)) continue;
+      const state = c.status === "PRESENT" ? "present" : c.status === "MISSING_CONFIRMED" ? "absent" : "uncertain";
+      checks.push({
+        node_index: info?.node_index ?? -1,
+        part_name: name,
+        state,
+        confidence: c.confidence ?? 0,
+        brightness: 0,
+        region_px: ((c.bbox_px ?? [0, 0, 0, 0]) as [number, number, number, number]),
+        measure: "inspection",
+        region_polygon: null,
+      });
+    }
+    return checks;
+  };
+
   const applyArResult = (result: ARFrameResponse, roundTripMs: number) => {
     setArResult(result);
-    procedureHost?.publishChecks(result.part_checks ?? []);
+    procedureHost?.publishChecks(withInspectionChecks(result));
     setFrameMs(roundTripMs);
     applyCameraIntrinsics(result.intrinsics);
     if (result.events.length) setArEvents((events) => [...events, ...result.events].slice(-12));
@@ -853,11 +993,13 @@ export function RegistrationOverlay({
         `detected ${d.class_label} ${(d.confidence * 100).toFixed(0)}% — initializing pose`
       );
     } else if (obj && result.visible) {
-      const held = result.state === "LOST" || result.state === "RECOVERING" || result.state === "INITIALIZING";
+      const held =
+        result.state === "LOST" || result.state === "RECOVERING" || result.state === "INITIALIZING" || result.state === "TRACKING_OCCLUDED";
       const color = held ? "#ff7043" : result.monitoring ? "#ffca28" : "#00e676";
-      const label = `${held ? "held" : "tracking"} ${obj.class_label} #${obj.object_id} ${(obj.confidence * 100).toFixed(0)}%`;
+      const occluded = result.quality?.occlusion ? ` · ${(result.quality.occlusion * 100).toFixed(0)}% covered` : "";
+      const label = `${result.state === "TRACKING_OCCLUDED" ? "occluded" : held ? "held" : "tracking"} ${obj.class_label} #${obj.object_id} ${(obj.confidence * 100).toFixed(0)}%${occluded}`;
       if (obj.polygon && obj.polygon.length >= 3) {
-        drawPolygon(obj.polygon, color, label);
+        drawPolygon(obj.polygon, color, label, true);
       } else if (obj.bbox) {
         const [x1, y1, x2, y2] = obj.bbox;
         drawPolygon(
@@ -873,6 +1015,67 @@ export function RegistrationOverlay({
       }
     }
     if (result.visible && result.axes) drawAxes(result.axes);
+    // Debug: the hand mask kept out of tracking and inspection.
+    const handCtx = outlineCanvasRef.current?.getContext("2d");
+    if (handCtx && showHandsRef.current && result.hands?.outlines.length) {
+      handCtx.fillStyle = "rgba(255, 64, 129, 0.28)";
+      handCtx.strokeStyle = "#ff4081";
+      handCtx.lineWidth = 2;
+      for (const outline of result.hands.outlines) {
+        handCtx.beginPath();
+        outline.forEach((p, i) => (i === 0 ? handCtx.moveTo(p.x, p.y) : handCtx.lineTo(p.x, p.y)));
+        handCtx.closePath();
+        handCtx.fill();
+        handCtx.stroke();
+      }
+    }
+    // Pose features: where the pose puts each one (dashed ring, +) and the
+    // circle actually found there (solid dot), so a wrong orientation shows
+    // as a ring on empty surface and a dot somewhere else.
+    const featureCtx = outlineCanvasRef.current?.getContext("2d");
+    if (featureCtx && showPoseFeaturesRef.current && result.pose_features?.length) {
+      const FEATURE_COLOR: Record<string, string> = {
+        detected: "#00e676",
+        not_detected: "#ff5252",
+        occluded: "#9e9e9e",
+        hidden: "#9e9e9e",
+        facing_away: "#9e9e9e",
+        outside: "#9e9e9e",
+      };
+      for (const f of result.pose_features) {
+        const color = FEATURE_COLOR[f.status] ?? "#ffca28";
+        featureCtx.strokeStyle = color;
+        featureCtx.lineWidth = 2;
+        if (f.predicted_contour_px.length >= 3 && !["facing_away", "outside"].includes(f.status)) {
+          featureCtx.setLineDash([6, 4]);
+          featureCtx.beginPath();
+          f.predicted_contour_px.forEach((p, i) => (i === 0 ? featureCtx.moveTo(p.x, p.y) : featureCtx.lineTo(p.x, p.y)));
+          featureCtx.closePath();
+          featureCtx.stroke();
+          featureCtx.setLineDash([]);
+        }
+        const c = f.predicted_center_px;
+        if (c) {
+          featureCtx.beginPath();
+          featureCtx.moveTo(c.x - 7, c.y);
+          featureCtx.lineTo(c.x + 7, c.y);
+          featureCtx.moveTo(c.x, c.y - 7);
+          featureCtx.lineTo(c.x, c.y + 7);
+          featureCtx.stroke();
+          featureCtx.font = "bold 13px 'IBM Plex Sans', sans-serif";
+          featureCtx.fillStyle = color;
+          const residual = f.residual_px != null ? ` · ${f.residual_px.toFixed(1)} px` : "";
+          featureCtx.fillText(`${f.feature_id}: ${f.status.replace("_", " ")}${residual}`, c.x + 10, c.y - 10);
+        }
+        if (f.observed_center_px) {
+          featureCtx.fillStyle = "#00e676";
+          featureCtx.beginPath();
+          featureCtx.arc(f.observed_center_px.x, f.observed_center_px.y, 4, 0, Math.PI * 2);
+          featureCtx.fill();
+        }
+      }
+    }
+
     // The exact region each part check measured, colored by its verdict
     // (layered on top of the outline, like the axes).
     const ctx = outlineCanvasRef.current?.getContext("2d");
@@ -897,14 +1100,105 @@ export function RegistrationOverlay({
       }
     }
 
+    // Component inspection: markers on the model, and (debug view) what each
+    // component's check looked at in this frame.
+    const inspection = result.inspection;
+    if (inspection) {
+      discrepancyRef.current?.update(inspection.components, inspectionViewRef.current);
+      if (ctx && inspectionViewRef.current.names && !inspectionViewRef.current.debug) {
+        // Outline + name per component, in its status colour.
+        const registered = componentRegistryRef.current?.components ?? [];
+        const names = new Map(registered.map((r) => [r.id, r.display_name]));
+        const own = new Map(registered.map((r, i) => [r.id, componentColor(r, i)]));
+        const prefix: Partial<Record<string, string>> = {
+          MISSING_CONFIRMED: "MISSING: ",
+          MISSING_CANDIDATE: "CHECKING: ",
+          OCCLUDED: "OCCLUDED: ",
+          UNCERTAIN: "? ",
+        };
+        for (const c of inspection.components) {
+          if (!c.outline_px || c.outline_px.length < 3) continue;
+          const missing = c.status === "MISSING_CONFIRMED";
+          // Each part in its own colour; a missing / checking part switches to red / amber.
+          const color =
+            missing || c.status === "MISSING_CANDIDATE" ? STATUS_COLOR[c.status] : own.get(c.id) ?? STATUS_COLOR[c.status];
+          ctx.lineWidth = missing || c.id === inspectionViewRef.current.selected ? 4 : 2.5;
+          ctx.strokeStyle = color;
+          ctx.beginPath();
+          c.outline_px.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+          ctx.closePath();
+          if (missing) {
+            ctx.fillStyle = "rgba(255, 92, 92, 0.22)";
+            ctx.fill();
+          }
+          ctx.stroke();
+          const label = `${c.status === "PRESENT" ? "✓ " : prefix[c.status] ?? ""}${names.get(c.id) ?? c.id}`;
+          const [x1, y1] = c.bbox_px ?? [c.outline_px[0][0], c.outline_px[0][1]];
+          ctx.font = "bold 18px 'IBM Plex Sans', sans-serif";
+          const w = ctx.measureText(label).width + 12;
+          const ly = Math.max(24, y1 - 8);
+          ctx.fillStyle = "rgba(5, 8, 11, 0.8)";
+          ctx.fillRect(x1, ly - 19, w, 26);
+          ctx.fillStyle = color;
+          ctx.fillText(label, x1 + 6, ly);
+        }
+      }
+      if (ctx && inspectionViewRef.current.debug) {
+        for (const c of inspection.components) {
+          if (!c.bbox_px) continue;
+          const color = STATUS_COLOR[c.status];
+          ctx.strokeStyle = color;
+          ctx.lineWidth = c.id === inspectionViewRef.current.selected ? 3 : 1.5;
+          if (c.outline_px && c.outline_px.length >= 3) {
+            ctx.beginPath();
+            c.outline_px.forEach(([x, y], i) => (i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y)));
+            ctx.closePath();
+            ctx.stroke();
+          }
+          const [x1, y1, x2, y2] = c.bbox_px;
+          ctx.setLineDash([4, 3]);
+          ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+          ctx.setLineDash([]);
+          if (c.center_px) {
+            const [cx, cy] = c.center_px;
+            ctx.beginPath();
+            ctx.moveTo(cx - 5, cy);
+            ctx.lineTo(cx + 5, cy);
+            ctx.moveTo(cx, cy - 5);
+            ctx.lineTo(cx, cy + 5);
+            ctx.stroke();
+          }
+          ctx.fillStyle = color;
+          ctx.font = "bold 13px sans-serif";
+          ctx.fillText(`${c.id} ${c.visibility ?? ""}`, x2 + 4, y1 + 12);
+        }
+      }
+    } else {
+      discrepancyRef.current?.clear();
+    }
+
     // Hidden only once the session gives up (SEARCHING); while LOST the
     // backend keeps returning the last valid pose, so the model stays put
     // instead of flickering on a missed frame.
+    // Short-term prediction only while tracking is healthy: a held pose
+    // (occluded, lost, re-acquiring) stays put instead of drifting on.
+    const healthy = result.state === "TRACKING" && !result.monitoring;
+    if (!healthy) motionRef.current = null;
+    const showGuide = !result.visible && !!result.guide;
+    if (showGuide !== guideShownRef.current && modelObjectRef.current) {
+      applyRenderStyle(modelObjectRef.current, showGuide ? "xray" : renderStyleRef.current);
+    }
+    guideShownRef.current = showGuide;
     if (result.visible) {
-      applyModelTransform(result.position, result.quaternion, mode !== "model", result.capture_ms ?? undefined);
+      applyModelTransform(result.position, result.quaternion, mode !== "model", healthy ? result.capture_ms ?? undefined : undefined);
+    } else if (result.guide) {
+      // Guide view: the outline to line the real object up with.
+      applyModelTransform(result.guide.position, result.guide.quaternion, false);
     } else {
       applyModelTransform(null, null);
     }
+    // Faded while the pose is only held, so it never reads as a live fit.
+    if (overlayRef.current) overlayRef.current.style.opacity = result.state === "TRACKING" || showGuide ? "1" : "0.45";
   };
 
   const detectAndAlign = async () => {
@@ -939,7 +1233,7 @@ export function RegistrationOverlay({
           needsClass ? targetClassLabel : null,
           // model_id in markerless mode only enables the model's calibrated part checks.
           mode === "model"
-            ? { modelId, trackPart, detectBy, initBox: needsBox ? initBox : null }
+            ? { modelId, trackPart, detectBy, initBox: needsBox ? initBox : null, inspection: inspectionMode, inspectionRun }
             : { realWorldHeightM, modelId, detectBy, initBox: needsBox ? initBox : null }
         );
         if (sessionId !== sessionIdRef.current) return; // tracking was reset while this frame was in flight
@@ -973,7 +1267,13 @@ export function RegistrationOverlay({
       class_label: needsClass ? targetClassLabel : null,
       model_id: modelId,
       track_part: mode === "model" ? trackPart : null,
+      resting: mode === "model" ? resting : "any",
       real_world_height_m: mode === "markerless" ? realWorldHeightM : null,
+      inspection: mode === "model" ? inspectionMode : "off",
+      inspection_run: inspectionRun,
+      inspection_focus: focusIds.length ? focusIds : null,
+      station_lock: mode === "model" && stationLocked,
+      camera_label: deviceLabel || null,
     });
 
   // Live tracking (markerless / model-based) as a stream: every new camera
@@ -1081,24 +1381,178 @@ export function RegistrationOverlay({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveTracking, mode, targetClassLabel, realWorldHeightM, trackPart, detectBy]);
 
+  // The model's component registry (what can be inspected, and where on the model).
+  useEffect(() => {
+    if (mode !== "model") return;
+    let cancelled = false;
+    setRegistryError(null);
+    Models3DApi.components(modelId)
+      .then((registry) => {
+        if (cancelled) return;
+        componentRegistryRef.current = registry;
+        setComponentRegistry(registry);
+        discrepancyRef.current?.setComponents(registry.components);
+      })
+      .catch((err) => !cancelled && setRegistryError(apiErrorMessage(err)));
+    return () => {
+      cancelled = true;
+    };
+  }, [modelId, mode, inspectionRun]);
+
+  // The current step's components (matched by name to the registry), when step focus is on.
+  const focusIds = (() => {
+    if (!stepFocus || !guide || guide.state === "complete" || !componentRegistry) return [] as string[];
+    const norm = (v: string | null | undefined) => (v ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const wanted = new Set(guide.parts.map(norm));
+    return componentRegistry.components
+      .filter((c) => wanted.has(norm(c.display_name)) || wanted.has(norm(c.node_name)) || wanted.has(norm(c.id)))
+      .map((c) => c.id);
+  })();
+
+  // Click the object on the video to lock onto it (model mode): the backend
+  // tries the image segments under the click and keeps the one the 3D model
+  // fits best. For plain objects that searching by appearance can't find.
+  const canPick = mode === "model" && liveTracking && !needsBox && !stationLocked;
+  const pickObjectAt = (e: React.MouseEvent<HTMLDivElement>) => {
+    const video = videoRef.current;
+    const ws = wsRef.current;
+    if (!canPick || !video || !video.videoWidth || ws?.readyState !== WebSocket.OPEN) return;
+    if ((e.target as HTMLElement).closest("button, a, input, select, label, .hud")) return; // a control, not the video
+    const rect = video.getBoundingClientRect();
+    const fx = (e.clientX - rect.left) / rect.width;
+    const fy = (e.clientY - rect.top) / rect.height;
+    if (fx < 0 || fx > 1 || fy < 0 || fy > 1) return;
+    const point = [Math.round(fx * video.videoWidth), Math.round(fy * video.videoHeight)];
+    ws.send(JSON.stringify({ ...JSON.parse(streamConfig()), select_point: point }));
+    // Later configs carry no point: the backend selects once.
+    ws.send(streamConfig());
+    setPickMark({ left: fx * 100, top: fy * 100 });
+    window.setTimeout(() => setPickMark(null), 4000);
+    setArEvents((events) => [...events, `[UI] Selecting the object at (${point[0]}, ${point[1]})…`].slice(-12));
+  };
+
+  // Inspection and station choices reach the backend with the stream's configuration.
+  useEffect(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(streamConfig());
+    if (inspectionMode === "off") discrepancyRef.current?.clear();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inspectionMode, inspectionRun, stationLocked, focusIds.join(","), resting]);
+
+  // Is this model's station pose locked? (Saved on the backend, survives restarts.)
+  useEffect(() => {
+    if (mode !== "model") return;
+    StationApi.status(modelId)
+      .then((s) => setStationLocked(s.locked))
+      .catch(() => setStationLocked(false));
+  }, [modelId, mode]);
+
+  const saveGuideView = async () => {
+    if (!modelId) return;
+    setGuideBusy(true);
+    try {
+      await GuideViewApi.saveCurrent(modelId, sessionIdRef.current);
+      setArEvents((events) => [...events, "[UI] Guide view saved from the current pose"].slice(-12));
+    } catch (err) {
+      setApiError(apiErrorMessage(err));
+    } finally {
+      setGuideBusy(false);
+    }
+  };
+
+  const resetGuideView = async () => {
+    if (!modelId) return;
+    setGuideBusy(true);
+    try {
+      await GuideViewApi.reset(modelId);
+      setArEvents((events) => [...events, "[UI] Guide view reset to the default"].slice(-12));
+    } catch (err) {
+      setApiError(apiErrorMessage(err));
+    } finally {
+      setGuideBusy(false);
+    }
+  };
+
+  const lockStation = async () => {
+    const frame = captureFrameBase64();
+    if (!frame) return;
+    setStationBusy(true);
+    try {
+      await StationApi.lock(sessionIdRef.current, modelId, frame);
+      setStationLocked(true);
+      setArEvents((events) => [...events, "[STATION] Pose locked — tracking off, inspection uses the fixed pose"].slice(-12));
+    } catch (err) {
+      setApiError(apiErrorMessage(err));
+    } finally {
+      setStationBusy(false);
+    }
+  };
+
+  const unlockStation = async () => {
+    setStationBusy(true);
+    try {
+      await StationApi.unlock(modelId);
+      setStationLocked(false);
+      setArEvents((events) => [...events, "[STATION] Unlocked — tracking again"].slice(-12));
+    } catch (err) {
+      setApiError(apiErrorMessage(err));
+    } finally {
+      setStationBusy(false);
+    }
+  };
+
+  // A new selection / "mark all" applies to the markers straight away.
+  useEffect(() => {
+    const inspection = arResult?.inspection;
+    if (inspection) discrepancyRef.current?.update(inspection.components, inspectionViewRef.current);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedComponent, showAllMarkers]);
+
+  const resetInspection = () => {
+    discrepancyRef.current?.clear();
+    setSelectedComponent(null);
+    setInspectionRun(newSessionId()); // the backend starts the run over
+  };
+
+  const forgetReference = async () => {
+    try {
+      await Models3DApi.forgetComponentReference(modelId);
+      resetInspection();
+    } catch (err) {
+      setApiError(apiErrorMessage(err));
+    }
+  };
+
   const isAr = mode === "markerless" || mode === "model";
-  const modeInfo = AR_MODES.find(([value]) => value === mode)!;
+  // The stage keeps the camera's own aspect ratio, so the overlay lines up pixel for pixel.
+  const stageAspect = resolution ? (resolution.width / resolution.height).toFixed(4) : "1.7778";
+  const sideTabs = (
+    [
+      ["inspect", "Inspection", mode === "model"],
+      ["procedure", "Procedure", Boolean(sidebarExtra)],
+      ["tracking", "Tracking", true],
+      ["tools", "Tools", true],
+    ] as const
+  ).filter(([, , shown]) => shown);
+  const activeSideTab = sideTabs.some(([value]) => value === sideTab) ? sideTab : sideTabs[0][0];
 
   return (
-    <div>
-      <div className="ar-header">
-        <div className="segmented" role="tablist">
-          {AR_MODES.map(([value, label]) => (
-            <button key={value} role="tab" className={mode === value ? "active" : ""} onClick={() => setMode(value)}>
-              {label}
-            </button>
-          ))}
-        </div>
-      </div>
-      <p className="mode-description">{modeInfo[2]}</p>
-
+    <div className="ar-workspace">
+      <div className="ar-primary">
+      {(() => {
+        const topline = (
+      <div className="ar-topline">
+        <label className="field inline" title={AR_MODES.find(([value]) => value === mode)?.[2]}>
+          Tracking
+          <select value={mode} onChange={(e) => setMode(e.target.value as RegistrationMode)}>
+            {AR_MODES.map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
       {mode !== "marker" && (
-        <div className="settings-row">
+        <div className="settings-row inline">
           {(mode === "model" || mode === "markerless") && (
             <label title="3D model: matches renders of this model against the camera image — any object with a GLB. Object class: the stock detector's categories (bottle, cup, …). Draw a box: drag a rectangle around the object on the video — any object, no class or model; if tracking is lost it's found again by the 3D model.">
               Find object by
@@ -1112,6 +1566,15 @@ export function RegistrationOverlay({
                 <button className={detectBy === "box" ? "active" : ""} onClick={() => setDetectBy("box")}>
                   Draw a box
                 </button>
+                {mode === "model" && (
+                  <button
+                    className={detectBy === "guide" ? "active" : ""}
+                    onClick={() => setDetectBy("guide")}
+                    title="Nothing is detected: the model's outline is shown, you line the real object up with it, and tracking starts once its 3D edges match — the most reliable start for plain objects"
+                  >
+                    Guide view
+                  </button>
+                )}
               </span>
             </label>
           )}
@@ -1124,6 +1587,17 @@ export function RegistrationOverlay({
             <label>
               Object class
               <ClassSelect value={targetClassLabel} onChange={setTargetClassLabel} />
+            </label>
+          )}
+          {mode === "model" && (
+            <label title="Which side of the object faces where. Objects whose top and bottom look alike (a flat box) can otherwise lock upside down. Camera above: top faces the camera. Camera at the side: top is up in the image.">
+              Resting side
+              <select value={resting} onChange={(e) => setResting(e.target.value as "any" | "camera" | "upright" | "flat")}>
+                <option value="any">Any</option>
+                <option value="camera">Top faces camera</option>
+                <option value="flat">Flat, camera straight above</option>
+                <option value="upright">Upright (side view)</option>
+              </select>
             </label>
           )}
           {mode === "model" && parts.length > 1 && (
@@ -1197,7 +1671,20 @@ export function RegistrationOverlay({
         <p className="warning">Register a reference image of the object's labeled/textured surface first.</p>
       )}
 
-      <div className="ar-stage">
+      </div>
+        );
+        return toolbarSlot ? createPortal(topline, toolbarSlot) : topline;
+      })()}
+
+      {calibrationOpen && (
+        <CalibrationPanel captureFrameJpeg={captureFrameJpeg} cameraLabel={deviceLabel} onClose={() => setCalibrationOpen(false)} />
+      )}
+      <div className="stage-box">
+      <div
+        className={`ar-stage${canPick ? " pickable" : ""}`}
+        style={{ "--stage-ar": stageAspect } as React.CSSProperties}
+        onClick={pickObjectAt}
+      >
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
         <video ref={videoRef} autoPlay playsInline muted />
         <div ref={overlayRef} style={{ position: "absolute", inset: 0, pointerEvents: "none" }} />
@@ -1217,11 +1704,51 @@ export function RegistrationOverlay({
           />
         )}
 
+        {pickMark && <div className="pick-mark" style={{ left: `${pickMark.left}%`, top: `${pickMark.top}%` }} />}
+
         <div className="hud hud-top-left">
+          {isAr && arResult?.visible && arResult.quality?.orientation_status === "ambiguous" && (
+            <div className="hud-pill state-RECOVERING" title={arResult.quality.orientation_reason ?? ""}>
+              <span className="dot" />
+              Orientation unconfirmed
+              <span className="sub">{arResult.quality.orientation_reason}</span>
+            </div>
+          )}
+          {isAr && arResult?.visible && arResult.quality?.orientation_status === "confirmed" && (
+            <div className="hud-pill state-TRACKING" title="The pose features show which way round the object is">
+              <span className="dot" />
+              Orientation confirmed
+            </div>
+          )}
+          {arResult?.guide && !arResult.visible && (
+            <div className="hud-pill state-INITIALIZING">
+              <span className="dot" />
+              Line the object up with the outline
+              <span className="sub">
+                fit {arResult.guide.score != null ? `${Math.round(arResult.guide.score * 100)}%` : "—"} · locks at{" "}
+                {Math.round(arResult.guide.min_score * 100)}%{arResult.guide.saved ? " · saved view" : ""}
+              </span>
+            </div>
+          )}
+          {canPick && detectBy !== "guide" && (!arResult || arResult.state === "SEARCHING" || arResult.state === "LOST") && (
+            <div className="hud-pill">
+              <span className="dot" />
+              Click the object to lock onto it
+            </div>
+          )}
           {needsBox && !initBox && (
             <div className="hud-pill">
               <span className="dot" />
               Drag a box around the object
+            </div>
+          )}
+          {arResult?.station?.locked && (
+            <div className={`hud-pill ${arResult.station.moved ? "state-LOST" : "state-TRACKING"}`}>
+              <span className="dot" />
+              {arResult.station.moved ? "Part moved — re-align" : "Station locked"}
+              <span className="sub">
+                shift {arResult.station.shift_px != null ? `${arResult.station.shift_px.toFixed(1)} px` : "—"}
+              </span>
             </div>
           )}
           {isAr && arResult && (
@@ -1232,6 +1759,13 @@ export function RegistrationOverlay({
                 <span className="sub">
                   {arResult.object.class_label} · {(arResult.object.confidence * 100).toFixed(0)}%
                   {arResult.monitoring ? " · low confidence" : ""}
+                  {arResult.quality?.occlusion ? ` · ${(arResult.quality.occlusion * 100).toFixed(0)}% under a hand` : ""}
+                </span>
+              )}
+              {arResult.state === "TRACKING_OCCLUDED" && arResult.quality && (
+                <span className="sub">
+                  {((arResult.quality.occlusion ?? 0) * 100).toFixed(0)}% covered
+                  {arResult.quality.held_ms != null ? ` · ${(arResult.quality.held_ms / 1000).toFixed(1)} s` : ""}
                 </span>
               )}
             </div>
@@ -1282,6 +1816,7 @@ export function RegistrationOverlay({
           </div>
         )}
       </div>
+      </div>
 
       <div className="control-bar">
         <button
@@ -1290,19 +1825,50 @@ export function RegistrationOverlay({
           disabled={!ready && !liveTracking}
           title={isAr ? "Detect once, then track every frame" : "As fast as detection responds, smoothed"}
         >
-          {liveTracking ? "■ Stop tracking" : "▶ Start live tracking"}
+          {liveTracking ? "■ Stop tracking" : "▶ Start tracking"}
         </button>
         <button onClick={detectAndAlign} disabled={busy || !ready || liveTracking}>
-          {isAr ? (arResult?.state === "TRACKING" ? "Track one frame" : "Detect one frame") : busy ? "Detecting…" : "Detect & align"}
+          {isAr ? (arResult?.state === "TRACKING" ? "Track once" : "Detect once") : busy ? "Detecting…" : "Detect & align"}
         </button>
         {isAr && <button onClick={() => void resetTracking()}>Reset</button>}
-        <div className="spacer" />
+        {mode === "model" &&
+          (stationLocked ? (
+            <button
+              className="active"
+              onClick={() => void unlockStation()}
+              disabled={stationBusy}
+              title="Fixed station: the pose is locked. Unlock to track again (e.g. after moving the camera or fixture)."
+            >
+              🔒 Station locked
+            </button>
+          ) : (
+            <button
+              onClick={() => void lockStation()}
+              disabled={stationBusy || arResult?.state !== "TRACKING" || arResult.monitoring}
+              title="Fixed camera + part in a fixture: freeze this pose. Tracking stops; inspection uses the locked pose; a moved part is reported."
+            >
+              Lock station
+            </button>
+          ))}
+        {mode === "model" && modelId && (
+          <button
+            onClick={() => void saveGuideView()}
+            disabled={guideBusy || arResult?.state !== "TRACKING" || arResult.monitoring}
+            title="Use the pose tracked now as this model's guide view: its outline is shown there next time (Find object by: Guide view)"
+          >
+            Save guide view
+          </button>
+        )}
+        {mode === "model" && modelId && detectBy === "guide" && arResult?.guide?.saved && (
+          <button onClick={() => void resetGuideView()} disabled={guideBusy} title="Back to the default guide view">
+            Reset guide
+          </button>
+        )}
         <span
           className="view-style-toggle"
           title="How the 3D model is drawn — X-Ray and Wireframe let you see the real object through it to judge alignment"
         >
-          Model
-          <span className="segmented">
+          <span className="segmented" aria-label="Model display">
             {(
               [
                 ["solid", "Solid"],
@@ -1316,91 +1882,135 @@ export function RegistrationOverlay({
             ))}
           </span>
         </span>
-      </div>
-
-      <div className="status-row">
         <CameraStatusBadge status={cameraStatus} deviceLabel={deviceLabel} resolution={resolution} error={cameraError} />
         <CameraSelect devices={devices} selectedDeviceId={selectedDeviceId} onSelect={selectDevice} />
-        {modelStatus === "error" && <span className="camera-status camera-status-error">3D model: {modelError}</span>}
-        <div style={{ flex: 1 }} />
-        <span
-          className="save-frame"
-          title="Records raw camera frames (15/s, up to 60 s) to data/clips/<name>/ for the replay benchmark: python -m app.workers.replay_clip <name> --model <id>"
+        {isAr && (
+          <label
+            className="hint"
+            title={
+              arResult?.hands
+                ? arResult.hands.available
+                  ? `Hand mask from ${arResult.hands.sources.join(" + ") || "—"}: ${arResult.hands.hands} hand(s), ${arResult.hands.persons} person region(s)`
+                  : `No hand detector: ${arResult.hands.error ?? "disabled"}`
+                : "Draw the hand mask that tracking and inspection leave out"
+            }
+          >
+            <input type="checkbox" checked={showHands} onChange={(e) => setShowHands(e.target.checked)} /> Show hands
+            {arResult?.hands && !arResult.hands.available && " (no detector)"}
+          </label>
+        )}
+        {mode === "model" && (
+          <label className="hint" title="Draw each pose feature where the pose puts it (dashed) and the circle actually found (dot)">
+            <input type="checkbox" checked={showPoseFeatures} onChange={(e) => setShowPoseFeatures(e.target.checked)} /> Pose features
+          </label>
+        )}
+        <button
+          onClick={() => setCalibrationOpen((open) => !open)}
+          className={calibrationOpen ? "active" : ""}
+          title={
+            arResult
+              ? arResult.calibration_is_approximate
+                ? `Camera not calibrated: ${arResult.calibration_note ?? "intrinsics assumed"}`
+                : `Calibrated (${arResult.calibration_source}${arResult.calibration_rms_px != null ? `, ${arResult.calibration_rms_px.toFixed(2)} px RMS` : ""})`
+              : "Camera calibration"
+          }
         >
-          <input
-            value={clipName}
-            onChange={(e) => setClipName(e.target.value)}
-            placeholder="clip name"
-            disabled={recording !== null}
-          />
-          {recording ? (
-            <button className="stop" onClick={stopRecording}>
-              ■ {recording.seconds.toFixed(0)} s · {recording.frames} frames
-            </button>
-          ) : (
-            <button onClick={startRecording} disabled={!ready || !clipName.trim()}>
-              ● Record clip
-            </button>
-          )}
-          {clipSaved && <span className="hint">{clipSaved}</span>}
-        </span>
-        <span className="save-frame" title="Saves the raw camera frame (full resolution, without any overlay) to data/debug_frames/ for analysis">
-          <input
-            value={frameLabel}
-            onChange={(e) => setFrameLabel(e.target.value)}
-            placeholder="label, e.g. cap-off"
-          />
-          <button onClick={() => void saveFrame()} disabled={!ready || !frameLabel.trim()}>
-            Save frame
-          </button>
-          {frameSaved && <span className="hint">{frameSaved}</span>}
-        </span>
+          {arResult && !arResult.calibration_is_approximate ? "Camera calibrated" : "Calibrate camera"}
+        </button>
+        {modelStatus === "error" && <span className="camera-status camera-status-error">3D model: {modelError}</span>}
+      </div>
+      {apiError && <p className="error">{apiError}</p>}
       </div>
 
-      {mode === "model" && <FitCheck modelId={modelId} captureFrame={captureFrameBase64} disabled={!ready} />}
-
-      {mode === "model" && <QAInspectionPanel modelId={modelId} captureFrame={captureFrameBase64} disabled={!ready} />}
-
-      {(mode === "marker" || mode === "feature") && (
-        <div className="anchor-calibration">
-          <div className="panel-title">Model alignment</div>
-          <p className="hint">
-            Tracking gives the pose of the reference patch (the marker's face or the registered photo's plane), not
-            the model's own origin. If the model sits offset or tilted while tracking is stable, nudge it here and
-            save — once per model.
-          </p>
-          <div className="anchor-calibration-grid">
-            <div>
-              <strong>Position (m)</strong>
-              {(["x", "y", "z"] as const).map((axis) => (
-                <div key={axis} className="anchor-row">
-                  <span>{axis.toUpperCase()}: {anchorPos[axis].toFixed(3)}</span>
-                  <button onClick={() => nudgePos(axis, -0.01)}>−</button>
-                  <button onClick={() => nudgePos(axis, 0.01)}>+</button>
-                </div>
-              ))}
-            </div>
-            <div>
-              <strong>Rotation (°)</strong>
-              {(["rx", "ry", "rz"] as const).map((axis) => (
-                <div key={axis} className="anchor-row">
-                  <span>{axis.toUpperCase()}: {anchorEulerDeg[axis].toFixed(0)}</span>
-                  <button onClick={() => nudgeRot(axis, -5)}>−</button>
-                  <button onClick={() => nudgeRot(axis, 5)}>+</button>
-                </div>
-              ))}
-            </div>
-          </div>
-          <div className="anchor-calibration-actions">
-            <button className="primary" onClick={saveAnchor} disabled={anchorSaving}>
-              {anchorSaving ? "Saving…" : "Save alignment"}
+      <aside className="ar-sidebar" aria-label="Inspection, procedure and tracking">
+        <div className="side-tabs" role="tablist">
+          {sideTabs.map(([value, label]) => (
+            <button
+              key={value}
+              role="tab"
+              aria-selected={activeSideTab === value}
+              className={activeSideTab === value ? "active" : ""}
+              onClick={() => setSideTab(value)}
+            >
+              {label}
             </button>
-            <button onClick={resetAnchor}>Reset</button>
-            {anchorSaved && <span className="camera-status camera-status-ok">Saved</span>}
-          </div>
+          ))}
         </div>
-      )}
+        <div className="side-body">
+          {activeSideTab === "inspect" && (
+            <>
+        {mode === "model" && (
+          <ComponentInspectionPanel
+            registry={componentRegistry}
+            registryError={registryError}
+            inspection={inspectionMode === "off" ? null : arResult?.inspection ?? null}
+            mode={inspectionMode}
+            onMode={setInspectionMode}
+            onReset={resetInspection}
+            tracking={liveTracking}
+            selected={selectedComponent}
+            onSelect={setSelectedComponent}
+            showAll={showAllMarkers}
+            onShowAll={setShowAllMarkers}
+            debug={inspectionDebug}
+            onDebug={setInspectionDebug}
+            outlineNames={outlineNames}
+            onOutlineNames={setOutlineNames}
+            onForgetReference={() => void forgetReference()}
+            stepFocus={guide && guide.state !== "complete" ? { on: stepFocus, ids: focusIds, onChange: setStepFocus } : null}
+            onSaveReport={() => void saveReport()}
+            reportStatus={reportStatus}
+            onOpenReport={onOpenReport}
+          />
+        )}
 
+            </>
+          )}
+          {activeSideTab === "procedure" && sidebarExtra}
+          {activeSideTab === "tracking" && (
+            <>
+          <div className="card">
+            <div className="section-label" style={{ marginBottom: 10 }}>
+              Tracking health
+            </div>
+            <div className="health-grid">
+              <div>
+                <span>Status</span>
+                <strong>{arResult?.tracking_status?.replace("_", " ") ?? (liveTracking ? "STARTING" : "IDLE")}</strong>
+              </div>
+              <div>
+                <span>Confidence</span>
+                <strong>{arResult?.object ? `${(arResult.object.confidence * 100).toFixed(0)}%` : "—"}</strong>
+              </div>
+              <div>
+                <span>Model fit</span>
+                <strong>{arResult?.quality?.overlap != null ? arResult.quality.overlap.toFixed(2) : "—"}</strong>
+              </div>
+              <div>
+                <span>Flow support</span>
+                <strong>{arResult?.quality?.flow_support != null ? arResult.quality.flow_support.toFixed(2) : "—"}</strong>
+              </div>
+              <div>
+                <span>Hand cover</span>
+                <strong>
+                  {arResult?.quality?.occlusion != null ? `${(arResult.quality.occlusion * 100).toFixed(0)}%` : "—"}
+                </strong>
+              </div>
+              <div>
+                <span>Frame round trip</span>
+                <strong>{frameMs ? `${frameMs.toFixed(0)} ms` : "—"}</strong>
+              </div>
+            </div>
+          </div>
+
+          {arEvents.length > 0 && (
+            <div className="card event-log">
+              <div className="section-label" style={{ marginBottom: 8 }}>
+                Event log
+              </div>
+              <pre className="tracking-log">{[...arEvents].reverse().join("\n")}</pre>
+            </div>
+          )}
       {mode === "marker" && markerPose && (
         <div className={`pose-status ${markerPose.found ? "pose-found" : "pose-not-found"}`}>
           {markerPose.found ? (
@@ -1537,7 +2147,94 @@ export function RegistrationOverlay({
         </div>
       )}
 
-      {apiError && <p className="error">{apiError}</p>}
+            </>
+          )}
+          {activeSideTab === "tools" && (
+            <>
+      {mode === "model" && <FitCheck modelId={modelId} captureFrame={captureFrameBase64} disabled={!ready} />}
+
+
+      {mode === "model" && <QAInspectionPanel modelId={modelId} captureFrame={captureFrameBase64} disabled={!ready} />}
+
+      {(mode === "marker" || mode === "feature") && (
+        <div className="anchor-calibration">
+          <div className="panel-title">Model alignment</div>
+          <p className="hint">
+            Tracking gives the pose of the reference patch (the marker's face or the registered photo's plane), not
+            the model's own origin. If the model sits offset or tilted while tracking is stable, nudge it here and
+            save — once per model.
+          </p>
+          <div className="anchor-calibration-grid">
+            <div>
+              <strong>Position (m)</strong>
+              {(["x", "y", "z"] as const).map((axis) => (
+                <div key={axis} className="anchor-row">
+                  <span>{axis.toUpperCase()}: {anchorPos[axis].toFixed(3)}</span>
+                  <button onClick={() => nudgePos(axis, -0.01)}>−</button>
+                  <button onClick={() => nudgePos(axis, 0.01)}>+</button>
+                </div>
+              ))}
+            </div>
+            <div>
+              <strong>Rotation (°)</strong>
+              {(["rx", "ry", "rz"] as const).map((axis) => (
+                <div key={axis} className="anchor-row">
+                  <span>{axis.toUpperCase()}: {anchorEulerDeg[axis].toFixed(0)}</span>
+                  <button onClick={() => nudgeRot(axis, -5)}>−</button>
+                  <button onClick={() => nudgeRot(axis, 5)}>+</button>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="anchor-calibration-actions">
+            <button className="primary" onClick={saveAnchor} disabled={anchorSaving}>
+              {anchorSaving ? "Saving…" : "Save alignment"}
+            </button>
+            <button onClick={resetAnchor}>Reset</button>
+            {anchorSaved && <span className="camera-status camera-status-ok">Saved</span>}
+          </div>
+        </div>
+      )}
+
+              <div className="card tools-card">
+                <div className="section-label">Capture</div>
+        <span
+          className="save-frame"
+          title="Records raw camera frames (15/s, up to 60 s) to data/clips/<name>/ for the replay benchmark: python -m app.workers.replay_clip <name> --model <id>"
+        >
+          <input
+            value={clipName}
+            onChange={(e) => setClipName(e.target.value)}
+            placeholder="clip name"
+            disabled={recording !== null}
+          />
+          {recording ? (
+            <button className="stop" onClick={stopRecording}>
+              ■ {recording.seconds.toFixed(0)} s · {recording.frames} frames
+            </button>
+          ) : (
+            <button onClick={startRecording} disabled={!ready || !clipName.trim()}>
+              ● Record clip
+            </button>
+          )}
+          {clipSaved && <span className="hint">{clipSaved}</span>}
+        </span>
+        <span className="save-frame" title="Saves the raw camera frame (full resolution, without any overlay) to data/debug_frames/ for analysis">
+          <input
+            value={frameLabel}
+            onChange={(e) => setFrameLabel(e.target.value)}
+            placeholder="label, e.g. cap-off"
+          />
+          <button onClick={() => void saveFrame()} disabled={!ready || !frameLabel.trim()}>
+            Save frame
+          </button>
+          {frameSaved && <span className="hint">{frameSaved}</span>}
+        </span>
+              </div>
+            </>
+          )}
+        </div>
+      </aside>
     </div>
   );
 }

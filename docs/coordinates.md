@@ -37,13 +37,34 @@ the frame size. The AR overlay builds its projection matrix directly from
 those intrinsics (`applyCameraIntrinsics` in `RegistrationOverlay.tsx`), so
 an off-center principal point is honored, not approximated by a field of view.
 
-- Without a calibration file the intrinsics are an **assumed** 70° horizontal
-  field of view with a centered principal point and no distortion; the UI says
-  so. Run `python -m app.workers.calibrate_camera` with a printed checkerboard
-  and set `CAMERA_CALIBRATION_PATH` for a real one.
-- Lens distortion is not undistorted before rendering. With an approximate
-  calibration it's zero by definition; with a real one, strongly distorting
-  lenses will show some edge-of-frame mismatch.
+- Without a calibration the intrinsics are an **assumed** field of view
+  (`CAMERA_ASSUMED_HFOV_DEG`, 82° for the BRIO) with a centred principal point
+  and no distortion; every AR response says so (`calibration_is_approximate`,
+  `calibration_note`).
+- **Calibrate from the app** (AR view → *Calibrate camera*: capture 15–20
+  checkerboard frames, *Compute*) or with `python -m app.workers.calibrate_camera`.
+  The result goes to `data/calibration/camera.json` (used automatically) with
+  the camera's name, date, RMS error and version. It is scaled to other
+  resolutions of the same aspect, and **not used** for a different camera or
+  aspect — the approximate model is used instead, with the reason.
+- **Lens distortion** (Phase 8): with a real calibration, model-based frames
+  are undistorted once on arrival (`calibration.undistort`, same camera
+  matrix), so MegaPose, the edge fit, the pose features and the overlay's
+  pinhole camera all work on one distortion-free image. The video on screen
+  is still the raw one: near the corners the overlay can be off by up to
+  `distortion_removed_px` (reported per frame).
+- Verified by test (`tests/backend/test_calibration_pipeline.py`): a model
+  point rendered through the Three.js chain (`cv_model_pose_to_threejs` +
+  the intrinsics projection) lands on exactly the pixel OpenCV projects it
+  to (< 1e-6 px) — no mirroring, axis flip or principal-point error. Nothing
+  mirrors the video either (no `scaleX(-1)` anywhere).
+
+## Symmetric objects (Phase 8)
+
+A pose found from geometry has a **twin** for each rotational symmetry of the
+model (a plain box: 180° about each axis). Twins are `T_camera_object @ [S, 0; 0, 1]`
+in the object (glTF) frame, about the model's origin (its bounding-box
+centre). See `pose/symmetry.py` and `pose/disambiguation.py`.
 
 ## Depth (Z)
 

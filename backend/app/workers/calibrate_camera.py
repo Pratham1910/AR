@@ -26,7 +26,9 @@ DEFAULT_IMAGES_DIR = Path(__file__).resolve().parents[3] / "data" / "calibration
 DEFAULT_OUTPUT_PATH = Path(__file__).resolve().parents[3] / "data" / "calibration" / "camera.json"
 
 
-def calibrate(images_dir: Path, pattern_cols: int, pattern_rows: int, square_size_m: float) -> CameraCalibration:
+def calibrate(
+    images_dir: Path, pattern_cols: int, pattern_rows: int, square_size_m: float, camera_label: str | None = None
+) -> CameraCalibration:
     pattern_size = (pattern_cols, pattern_rows)
     object_points_template = np.zeros((pattern_cols * pattern_rows, 3), dtype=np.float32)
     object_points_template[:, :2] = np.mgrid[0:pattern_cols, 0:pattern_rows].T.reshape(-1, 2) * square_size_m
@@ -64,14 +66,21 @@ def calibrate(images_dir: Path, pattern_cols: int, pattern_rows: int, square_siz
         raise ValueError(f"Only {len(object_points)} usable calibration images found — need at least 5-10.")
 
     assert image_size is not None
-    _, camera_matrix, dist_coeffs, _, _ = cv2.calibrateCamera(
+    rms, camera_matrix, dist_coeffs, _, _ = cv2.calibrateCamera(
         object_points, image_points, image_size, None, None
     )
+    from datetime import datetime, timezone
+
     return CameraCalibration(
         camera_matrix=camera_matrix,
         dist_coeffs=dist_coeffs.flatten(),
         image_width=image_size[0],
         image_height=image_size[1],
+        source=str(images_dir),
+        camera_label=camera_label,
+        created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        rms_px=float(rms),
+        images_used=len(object_points),
     )
 
 
@@ -82,14 +91,16 @@ def main() -> None:
     parser.add_argument("--pattern-rows", type=int, default=6, help="Internal corners, vertical")
     parser.add_argument("--square-size-m", type=float, default=0.025, help="Checkerboard square side, in meters")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH)
+    parser.add_argument("--camera-label", default=None, help="The camera's name as the browser lists it")
     args = parser.parse_args()
 
     print(f"Calibrating from {args.images_dir} ...")
-    calibration = calibrate(args.images_dir, args.pattern_cols, args.pattern_rows, args.square_size_m)
+    calibration = calibrate(args.images_dir, args.pattern_cols, args.pattern_rows, args.square_size_m, args.camera_label)
+    print(f"RMS reprojection error: {calibration.rms_px:.3f} px from {calibration.images_used} images")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     calibration.save(args.output)
     print(f"Wrote {args.output}")
-    print(f"Set CAMERA_CALIBRATION_PATH={args.output} in .env to use it.")
+    print("Used automatically from data/calibration/camera.json (or set CAMERA_CALIBRATION_PATH).")
 
 
 if __name__ == "__main__":

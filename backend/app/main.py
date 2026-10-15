@@ -8,7 +8,20 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.exc import OperationalError
 
-from app.api import assets, auth, evidence, inspection, metrology, models3d, procedures, video, vision
+from app.api import (
+    assets,
+    auth,
+    calibration,
+    component_inspection,
+    inspection_reports,
+    evidence,
+    inspection,
+    metrology,
+    models3d,
+    procedures,
+    video,
+    vision,
+)
 from app.core.config import get_settings
 
 app = FastAPI(
@@ -46,8 +59,11 @@ app.include_router(inspection.router)
 app.include_router(vision.router)
 app.include_router(evidence.router)
 app.include_router(models3d.router)
+app.include_router(component_inspection.router)
+app.include_router(inspection_reports.router)
 app.include_router(video.router)
 app.include_router(metrology.router)
+app.include_router(calibration.router)
 
 # Serves GLB/glTF files referenced by Model3D.storage_key (Project.md #20,
 # Phase 4). A later phase can move this behind MinIO/S3 without changing the

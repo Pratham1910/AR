@@ -1,0 +1,500 @@
+{
+  "locks": [
+    {
+      "scene": "turned 0 deg on the desk",
+      "before": {
+        "correct": 2,
+        "flipped": 4,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 0,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 4,
+        "feature_residual_px_mean": 1.1592592833503974,
+        "latency_ms_mean": 632.4491333337695,
+        "latency_ms_p95": 713.957299998583
+      },
+      "after": {
+        "correct": 6,
+        "flipped": 0,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 6,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 0,
+        "feature_residual_px_mean": 1.7907672711064009,
+        "latency_ms_mean": 772.2484166661161,
+        "latency_ms_p95": 878.3659750006336
+      }
+    },
+    {
+      "scene": "turned 90 deg on the desk",
+      "before": {
+        "correct": 1,
+        "flipped": 5,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 0,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 5,
+        "feature_residual_px_mean": 1.0011478677261973,
+        "latency_ms_mean": 502.495116666978,
+        "latency_ms_p95": 608.3426999994117
+      },
+      "after": {
+        "correct": 6,
+        "flipped": 0,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 6,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 0,
+        "feature_residual_px_mean": 1.0856068759737159,
+        "latency_ms_mean": 770.3913499996512,
+        "latency_ms_p95": 808.0758249980136
+      }
+    },
+    {
+      "scene": "turned 180 deg on the desk",
+      "before": {
+        "correct": 2,
+        "flipped": 4,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 0,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 4,
+        "feature_residual_px_mean": 1.3109636019979687,
+        "latency_ms_mean": 538.350216664791,
+        "latency_ms_p95": 594.356899997365
+      },
+      "after": {
+        "correct": 6,
+        "flipped": 0,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 6,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 0,
+        "feature_residual_px_mean": 1.3309123148228483,
+        "latency_ms_mean": 792.0599999985521,
+        "latency_ms_p95": 865.3621749999729
+      }
+    },
+    {
+      "scene": "turned 270 deg on the desk",
+      "before": {
+        "correct": 3,
+        "flipped": 3,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 0,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 3,
+        "feature_residual_px_mean": 1.0410182128540366,
+        "latency_ms_mean": 513.8693999991423,
+        "latency_ms_p95": 614.4778500001848
+      },
+      "after": {
+        "correct": 6,
+        "flipped": 0,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 6,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 0,
+        "feature_residual_px_mean": 1.0640902142283473,
+        "latency_ms_mean": 669.2224666658149,
+        "latency_ms_p95": 826.1698749993229
+      }
+    },
+    {
+      "scene": "camera 35 deg above the desk",
+      "before": {
+        "correct": 1,
+        "flipped": 2,
+        "off": 3,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 0,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 5,
+        "feature_residual_px_mean": 1.1268713029620971,
+        "latency_ms_mean": 442.34256666580524,
+        "latency_ms_p95": 505.85620000128984
+      },
+      "after": {
+        "correct": 5,
+        "flipped": 1,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 1,
+        "ambiguous": 5,
+        "wrong_pose_inspectable": 0,
+        "feature_residual_px_mean": 2.8018444503981965,
+        "latency_ms_mean": 629.4312000003023,
+        "latency_ms_p95": 852.2814999978436
+      }
+    },
+    {
+      "scene": "camera 55 deg above the desk",
+      "before": {
+        "correct": 1,
+        "flipped": 5,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 0,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 5,
+        "feature_residual_px_mean": 1.3581623545699804,
+        "latency_ms_mean": 342.5128166648695,
+        "latency_ms_p95": 387.92287499927625
+      },
+      "after": {
+        "correct": 6,
+        "flipped": 0,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 6,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 0,
+        "feature_residual_px_mean": 1.1519052012036066,
+        "latency_ms_mean": 656.6226166663304,
+        "latency_ms_p95": 761.5552749957715
+      }
+    },
+    {
+      "scene": "camera 75 deg above the desk",
+      "before": {
+        "correct": 1,
+        "flipped": 5,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 0,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 5,
+        "feature_residual_px_mean": 1.0697684122958635,
+        "latency_ms_mean": 340.2761833337233,
+        "latency_ms_p95": 365.4677749982511
+      },
+      "after": {
+        "correct": 6,
+        "flipped": 0,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 6,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 0,
+        "feature_residual_px_mean": 1.5234584666079816,
+        "latency_ms_mean": 589.9826999981693,
+        "latency_ms_p95": 646.7861499950232
+      }
+    },
+    {
+      "scene": "distance 0.25 m",
+      "before": {
+        "correct": 2,
+        "flipped": 4,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 0,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 4,
+        "feature_residual_px_mean": 1.3441142784114968,
+        "latency_ms_mean": 558.0391333326892,
+        "latency_ms_p95": 595.0189000013779
+      },
+      "after": {
+        "correct": 6,
+        "flipped": 0,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 6,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 0,
+        "feature_residual_px_mean": 1.6874893097506007,
+        "latency_ms_mean": 725.53381666512,
+        "latency_ms_p95": 844.6023499946023
+      }
+    },
+    {
+      "scene": "distance 0.45 m",
+      "before": {
+        "correct": 3,
+        "flipped": 3,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 0,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 3,
+        "feature_residual_px_mean": 0.6481157618770499,
+        "latency_ms_mean": 521.0414166673824,
+        "latency_ms_p95": 588.0419749973953
+      },
+      "after": {
+        "correct": 6,
+        "flipped": 0,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 6,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 0,
+        "feature_residual_px_mean": 0.9282978169592188,
+        "latency_ms_mean": 702.1240166674639,
+        "latency_ms_p95": 842.1478000018396
+      }
+    },
+    {
+      "scene": "moved to the left of the frame",
+      "before": {
+        "correct": 4,
+        "flipped": 2,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 0,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 2,
+        "feature_residual_px_mean": 4.923538439237272,
+        "latency_ms_mean": 491.43581666673225,
+        "latency_ms_p95": 515.0431250003749
+      },
+      "after": {
+        "correct": 6,
+        "flipped": 0,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 6,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 0,
+        "feature_residual_px_mean": 4.002963332157865,
+        "latency_ms_mean": 693.8316500005991,
+        "latency_ms_p95": 827.1277499989083
+      }
+    },
+    {
+      "scene": "moved to the right of the frame",
+      "before": {
+        "correct": 2,
+        "flipped": 4,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 0,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 4,
+        "feature_residual_px_mean": 0.9050912494608307,
+        "latency_ms_mean": 537.8075666667428,
+        "latency_ms_p95": 641.4942999981577
+      },
+      "after": {
+        "correct": 6,
+        "flipped": 0,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 6,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 0,
+        "feature_residual_px_mean": 0.8208978508320244,
+        "latency_ms_mean": 807.6277666659735,
+        "latency_ms_p95": 877.4799500024528
+      }
+    },
+    {
+      "scene": "tilted 12 deg",
+      "before": {
+        "correct": 2,
+        "flipped": 4,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 0,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 4,
+        "feature_residual_px_mean": 1.1945405906107098,
+        "latency_ms_mean": 539.5468000012139,
+        "latency_ms_p95": 568.8896250030666
+      },
+      "after": {
+        "correct": 6,
+        "flipped": 0,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 6,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 0,
+        "feature_residual_px_mean": 1.3040641067376146,
+        "latency_ms_mean": 724.1060166646397,
+        "latency_ms_p95": 843.0699999953504
+      }
+    },
+    {
+      "scene": "hand over the circle",
+      "before": {
+        "correct": 4,
+        "flipped": 2,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 0,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 2,
+        "feature_residual_px_mean": null,
+        "latency_ms_mean": 599.0614499981651,
+        "latency_ms_p95": 675.8321249981236
+      },
+      "after": {
+        "correct": 4,
+        "flipped": 2,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 0,
+        "ambiguous": 6,
+        "wrong_pose_inspectable": 0,
+        "feature_residual_px_mean": null,
+        "latency_ms_mean": 680.5321833332224,
+        "latency_ms_p95": 720.5232249998517
+      }
+    },
+    {
+      "scene": "hand over a corner (circle visible)",
+      "before": {
+        "correct": 3,
+        "flipped": 3,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 0,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 3,
+        "feature_residual_px_mean": 1.134467037658596,
+        "latency_ms_mean": 667.6667666676318,
+        "latency_ms_p95": 725.2072250012134
+      },
+      "after": {
+        "correct": 6,
+        "flipped": 0,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 6,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 0,
+        "feature_residual_px_mean": 1.5753674410480054,
+        "latency_ms_mean": 787.2595166675941,
+        "latency_ms_p95": 926.0807750015374
+      }
+    },
+    {
+      "scene": "low contrast, noisy",
+      "before": {
+        "correct": 3,
+        "flipped": 3,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 0,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 3,
+        "feature_residual_px_mean": 1.1169595758840698,
+        "latency_ms_mean": 559.6759333335891,
+        "latency_ms_p95": 653.4221500023705
+      },
+      "after": {
+        "correct": 6,
+        "flipped": 0,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 6,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 0,
+        "feature_residual_px_mean": 1.3799328537641677,
+        "latency_ms_mean": 717.0664833320188,
+        "latency_ms_p95": 852.979499999492
+      }
+    },
+    {
+      "scene": "plain box (no circle)",
+      "before": {
+        "correct": 1,
+        "flipped": 5,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 0,
+        "ambiguous": 0,
+        "wrong_pose_inspectable": 5,
+        "feature_residual_px_mean": null,
+        "latency_ms_mean": 576.8087999992227,
+        "latency_ms_p95": 641.2875000005442
+      },
+      "after": {
+        "correct": 1,
+        "flipped": 5,
+        "off": 0,
+        "refused": 0,
+        "trials": 6,
+        "confirmed": 0,
+        "ambiguous": 6,
+        "wrong_pose_inspectable": 0,
+        "feature_residual_px_mean": null,
+        "latency_ms_mean": 673.4005333346431,
+        "latency_ms_p95": 728.4230250024848
+      }
+    }
+  ],
+  "tracking": {
+    "before": {
+      "corrections": 12,
+      "shown_pose_flips": 8,
+      "worst_error_deg": 178.73510471355408,
+      "guard": {
+        "twin_flips_suppressed": 0,
+        "corrections_rejected": 0,
+        "orientation_switches": 0
+      },
+      "update_ms_mean": 19.957325001087156
+    },
+    "after": {
+      "corrections": 12,
+      "shown_pose_flips": 0,
+      "worst_error_deg": 1.1357415879006694,
+      "guard": {
+        "twin_flips_suppressed": 6,
+        "corrections_rejected": 0,
+        "orientation_switches": 0
+      },
+      "update_ms_mean": 19.650775000021287
+    },
+    "operator_turns_box_round": {
+      "before": {
+        "error_deg_after_one_correction": 126.00000263451996
+      },
+      "after": {
+        "error_deg_after_one_correction": 0.0
+      }
+    }
+  }
+}

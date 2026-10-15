@@ -12,9 +12,19 @@ pyjwt==2.9.0
 
 opencv-contrib-python-headless==4.10.0.84
 numpy==1.26.4
+# 6DoF least-squares for 3D edge alignment (app/services/pose/edge_align.py); already installed via ultralytics
+scipy>=1.11
 ultralytics==8.3.10
 supervision==0.24.0
 open3d==0.18.0
+# Hand masks while tracking (Phase 7, app/services/vision/hand_mask.py). Install
+# WITHOUT its declared deps — they pull a second OpenCV build that clashes with
+# opencv-contrib-python-headless above:
+#   pip install --no-deps mediapipe==1.1.0 "absl-py~=2.3" "flatbuffers~=25.9" "sounddevice~=0.5"
+# Model: models/mediapipe/hand_landmarker.task, from
+#   https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+# Optional: without it, hands are found by the segmentation model's "person" class only.
+# mediapipe==1.1.0
 
 pytest==8.3.3
 httpx==0.27.2

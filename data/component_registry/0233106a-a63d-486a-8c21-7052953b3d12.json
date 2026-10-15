@@ -1,0 +1,12 @@
+{
+  "objectId": "HDD_CASE",
+  "components": [
+    {
+      "id": "COVER_001",
+      "nodeIndex": 2,
+      "type": "cover",
+      "displayName": "Top cover",
+      "required": true
+    }
+  ]
+}

@@ -50,5 +50,16 @@ docker/volumes/
 data/models/.deleted/
 data/debug_frames/
 data/part_calibration/
+data/component_reference/
+data/inspection_logs/
+data/inspection_reports/
+data/station_locks/
+data/station_settings/
 data/procedures/
 data/clips/
+
+# Backend output when started in the background
+backend/*.log
+
+# Downloaded model weights (see backend/requirements.txt)
+models/mediapipe/*.task

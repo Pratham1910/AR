@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Camera Diagnostic</title>
+    <style>
+      body { font: 14px/1.5 system-ui, sans-serif; margin: 0; padding: 16px; background: #111; color: #eee; }
+      h1 { font-size: 1.1rem; margin: 0 0 4px; }
+      p.sub { color: #999; margin: 0 0 16px; }
+      button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid #555;
+               background: #222; color: #eee; cursor: pointer; }
+      button:hover { background: #2c2c2c; }
+      table { border-collapse: collapse; width: 100%; margin-top: 16px; }
+      th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid #333; vertical-align: top; }
+      th { color: #999; font-weight: 600; }
+      .ok { color: #22c55e; } .bad { color: #ef4444; } .warn { color: #eab308; }
+      code { background: #1e1e1e; padding: 1px 5px; border-radius: 3px; font-size: 0.9em; }
+      video { max-width: 320px; border-radius: 6px; background: #000; display: block; margin-top: 10px; }
+      #log { white-space: pre-wrap; background: #1a1a1a; padding: 10px; border-radius: 6px;
+             margin-top: 16px; font-family: ui-monospace, monospace; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>Camera Diagnostic</h1>
+    <p class="sub">
+      Opens every camera the browser can see, one at a time, and reports whether it actually
+      delivers a non-black picture. Served from localhost so getUserMedia has a secure context.
+    </p>
+
+    <button id="run">Test all cameras</button>
+    <video id="preview" autoplay muted playsinline></video>
+    <div id="out"></div>
+    <div id="log"></div>
+
+    <script>
+      const out = document.getElementById("out");
+      const logEl = document.getElementById("log");
+      const preview = document.getElementById("preview");
+      const log = (m) => { logEl.textContent += m + "\n"; };
+
+      // Same ladder the app uses, so results transfer directly.
+      const MODES = [
+        { label: "720p30", c: { width: { ideal: 1280, max: 1280 }, height: { ideal: 720, max: 720 }, frameRate: { ideal: 30, max: 30 } } },
+        { label: "480p30", c: { width: { ideal: 640, max: 640 }, height: { ideal: 480, max: 480 }, frameRate: { ideal: 30, max: 30 } } },
+        { label: "uncapped", c: {} },
+      ];
+
+      // Mean luma of a frame grabbed from the video element. A camera that opens
+      // but sends nothing reads ~0 here, which is what distinguishes a dead
+      // virtual camera from a working one.
+      function brightness(video) {
+        const canvas = document.createElement("canvas");
+        const w = Math.min(video.videoWidth, 160);
+        const h = Math.round((w / video.videoWidth) * video.videoHeight) || 1;
+        if (!w || !h) return null;
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(video, 0, 0, w, h);
+        const { data } = ctx.getImageData(0, 0, w, h);
+        let sum = 0;
+        for (let i = 0; i < data.length; i += 4) sum += (data[i] + data[i + 1] + data[i + 2]) / 3;
+        return sum / (data.length / 4);
+      }
+
+      const waitForFrame = (video, ms = 3000) =>
+        new Promise((resolve) => {
+          if (video.videoWidth > 0) return resolve(true);
+          const t = setTimeout(() => { cleanup(); resolve(false); }, ms);
+          const hit = () => { if (video.videoWidth > 0) { cleanup(); resolve(true); } };
+          const cleanup = () => {
+            clearTimeout(t);
+            video.removeEventListener("loadedmetadata", hit);
+            video.removeEventListener("playing", hit);
+          };
+          video.addEventListener("loadedmetadata", hit);
+          video.addEventListener("playing", hit);
+        });
+
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      async function testDevice(device) {
+        for (const mode of MODES) {
+          let stream = null;
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: { deviceId: { exact: device.deviceId }, ...mode.c },
+            });
+          } catch (err) {
+            log(`  ${device.label} @ ${mode.label}: open failed — ${err.name}: ${err.message}`);
+            continue; // try a smaller mode
+          }
+
+          const track = stream.getVideoTracks()[0];
+          const settings = track ? track.getSettings() : {};
+          preview.srcObject = stream;
+          await preview.play().catch(() => {});
+          const gotFrame = await waitForFrame(preview);
+          // Let auto-exposure settle before judging darkness.
+          await sleep(900);
+          const lum = gotFrame ? brightness(preview) : null;
+          const res = `${settings.width || "?"}x${settings.height || "?"}@${settings.frameRate ? Math.round(settings.frameRate) : "?"}`;
+
+          stream.getTracks().forEach((t) => t.stop());
+          preview.srcObject = null;
+
+          return {
+            mode: mode.label, opened: true, gotFrame,
+            muted: track ? track.muted : null,
+            res, lum,
+          };
+        }
+        return { mode: "—", opened: false, gotFrame: false, muted: null, res: "—", lum: null };
+      }
+
+      async function run() {
+        out.innerHTML = ""; logEl.textContent = "";
+        log("Requesting permission so device labels are visible…");
+        try {
+          const warmup = await navigator.mediaDevices.getUserMedia({ video: true });
+          warmup.getTracks().forEach((t) => t.stop());
+        } catch (err) {
+          log(`Permission/warmup failed — ${err.name}: ${err.message}`);
+          log("Nothing else can be tested until the browser grants camera access.");
+          return;
+        }
+
+        const devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "videoinput");
+        log(`Browser sees ${devices.length} video input(s).\n`);
+
+        const rows = [];
+        for (const d of devices) {
+          const label = d.label || "(unlabelled)";
+          log(`Testing: ${label}`);
+          const r = await testDevice({ deviceId: d.deviceId, label });
+          log(`  -> opened=${r.opened} frame=${r.gotFrame} muted=${r.muted} res=${r.res} luma=${r.lum === null ? "n/a" : r.lum.toFixed(1)}\n`);
+          rows.push({ label, deviceId: d.deviceId, ...r });
+        }
+
+        const verdict = (r) => {
+          if (!r.opened) return ['<span class="bad">cannot open</span>', "Held by another app, or driver error."];
+          if (!r.gotFrame) return ['<span class="bad">no frames</span>', "Opens but sends nothing — typical dead virtual camera."];
+          if (r.lum !== null && r.lum < 3) return ['<span class="bad">black picture</span>', "Delivers frames but they are black."];
+          if (r.lum !== null && r.lum < 12) return ['<span class="warn">very dark</span>', "Could be a real but unlit scene — check the lens cover."];
+          return ['<span class="ok">WORKING</span>', "Delivers a real picture."];
+        };
+
+        out.innerHTML =
+          "<table><thead><tr><th>Camera</th><th>Verdict</th><th>Mode</th><th>Luma</th><th>Notes</th></tr></thead><tbody>" +
+          rows.map((r) => {
+            const [v, note] = verdict(r);
+            return `<tr><td><strong>${r.label}</strong><br><code>${r.deviceId.slice(0, 16)}…</code></td>` +
+                   `<td>${v}</td><td>${r.res}<br><code>${r.mode}</code></td>` +
+                   `<td>${r.lum === null ? "—" : r.lum.toFixed(1)}</td><td>${note}</td></tr>`;
+          }).join("") +
+          "</tbody></table>";
+
+        const working = rows.filter((r) => r.gotFrame && r.lum !== null && r.lum >= 12);
+        log(working.length
+          ? `RESULT: ${working.length} working camera(s): ${working.map((r) => r.label).join(", ")}`
+          : "RESULT: no camera delivered a usable picture.");
+      }
+
+      document.getElementById("run").addEventListener("click", () => { run().catch((e) => log("ERROR: " + e)); });
+    </script>
+  </body>
+</html>

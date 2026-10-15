@@ -32,6 +32,15 @@ class PoseServiceResult:
 
 
 @dataclass
+class ImageSegment:
+    """One FastSAM segment of an image (pose service /segments_at)."""
+
+    bbox: tuple[float, float, float, float]
+    area_fraction: float
+    polygon: list[tuple[float, float]]
+
+
+@dataclass
 class CadDetection:
     """The object found from its CAD model alone (pose_service /detect)."""
 
@@ -147,13 +156,33 @@ class ModelPoseClient:
             }
         )
 
-    def detect(self, label: str, image_jpeg: bytes, min_score: float) -> CadDetection | None:
+    def segments_at(self, image_jpeg: bytes, x: float, y: float, max_area: float = 0.6) -> list[ImageSegment]:
+        """The image's segments containing pixel (x, y), smallest first (pose service /segments_at)."""
+        data = self._post(
+            "/segments_at",
+            {"image_base64": base64.b64encode(image_jpeg).decode("ascii"), "x": x, "y": y, "max_area": max_area},
+        )
+        return [
+            ImageSegment(
+                bbox=tuple(float(v) for v in s["bbox"]),
+                area_fraction=float(s["area_fraction"]),
+                polygon=[(float(px), float(py)) for px, py in s["polygon"]],
+            )
+            for s in data
+        ]
+
+    def detect(self, label: str, image_jpeg: bytes, min_score: float, min_combined: float = 0.0) -> CadDetection | None:
         """Finds the registered mesh in the image without any object class
         (FastSAM regions matched to renders of the mesh); None if no region
-        matches at least `min_score`."""
+        matches at least `min_score` and, with its outline match, `min_combined`."""
         data = self._post(
             "/detect",
-            {"label": label, "image_base64": base64.b64encode(image_jpeg).decode("ascii"), "min_score": min_score},
+            {
+                "label": label,
+                "image_base64": base64.b64encode(image_jpeg).decode("ascii"),
+                "min_score": min_score,
+                "min_combined": min_combined,
+            },
         )
         best = data.get("best")
         if not data.get("found") or best is None:

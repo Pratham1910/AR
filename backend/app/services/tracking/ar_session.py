@@ -5,6 +5,9 @@ Detect once, then track: the live AR state machine (one per camera session).
     INITIALIZING --initial 6DoF pose + tracker lock succeed-->      TRACKING
     INITIALIZING --lock fails-->                                    SEARCHING / RECOVERING
     TRACKING     --tracker confidence below lost threshold-->       LOST
+    TRACKING     --a hand covers the object, pose held-->           TRACKING_OCCLUDED
+    TRACKING_OCCLUDED --object visible again-->                     TRACKING
+    TRACKING_OCCLUDED --hold time used up-->                        LOST
     LOST         --tracker recovers within the grace frames-->      TRACKING
     LOST         --grace frames used up-->                          RECOVERING
     RECOVERING   --detector re-finds the object-->                  INITIALIZING (same object id)
@@ -43,6 +46,7 @@ class TrackingState(str, Enum):
     SEARCHING = "SEARCHING"
     INITIALIZING = "INITIALIZING"
     TRACKING = "TRACKING"
+    TRACKING_OCCLUDED = "TRACKING_OCCLUDED"  # a hand covers the object: last pose held, not updated
     LOST = "LOST"
     RECOVERING = "RECOVERING"
 
@@ -155,6 +159,7 @@ class ARSession:
         self.last_detection_frame: int | None = None
         self._next_object_id = 1
         self._pending: SegmentedObject | None = None  # found by the detector, pose not yet initialized
+        self._pending_pose: Any = None  # with an operator-selected detection: its pose, if already known
         self._last_detection_at: float | None = None
         self._lost_since: float | None = None
         self._lost_frames = 0
@@ -223,15 +228,35 @@ class ARSession:
             )
         return detection, elapsed
 
+    def seed(self, detection: SegmentedObject, events: list[str], initial_pose: Any = None) -> None:
+        """The object pointed out by the operator: the next step locks onto it
+        (as if the detector had just found it), whatever is tracked now —
+        from `initial_pose` when given (T_camera_object), else the tracker's own search."""
+        self._pending_pose = initial_pose
+        self.detection_count += 1
+        self.last_detection_frame = self.frame_index
+        self._last_detection_at = self.clock()
+        self._pending = detection
+        self.state = TrackingState.INITIALIZING
+        self._emit(events, f"[DETECTION] {detection.class_label} selected by the operator — locking onto it")
+
     def _initialize(self, frame: Any, now: float, events: list[str]) -> float:
         """INITIALIZING: initial 6DoF pose + tracker lock from the pending detection."""
         detection, self._pending = self._pending, None
+        initial_pose, self._pending_pose = self._pending_pose, None
         started = time.perf_counter()
-        m = self.tracker.initialize(frame, detection)
+        if initial_pose is not None:
+            m = self.tracker.initialize(frame, detection, initial_pose=initial_pose)
+        else:
+            m = self.tracker.initialize(frame, detection)
         elapsed = (time.perf_counter() - started) * 1000.0
         reacquiring = self.obj is not None
         if m.confidence < self.config.lost_confidence:
-            self._emit(events, f"[POSE] Could not initialize pose (confidence={m.confidence:.2f})")
+            reason = m.extra.get("reject_reason")
+            self._emit(
+                events,
+                f"[POSE] Could not initialize pose: {reason}" if reason else f"[POSE] Could not initialize pose (confidence={m.confidence:.2f})",
+            )
             self.state = TrackingState.RECOVERING if reacquiring else TrackingState.SEARCHING
             return elapsed
 
@@ -246,6 +271,8 @@ class ARSession:
             )
             self._next_object_id += 1
         self._emit(events, "[POSE] Initial pose calculated")
+        if m.extra.get("flipped_to_resting_side"):
+            self._emit(events, "[POSE] Turned over to the resting side set for this station (top/bottom look alike)")
         self._emit(
             events,
             f"[TRACKER] Tracker {'re-initialized' if reacquiring else 'initialized'} — Object ID = {self.obj.object_id}",
@@ -296,9 +323,25 @@ class ARSession:
         if self.state == TrackingState.INITIALIZING:
             timings["initialization"] = self._initialize(frame, now, events)
 
-        elif self.state == TrackingState.TRACKING:
+        elif self.state in (TrackingState.TRACKING, TrackingState.TRACKING_OCCLUDED):
             m = run_tracker()
-            if m.confidence >= cfg.lost_confidence:
+            if m.extra.get("occluded"):
+                # The tracker holds the last pose while a hand covers the
+                # object: nothing from this frame moves it (no filter update).
+                if self.state != TrackingState.TRACKING_OCCLUDED:
+                    self._emit(
+                        events,
+                        f"[TRACKER] Object occluded ({m.extra.get('occlusion', 0):.0%} covered by a hand) — holding last pose",
+                    )
+                self.state = TrackingState.TRACKING_OCCLUDED
+                self.obj.confidence = m.confidence
+                self.obj.extra = {**m.extra, "t_camera_object": self.obj.extra.get("t_camera_object", m.extra.get("t_camera_object"))}
+                if m.polygon is not None:
+                    self.obj.polygon, self.obj.bbox = m.polygon, m.bbox
+            elif m.confidence >= cfg.lost_confidence:
+                if self.state == TrackingState.TRACKING_OCCLUDED:
+                    self._emit(events, f"[TRACKER] Object visible again (confidence = {m.confidence:.2f})")
+                    self.state = TrackingState.TRACKING
                 self._accept(m, now, events, fresh_lock=False)
                 self._log_tracking(now)
             else:

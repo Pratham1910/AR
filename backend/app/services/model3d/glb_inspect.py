@@ -236,6 +236,37 @@ def glb_part_meshes(data: bytes) -> dict[int, GlbPartMesh]:
     return out
 
 
+@dataclass
+class GlbNode:
+    """One scene node, for listing an assembly's structure (component registry)."""
+
+    node_index: int
+    name: str  # as authored; "" when the node has no name
+    parent: int | None
+    has_mesh: bool
+    world_matrix: np.ndarray  # 4x4, file units, relative to the scene root (node transforms applied)
+
+
+def glb_nodes(data: bytes) -> list[GlbNode]:
+    """Every node reachable from the default scene, in scene-graph order."""
+    json_chunk = _json_chunk(data)
+    nodes = json_chunk.get("nodes", [])
+    scenes = json_chunk.get("scenes", [])
+    roots = scenes[json_chunk.get("scene", 0)].get("nodes", []) if scenes else []
+    out: list[GlbNode] = []
+
+    def visit(node_index: int, parent: int | None, parent_world: np.ndarray) -> None:
+        node = nodes[node_index]
+        world = parent_world @ _node_matrix(node)
+        out.append(GlbNode(node_index, node.get("name", ""), parent, "mesh" in node, world))
+        for child in node.get("children", []):
+            visit(child, node_index, world)
+
+    for root in roots:
+        visit(root, None, np.eye(4))
+    return out
+
+
 def _bin_chunk(data: bytes) -> bytes:
     offset = 12
     while offset + 8 <= len(data):

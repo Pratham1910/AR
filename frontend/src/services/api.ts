@@ -4,7 +4,11 @@ import type {
   ARFrameResponse,
   ARMode,
   Asset,
+  ComponentRegistry,
   FeaturePoseResponse,
+  InspectionMode,
+  InspectionReport,
+  SystemStatus,
   InspectionRun,
   Model3DInfo,
   Model3DPart,
@@ -101,6 +105,14 @@ export const Models3DApi = {
   remove: (modelId: string) => api.delete(`/api/models3d/${modelId}`).then(() => undefined),
 
   parts: (modelId: string) => api.get<Model3DPart[]>(`/api/models3d/${modelId}/parts`).then((r) => r.data),
+  components: (modelId: string) =>
+    api.get<ComponentRegistry>(`/api/models3d/${modelId}/components`).then((r) => r.data),
+  saveComponentMapping: (modelId: string, mapping: { objectId?: string; components: unknown[] }) =>
+    api.put<ComponentRegistry>(`/api/models3d/${modelId}/components`, mapping).then((r) => r.data),
+  resetComponentMapping: (modelId: string) =>
+    api.delete<ComponentRegistry>(`/api/models3d/${modelId}/components`).then((r) => r.data),
+  forgetComponentReference: (modelId: string) =>
+    api.delete(`/api/models3d/${modelId}/components/reference`).then(() => undefined),
 
   calibratePresence: (modelId: string, nodeIndex: number, presentLabel: string, absentLabel: string) =>
     api
@@ -182,8 +194,10 @@ export const VisionApi = {
       modelId?: string;
       realWorldHeightM?: number;
       trackPart?: number | null;
-      detectBy?: "model" | "class" | "box";
+      detectBy?: "model" | "class" | "box" | "guide";
       initBox?: [number, number, number, number] | null;
+      inspection?: InspectionMode;
+      inspectionRun?: string;
     }
   ) =>
     api
@@ -197,6 +211,8 @@ export const VisionApi = {
         model_id: options.modelId,
         real_world_height_m: options.realWorldHeightM,
         track_part: options.trackPart ?? null,
+        inspection: options.inspection ?? "off",
+        inspection_run: options.inspectionRun ?? null,
       })
       .then((r) => r.data),
 
@@ -221,4 +237,88 @@ export const VisionApi = {
 
   // Drops the session's tracking state; the next frame starts SEARCHING.
   endArSession: (sessionId: string) => api.delete(`/api/vision/ar-session/${sessionId}`).then(() => undefined),
+};
+
+export const InspectionReportsApi = {
+  save: (sessionId: string, station: string | null, operator: string | null, note?: string) =>
+    api
+      .post<InspectionReport>("/api/inspection-reports", { session_id: sessionId, station, operator, note })
+      .then((r) => r.data),
+  list: () => api.get<InspectionReport[]>("/api/inspection-reports").then((r) => r.data),
+  get: (id: string) => api.get<InspectionReport>(`/api/inspection-reports/${id}`).then((r) => r.data),
+  review: (id: string, review: { note?: string; disposition?: "approved" | "rework"; reviewer?: string | null }) =>
+    api.patch<InspectionReport>(`/api/inspection-reports/${id}`, review).then((r) => r.data),
+  evidenceUrl: (id: string) => resolveApiUrl(`/api/inspection-reports/${id}/evidence.jpg`),
+};
+
+export interface StationLockStatus {
+  locked: boolean;
+  shift_px: number | null;
+  moved: boolean;
+  created_at: string | null;
+  max_shift_px: number | null;
+}
+
+export const StationApi = {
+  lock: (sessionId: string, modelId: string, imageBase64: string) =>
+    api
+      .post<StationLockStatus>("/api/vision/station-lock", { session_id: sessionId, model_id: modelId, image_base64: imageBase64 })
+      .then((r) => r.data),
+  status: (modelId: string) => api.get<StationLockStatus>(`/api/vision/station-lock/${modelId}`).then((r) => r.data),
+  unlock: (modelId: string) => api.delete<StationLockStatus>(`/api/vision/station-lock/${modelId}`).then((r) => r.data),
+};
+
+export const StationSettingsApi = {
+  get: (modelId: string) =>
+    api.get<{ resting: "any" | "camera" | "upright" | "flat" }>(`/api/vision/station-settings/${modelId}`).then((r) => r.data),
+  save: (modelId: string, settings: { resting: "any" | "camera" | "upright" | "flat" }) =>
+    api.put(`/api/vision/station-settings/${modelId}`, settings).then((r) => r.data),
+};
+
+export const GuideViewApi = {
+  /** The pose being tracked now becomes this model's guide view. */
+  saveCurrent: (modelId: string, sessionId: string) =>
+    api.post(`/api/vision/guide-view/${modelId}`, { session_id: sessionId }).then((r) => r.data),
+  /** Back to the default guide view. */
+  reset: (modelId: string) => api.delete(`/api/vision/guide-view/${modelId}`).then((r) => r.data),
+};
+
+export interface CalibrationStatus {
+  calibrated: boolean;
+  path: string | null;
+  camera_label: string | null;
+  created_at: string | null;
+  rms_px: number | null;
+  images_used: number | null;
+  image_width: number | null;
+  image_height: number | null;
+  distortion_max_px: number | null;
+  images_captured: number;
+}
+
+export const CalibrationApi = {
+  status: () => api.get<CalibrationStatus>("/api/calibration").then((r) => r.data),
+  capture: (imageBase64: string, patternCols: number, patternRows: number) =>
+    api
+      .post<{ found: boolean; images_captured: number }>("/api/calibration/images", {
+        image_base64: imageBase64,
+        pattern_cols: patternCols,
+        pattern_rows: patternRows,
+      })
+      .then((r) => r.data),
+  clearImages: () => api.delete<CalibrationStatus>("/api/calibration/images").then((r) => r.data),
+  run: (patternCols: number, patternRows: number, squareSizeM: number, cameraLabel: string | null) =>
+    api
+      .post<CalibrationStatus>("/api/calibration/run", {
+        pattern_cols: patternCols,
+        pattern_rows: patternRows,
+        square_size_m: squareSizeM,
+        camera_label: cameraLabel,
+      })
+      .then((r) => r.data),
+  remove: () => api.delete<CalibrationStatus>("/api/calibration").then((r) => r.data),
+};
+
+export const SystemApi = {
+  status: () => api.get<SystemStatus>("/api/system/status").then((r) => r.data),
 };

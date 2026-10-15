@@ -4,6 +4,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { addStudioEnvironment, ensureVisibleMaterials } from "./ensureVisibleMaterial";
 import { applyPartView, EMPTY_PART_VIEW, indexParts, partOf, type PartView } from "./parts";
+import { addFeatureEdges } from "./renderStyle";
 import type { ProcedureHost } from "./procedure";
 
 interface Props {
@@ -68,6 +69,7 @@ export function ThreeViewer({ modelUrl, height = 480, partView = EMPTY_PART_VIEW
       (gltf) => {
         if (disposed) return;
         ensureVisibleMaterials(gltf.scene);
+        addFeatureEdges(gltf.scene);
         scene.add(gltf.scene);
         partsRef.current = indexParts(gltf);
         applyPartView(partsRef.current, partViewRef.current);
