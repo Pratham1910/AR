@@ -361,6 +361,26 @@ export function RegistrationOverlay({
   const guideDragRef = useRef<{ x: number; y: number; shift: boolean; alt: boolean } | null>(null);
   // The model axis the rotate buttons and Alt+drag turn about.
   const [guideAxis, setGuideAxis] = useState<ModelAxis>("y");
+  // How closely the object must match the outline to lock (0.2-0.9), the
+  // operator's choice per model, remembered in this browser; null = default.
+  const [guideLockAt, setGuideLockAtState] = useState<number | null>(null);
+  useEffect(() => {
+    try {
+      const saved = modelId ? localStorage.getItem(`tvasta.guideLockAt.${modelId}`) : null;
+      setGuideLockAtState(saved ? Number(saved) : null);
+    } catch {
+      setGuideLockAtState(null);
+    }
+  }, [modelId]);
+  const setGuideLockAt = (value: number | null) => {
+    setGuideLockAtState(value);
+    try {
+      if (modelId && value != null) localStorage.setItem(`tvasta.guideLockAt.${modelId}`, String(value));
+      else if (modelId) localStorage.removeItem(`tvasta.guideLockAt.${modelId}`);
+    } catch {
+      // private window / blocked storage: just not remembered
+    }
+  };
   const guideAxisRef = useRef<ModelAxis>("y");
   guideAxisRef.current = guideAxis;
   const guideSentAtRef = useRef(0);
@@ -1334,6 +1354,7 @@ export function RegistrationOverlay({
       station_lock: mode === "model" && stationLocked,
       camera_label: deviceLabel || null,
       guide_pose: detectBy === "guide" && guidePlacedRef.current ? matrixToRows(guidePlacedRef.current) : null,
+      guide_min_score: detectBy === "guide" ? guideLockAt : null,
     });
 
   // Live tracking (markerless / model-based) as a stream: every new camera
@@ -1567,7 +1588,7 @@ export function RegistrationOverlay({
     if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(streamConfig());
     if (inspectionMode === "off") discrepancyRef.current?.clear();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inspectionMode, inspectionRun, stationLocked, focusIds.join(","), resting]);
+  }, [inspectionMode, inspectionRun, stationLocked, focusIds.join(","), resting, guideLockAt]);
 
   // Is this model's station pose locked? (Saved on the backend, survives restarts.)
   useEffect(() => {
@@ -1865,8 +1886,23 @@ export function RegistrationOverlay({
             <div className="hud-pill state-INITIALIZING">
               <span className="dot" />
               Line the object up with the outline — or drag the outline onto it
+              <span
+                className="guide-meter"
+                role="meter"
+                aria-label="Match with the outline"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={Math.round((arResult.guide.score ?? 0) * 100)}
+                title={`Match ${Math.round((arResult.guide.score ?? 0) * 100)}% — locks at ${Math.round(arResult.guide.min_score * 100)}%`}
+              >
+                <span
+                  className={`guide-meter-fill${(arResult.guide.score ?? 0) >= arResult.guide.min_score ? " ok" : ""}`}
+                  style={{ width: `${Math.min(100, Math.round((arResult.guide.score ?? 0) * 100))}%` }}
+                />
+                <span className="guide-meter-mark" style={{ left: `${Math.round(arResult.guide.min_score * 100)}%` }} />
+              </span>
               <span className="sub">
-                fit {arResult.guide.score != null ? `${Math.round(arResult.guide.score * 100)}%` : "—"} · locks at{" "}
+                match {arResult.guide.score != null ? `${Math.round(arResult.guide.score * 100)}%` : "—"} · locks at{" "}
                 {Math.round(arResult.guide.min_score * 100)}%
                 {arResult.guide.edge_points?.length
                   ? ` · edges on target ${Math.round(
@@ -2007,6 +2043,28 @@ export function RegistrationOverlay({
           </button>
         )}
         {guideActive && (
+          <>
+          <label
+            className="guide-lock-at"
+            title="How closely the real object must match the outline before it locks. Lower locks sooner (but may lock on look-alikes); higher waits for a closer match. Remembered for this model in this browser."
+          >
+            Lock at
+            <input
+              type="range"
+              min={20}
+              max={90}
+              step={1}
+              value={Math.round((guideLockAt ?? arResult?.guide?.min_score ?? 0.58) * 100)}
+              onChange={(e) => setGuideLockAt(Number(e.target.value) / 100)}
+              aria-label="Match needed to lock"
+            />
+            <span className="mono">{Math.round((guideLockAt ?? arResult?.guide?.min_score ?? 0.58) * 100)}%</span>
+            {guideLockAt != null && (
+              <button onClick={() => setGuideLockAt(null)} title="Back to the default threshold">
+                Default
+              </button>
+            )}
+          </label>
           <span
             className="segmented guide-rotate"
             aria-label="Rotate the guide outline"
@@ -2033,6 +2091,7 @@ export function RegistrationOverlay({
               </button>
             )}
           </span>
+          </>
         )}
         {mode === "model" && modelId && detectBy === "guide" && arResult?.guide?.saved && !guidePlaced && (
           <button onClick={() => void resetGuideView()} disabled={guideBusy} title="Back to the default guide view">

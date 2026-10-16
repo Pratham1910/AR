@@ -302,6 +302,9 @@ class MegaPoseTracker:
         orientation_min_margin: float = 0.15,
         correction_verify_deg: float = 15.0,
         geometry_model: EdgeModel | None = None,
+        correction_deadband_m: float = 0.003,
+        correction_deadband_deg: float = 1.5,
+        motion_confirm_frames: int = 1,
     ):
         self.client = client
         # The CAD geometry's own edges, for judging orientation from geometry.
@@ -328,7 +331,20 @@ class MegaPoseTracker:
         self.correction_verify_deg = correction_verify_deg
         self._orientation: dict | None = None  # the current hypothesis: status, features seen
         self._reliable: np.ndarray | None = None  # last pose (assembly) whose orientation was settled
-        self.guard_counts = {"twin_flips_suppressed": 0, "corrections_rejected": 0, "orientation_switches": 0}
+        self.guard_counts = {
+            "twin_flips_suppressed": 0, "corrections_rejected": 0, "orientation_switches": 0, "corrections_kept": 0,
+        }
+        # Steadiness once locked: a correction smaller than the dead-band is
+        # not applied (each refine is a few mm / degrees off; applying them
+        # all made a well-fitted model visibly creep), nor is one that fits
+        # the object's 3D edges no better than the pose already shown. And
+        # the object counts as moving only after `motion_confirm_frames`
+        # frames in a row above still_motion_px — one noisy flow frame (dark,
+        # plain parts; auto-exposure) used to start a new correction cycle.
+        self.correction_deadband_m = correction_deadband_m
+        self.correction_deadband_deg = correction_deadband_deg
+        self.motion_confirm_frames = max(1, int(motion_confirm_frames))
+        self._motion_frames = 0
         self._last_guard: dict | None = None
         # 3D edge alignment (app/services/pose/edge_align.py): the model's own
         # edges (assembly frame) fitted onto the image's edges — at every lock
@@ -507,6 +523,21 @@ class MegaPoseTracker:
                 guard.update(reason="symmetric twin of the tracked orientation, turned back", twin_flip=True)
         angle = rotation_angle_deg(pose, reference)
         guard["angle_deg"] = angle
+        shift = float(np.linalg.norm(pose[:3, 3] - np.asarray(reference)[:3, 3]))
+        guard["shift_m"] = shift
+        if guard["action"] == "blend" and angle <= self.correction_verify_deg:
+            if shift < self.correction_deadband_m and angle < self.correction_deadband_deg:
+                guard.update(action="keep", reason=f"{shift * 1000:.1f} mm / {angle:.1f} deg: within the dead-band")
+                return pose, guard
+            if self.edge_model is not None:
+                edges = edge_image(gray, exclude=hand_mask)
+                tracked_fit = _fit_score(self.edge_model, self._assembly_pose(reference), camera_matrix, edges, 3.0)[0]
+                new_fit = _fit_score(self.edge_model, self._assembly_pose(pose), camera_matrix, edges, 3.0)[0]
+                guard.update(tracked_fit=tracked_fit, correction_fit=new_fit)
+                if new_fit < tracked_fit + 0.005:
+                    guard.update(action="keep", reason="the shown pose fits the 3D edges at least as well")
+                    return pose, guard
+            return pose, guard
         if angle > self.correction_verify_deg:
             if self.edge_model is None:
                 guard["reason"] = (guard["reason"] + "; " if guard["reason"] else "") + "large turn, no 3D edges to verify it"
@@ -667,7 +698,8 @@ class MegaPoseTracker:
         assert self._base is not None and self._output is not None
 
         corrected = self._adopt_finished_refine(k)
-        moving = self._flow.motion_since_anchor >= self.still_motion_px
+        self._motion_frames = self._motion_frames + 1 if self._flow.motion_since_anchor >= self.still_motion_px else 0
+        moving = self._motion_frames >= self.motion_confirm_frames
         if moving:
             self._flow.set_anchor()  # measure the next motion from here
             self._needs_settle = True
@@ -780,6 +812,10 @@ class MegaPoseTracker:
             if guard["action"] == "reject":
                 self.guard_counts["corrections_rejected"] += 1
                 return False  # the tracked pose stays; not counted against the object being there
+            if guard["action"] == "keep":
+                self.guard_counts["corrections_kept"] += 1
+                self._bad_corrections = 0  # the pose shown is fine: that's no sign of losing the object
+                return False
         if result.t_camera_object is None:
             return False
         overlap = (

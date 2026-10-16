@@ -128,6 +128,12 @@ class Settings(BaseSettings):
     # Hold the model still while optical flow says the object hasn't moved
     # more than this (px) since the last MegaPose pose; 0 = refine every frame.
     model_pose_still_motion_px: float = 1.5
+    # Steadiness once locked (MegaPoseTracker): corrections smaller than this
+    # aren't applied, nor ones that fit the 3D edges no better than the shown
+    # pose; motion must last this many frames in a row to count.
+    model_pose_correction_deadband_mm: float = 3.0
+    model_pose_correction_deadband_deg: float = 1.5
+    model_pose_motion_confirm_frames: int = 2
     # How far each background MegaPose correction pulls the flow-tracked pose
     # (0..1): partial pulls average out the few-degree error of single refines.
     model_pose_correction_gain_translation: float = 0.5

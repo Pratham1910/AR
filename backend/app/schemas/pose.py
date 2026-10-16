@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.schemas.component_inspection import ComponentInspectionOut
 
@@ -152,6 +152,9 @@ class ARFrameRequest(BaseModel):
     # (T_camera_object, 4x4, OpenCV camera, metres) instead of the saved /
     # default guide. Kept while sent; omit to go back to the saved one.
     guide_pose: list[list[float]] | None = None
+    # How closely the object must match the guide outline to lock (0.2-0.9),
+    # the operator's choice; None = the configured default (AR_GUIDE_MIN_SCORE).
+    guide_min_score: float | None = Field(default=None, ge=0.2, le=0.9)
     # The camera the frames come from (browser device label): a calibration
     # recorded for another camera isn't used for it.
     camera_label: str | None = None
@@ -274,6 +277,7 @@ class TrackingQualityOut(BaseModel):
     twin_flips_suppressed: int = 0  # background corrections turned back from a symmetric twin
     corrections_rejected: int = 0  # large corrections the 3D edges didn't support
     orientation_switches: int = 0  # verified orientation changes adopted outright
+    corrections_kept: int = 0  # corrections not applied: tiny, or no better a fit than the shown pose
 
 
 class PoseFeatureOut(BaseModel):

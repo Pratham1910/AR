@@ -2367,3 +2367,49 @@ label {
 .guide-rotate .axis-x { color: #ff5252; font-weight: 700; }
 .guide-rotate .axis-y { color: #00e676; font-weight: 700; }
 .guide-rotate .axis-z { color: #448aff; font-weight: 700; }
+
+/* Guide view: how well the object matches the outline, and where it locks. */
+.guide-meter {
+  position: relative;
+  display: inline-block;
+  width: 120px;
+  height: 8px;
+  margin: 0 8px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.18);
+  vertical-align: middle;
+  overflow: visible;
+}
+
+.guide-meter-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 4px;
+  background: #ffca28;
+  transition: width 0.2s ease;
+}
+
+.guide-meter-fill.ok {
+  background: #00e676;
+}
+
+.guide-meter-mark {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 14px;
+  margin-left: -1px;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.5);
+}
+
+.guide-lock-at {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.guide-lock-at input[type="range"] {
+  width: 110px;
+}

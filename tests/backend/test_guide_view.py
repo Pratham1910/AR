@@ -124,3 +124,17 @@ def test_an_outline_placed_by_the_operator_is_validated_and_can_be_saved(tmp_pat
 
     with pytest.raises(HTTPException):
         vision.save_guide_view("m1", vision.GuideViewSave(session_id="none", t_camera_object=behind.tolist()))
+
+
+def test_the_operators_lock_threshold_is_bounded():
+    import pytest
+    from pydantic import ValidationError
+
+    from app.schemas.pose import ARFrameRequest
+
+    base = dict(session_id="s", mode="model", image_base64="")
+    assert ARFrameRequest(**base, guide_min_score=0.45).guide_min_score == 0.45
+    assert ARFrameRequest(**base).guide_min_score is None  # the configured default
+    for bad in (0.05, 1.2):
+        with pytest.raises(ValidationError):
+            ARFrameRequest(**base, guide_min_score=bad)

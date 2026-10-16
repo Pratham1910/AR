@@ -147,3 +147,44 @@ def test_visible_features_overrule_a_guide_lined_up_the_wrong_way_round():
     m = tracker.initialize(_frame(), _detection(), initial_pose=_twin(TRUTH), pose_source="guide")
     assert m.extra["orientation"]["status"] == "confirmed" and m.extra["orientation"]["flipped"]
     assert rotation_angle_deg(m.extra["t_camera_object"], TRUTH) < 1.5
+
+
+# ── steadiness once locked ───────────────────────────────────────────────
+
+
+def test_a_tiny_correction_is_not_applied():
+    """MegaPose a couple of millimetres off on a still object: the model must not creep."""
+    service = FakeMegaPose(TRUTH)
+    tracker = _tracker(service, features=(), symmetries=None)
+    tracker.commit(tracker.initialize(_frame(), _detection()))
+    shown = tracker._output.copy()
+    nudged = TRUTH.copy()
+    nudged[:3, 3] += [0.0015, -0.001, 0.0]  # 1.8 mm
+    service.refine_pose = nudged
+    m = _correct_once(tracker, _frame())
+    assert np.allclose(m.extra["t_camera_object"], shown)
+    assert tracker.guard_counts["corrections_kept"] == 1 and "dead-band" in tracker._last_guard["reason"]
+
+
+def test_a_correction_that_fits_the_edges_worse_is_not_applied():
+    service = FakeMegaPose(TRUTH)
+    tracker = _tracker(service, features=(), symmetries=None)
+    tracker.commit(tracker.initialize(_frame(), _detection()))
+    shown = tracker._output.copy()
+    service.refine_pose = turned(TRUTH, (0, 1, 0), 6)  # a few degrees off — worse than what's shown
+    m = _correct_once(tracker, _frame())
+    assert rotation_angle_deg(m.extra["t_camera_object"], shown) < 0.5
+    assert tracker.guard_counts["corrections_kept"] == 1
+
+
+def test_a_correction_that_fits_better_is_still_applied():
+    """The shown pose drifted (6 deg); MegaPose has the truth: that one goes in."""
+    service = FakeMegaPose(TRUTH)
+    tracker = _tracker(service, features=(), symmetries=None)
+    tracker.commit(tracker.initialize(_frame(), _detection()))
+    drifted = turned(TRUTH, (0, 1, 0), 6)
+    tracker._base, tracker._output = drifted.copy(), drifted.copy()
+    service.refine_pose = TRUTH
+    m = _correct_once(tracker, _frame())
+    assert rotation_angle_deg(m.extra["t_camera_object"], TRUTH) < rotation_angle_deg(drifted, TRUTH) - 1.0  # pulled towards it
+    assert tracker.guard_counts["corrections_kept"] == 0

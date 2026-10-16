@@ -1095,6 +1095,9 @@ def _build_ar_session(request: ARFrameRequest, class_label: str | None, model: M
             _settings.model_pose_track_iterations,
             part_offset=offset,
             still_motion_px=_settings.model_pose_still_motion_px,
+            correction_deadband_m=_settings.model_pose_correction_deadband_mm / 1000.0,
+            correction_deadband_deg=_settings.model_pose_correction_deadband_deg,
+            motion_confirm_frames=_settings.model_pose_motion_confirm_frames,
             min_overlap=_settings.ar_model_lost_confidence,
             correction_gain_translation=_settings.model_pose_correction_gain_translation,
             correction_gain_rotation=_settings.model_pose_correction_gain_rotation,
@@ -1245,6 +1248,12 @@ def process_ar_frame(
                 min_score=_settings.ar_guide_min_score, min_support=_settings.ar_guide_min_support,
                 confirmations=_settings.ar_guide_confirmations,
             ))
+            # The operator's lock threshold (one number: the fit score and the
+            # share of edges on target both have to reach it), else the defaults.
+            if request.guide_min_score is not None:
+                matcher.min_score = matcher.min_support = float(request.guide_min_score)
+            else:
+                matcher.min_score, matcher.min_support = _settings.ar_guide_min_score, _settings.ar_guide_min_support
             gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
             locked = matcher.poll(edge_model, guide_pose, gray, hand.mask if hand else None, calibration.camera_matrix)
             if locked is not None:
@@ -1265,7 +1274,7 @@ def process_ar_frame(
                 placed=placed is not None,
                 t_camera_object=np.asarray(guide_pose, float).tolist(),
                 score=matcher.last.score if matcher.last else None,
-                min_score=_settings.ar_guide_min_score,
+                min_score=matcher.min_score,
                 edge_points=(
                     [[round(float(x), 1), round(float(y), 1), float(m)] for x, y, m in matcher.last.feedback]
                     if matcher.last is not None and matcher.last.feedback is not None else []
@@ -1388,6 +1397,7 @@ def process_ar_frame(
             twin_flips_suppressed=int((extra.get("correction_guard") or {}).get("twin_flips_suppressed", 0)),
             corrections_rejected=int((extra.get("correction_guard") or {}).get("corrections_rejected", 0)),
             orientation_switches=int((extra.get("correction_guard") or {}).get("orientation_switches", 0)),
+            corrections_kept=int((extra.get("correction_guard") or {}).get("corrections_kept", 0)),
         )
     hands_out = None
     if _settings.hand_mask_method != "off":
