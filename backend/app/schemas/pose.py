@@ -148,6 +148,10 @@ class ARFrameRequest(BaseModel):
     # The operator clicked the object (frame pixels): lock onto the segment
     # there instead of searching (model mode). Sent with one frame only.
     select_point: list[float] | None = None
+    # Guide view placed by the operator (dragging the outline): this pose
+    # (T_camera_object, 4x4, OpenCV camera, metres) instead of the saved /
+    # default guide. Kept while sent; omit to go back to the saved one.
+    guide_pose: list[list[float]] | None = None
     # The camera the frames come from (browser device label): a calibration
     # recorded for another camera isn't used for it.
     camera_label: str | None = None
@@ -292,6 +296,13 @@ class GuideOut(BaseModel):
     saved: bool  # the guide was saved for this model (else the default view)
     score: float | None = None  # the last check's edge fit at the guide, 0..1
     min_score: float  # what a lock needs
+    # The guide pose itself (T_camera_object, 4x4, OpenCV camera, metres),
+    # for the operator to move the outline from.
+    t_camera_object: list[list[float]] | None = None
+    placed: bool = False  # the operator placed this outline (not the saved / default one)
+    # Live alignment feedback: the outline's visible edge points as
+    # [x, y, 1 = on a real edge (green) / 0 = not (red)], at the guide pose.
+    edge_points: list[list[float]] = []
 
 
 class ARFrameResponse(BaseModel):

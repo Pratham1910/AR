@@ -74,7 +74,8 @@ class ModelPoseClient:
         return response.json()
 
     def ensure_registered(
-        self, label: str, read_glb: Callable[[], bytes], scale: float, node_names: list[str] | None = None
+        self, label: str, read_glb: Callable[[], bytes], scale: float, node_names: list[str] | None = None,
+        frame_center: list[float] | None = None, variant: str | None = None,
     ) -> np.ndarray:
         """
         Makes sure the service has this mesh — the whole model, or only the
@@ -85,14 +86,16 @@ class ModelPoseClient:
         """
         names = tuple(node_names) if node_names else None
         cached = self._registered.get(label)
-        if cached is not None and cached[0] == scale and cached[1] == names:
+        if cached is not None and cached[0] == scale and cached[1] == names and cached[3] == variant:
             return cached[2]
         payload = {"label": label, "glb_base64": base64.b64encode(read_glb()).decode("ascii"), "scale": scale}
         if names:
             payload["node_names"] = list(names)
+        if frame_center is not None:
+            payload["frame_center"] = [float(v) for v in frame_center]
         data = self._post("/objects", payload)
         offset = np.asarray(data.get("offset_m", [0.0, 0.0, 0.0]), dtype=float)
-        self._registered[label] = (scale, names, offset)
+        self._registered[label] = (scale, names, offset, variant)
         return offset
 
     def forget(self, label: str) -> None:

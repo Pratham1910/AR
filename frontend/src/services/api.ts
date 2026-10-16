@@ -279,8 +279,28 @@ export const GuideViewApi = {
   /** The pose being tracked now becomes this model's guide view. */
   saveCurrent: (modelId: string, sessionId: string) =>
     api.post(`/api/vision/guide-view/${modelId}`, { session_id: sessionId }).then((r) => r.data),
+  /** An outline the operator placed becomes this model's guide view (no tracking needed). */
+  savePose: (modelId: string, tCameraObject: number[][]) =>
+    api.post(`/api/vision/guide-view/${modelId}`, { session_id: "", t_camera_object: tCameraObject }).then((r) => r.data),
   /** Back to the default guide view. */
   reset: (modelId: string) => api.delete(`/api/vision/guide-view/${modelId}`).then((r) => r.data),
+};
+
+export interface TrackingModelInfo {
+  built: boolean;
+  stale: boolean;
+  faces_before: number | null;
+  faces_after: number | null;
+  nodes: { node_index: number; name: string; faces_before: number; faces_after: number }[];
+  size_m: number[] | null;
+  created_at: string | null;
+}
+
+export const TrackingModelApi = {
+  get: (modelId: string) => api.get<TrackingModelInfo>(`/api/models3d/${modelId}/tracking-model`).then((r) => r.data),
+  build: (modelId: string) =>
+    api.post<TrackingModelInfo>(`/api/models3d/${modelId}/tracking-model`, {}, { timeout: 180000 }).then((r) => r.data),
+  remove: (modelId: string) => api.delete<TrackingModelInfo>(`/api/models3d/${modelId}/tracking-model`).then((r) => r.data),
 };
 
 export interface CalibrationStatus {

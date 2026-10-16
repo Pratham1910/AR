@@ -131,3 +131,19 @@ def test_a_covered_circle_does_not_settle_the_lock_by_its_absence_elsewhere():
     tracker = _tracker(FakeMegaPose(_twin(TRUTH)))
     m = tracker.initialize(_frame(hand=(c[0] - 45, c[1] - 45, c[0] + 45, c[1] + 45)), _detection())
     assert m.extra["orientation"]["status"] == "ambiguous"
+
+
+def test_a_guide_lock_counts_as_operator_confirmed_orientation():
+    """No features configured: the outline the operator lined up with settles which way round it is."""
+    tracker = _tracker(FakeMegaPose(TRUTH), features=())
+    m = tracker.initialize(_frame(), _detection(), initial_pose=TRUTH, pose_source="guide")
+    assert m.extra["orientation"]["status"] == "confirmed" and "guide" in m.extra["orientation"]["reason"]
+    assert rotation_angle_deg(m.extra["t_camera_object"], TRUTH) < 1.5
+
+
+def test_visible_features_overrule_a_guide_lined_up_the_wrong_way_round():
+    """The operator lined the box up turned round; the circle in view says otherwise."""
+    tracker = _tracker(FakeMegaPose(TRUTH))
+    m = tracker.initialize(_frame(), _detection(), initial_pose=_twin(TRUTH), pose_source="guide")
+    assert m.extra["orientation"]["status"] == "confirmed" and m.extra["orientation"]["flipped"]
+    assert rotation_angle_deg(m.extra["t_camera_object"], TRUTH) < 1.5

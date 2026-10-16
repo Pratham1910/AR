@@ -40,6 +40,10 @@ export function SimpleCameraOverlay({ modelUrl, partView = EMPTY_PART_VIEW }: Pr
     devices,
     selectedDeviceId,
     selectDevice,
+    retry: retryCamera,
+    takeOver: takeOverCamera,
+    retryNote: cameraRetryNote,
+    otherTabHasCamera,
   } = useCamera();
   const overlayRef = useRef<HTMLDivElement | null>(null);
 
@@ -131,7 +135,7 @@ export function SimpleCameraOverlay({ modelUrl, partView = EMPTY_PART_VIEW }: Pr
       </div>
 
       <div className="status-row">
-        <CameraStatusBadge status={cameraStatus} deviceLabel={deviceLabel} resolution={resolution} error={cameraError} />
+        <CameraStatusBadge status={cameraStatus} deviceLabel={deviceLabel} resolution={resolution} error={cameraError} retryNote={cameraRetryNote} otherTabHasCamera={otherTabHasCamera} onRetry={retryCamera} onTakeOver={takeOverCamera} />
         <CameraSelect devices={devices} selectedDeviceId={selectedDeviceId} onSelect={selectDevice} />
       </div>
       <p className="hint">Drag to rotate, scroll to zoom. Not registered to the real object — use AR tracking for that.</p>

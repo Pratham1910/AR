@@ -160,6 +160,7 @@ class ARSession:
         self._next_object_id = 1
         self._pending: SegmentedObject | None = None  # found by the detector, pose not yet initialized
         self._pending_pose: Any = None  # with an operator-selected detection: its pose, if already known
+        self._pending_source: str | None = None
         self._last_detection_at: float | None = None
         self._lost_since: float | None = None
         self._lost_frames = 0
@@ -228,11 +229,12 @@ class ARSession:
             )
         return detection, elapsed
 
-    def seed(self, detection: SegmentedObject, events: list[str], initial_pose: Any = None) -> None:
+    def seed(self, detection: SegmentedObject, events: list[str], initial_pose: Any = None, pose_source: str | None = None) -> None:
         """The object pointed out by the operator: the next step locks onto it
         (as if the detector had just found it), whatever is tracked now —
         from `initial_pose` when given (T_camera_object), else the tracker's own search."""
         self._pending_pose = initial_pose
+        self._pending_source = pose_source  # e.g. "guide": the operator lined it up with the outline
         self.detection_count += 1
         self.last_detection_frame = self.frame_index
         self._last_detection_at = self.clock()
@@ -244,8 +246,11 @@ class ARSession:
         """INITIALIZING: initial 6DoF pose + tracker lock from the pending detection."""
         detection, self._pending = self._pending, None
         initial_pose, self._pending_pose = self._pending_pose, None
+        pose_source, self._pending_source = self._pending_source, None
         started = time.perf_counter()
-        if initial_pose is not None:
+        if initial_pose is not None and pose_source is not None:
+            m = self.tracker.initialize(frame, detection, initial_pose=initial_pose, pose_source=pose_source)
+        elif initial_pose is not None:
             m = self.tracker.initialize(frame, detection, initial_pose=initial_pose)
         else:
             m = self.tracker.initialize(frame, detection)

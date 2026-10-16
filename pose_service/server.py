@@ -206,6 +206,11 @@ class RegisterObjectRequest(BaseModel):
     scale: float  # GLB units -> meters (Model3D.scale)
     # Only these GLB nodes (e.g. ["Cylinder"] = a bottle's body), or the whole model if omitted.
     node_names: list[str] | None = None
+    # The frame to register in (GLB units): the ORIGINAL model's bounding-box
+    # centre, when the GLB sent is its tracking shell (hidden internals
+    # removed) whose own bounds may differ — the pose must still refer to the
+    # original's frame, which is what the overlay renders.
+    frame_center: list[float] | None = None
 
 
 class RegisterObjectResponse(BaseModel):
@@ -277,7 +282,7 @@ def _scene_mesh(loaded, node_names: list[str] | None) -> trimesh.Trimesh | None:
 @app.post("/objects", response_model=RegisterObjectResponse)
 def register_object(req: RegisterObjectRequest) -> RegisterObjectResponse:
     data = base64.b64decode(req.glb_base64)
-    key = _registration_key(data, req.scale) | {"node_names": req.node_names}
+    key = _registration_key(data, req.scale) | {"node_names": req.node_names, "frame_center": req.frame_center}
     mesh_path, meta_path = _mesh_path(req.label), _meta_path(req.label)
     # The backend re-sends every model after each of ITS restarts. Reloading
     # MegaPose for an identical mesh took seconds and stalled all tracking,
@@ -299,6 +304,8 @@ def register_object(req: RegisterObjectRequest) -> RegisterObjectResponse:
         raise HTTPException(status_code=400, detail="GLB contains no triangle mesh")
     lo, hi = assembly.bounds * req.scale
     assembly_center = (lo + hi) / 2.0  # what the frontend recenters the rendered model on
+    if req.frame_center is not None:
+        assembly_center = np.asarray(req.frame_center, float) * req.scale
 
     pieces = _scene_pieces(loaded, req.node_names)
     if not pieces:
@@ -312,6 +319,8 @@ def register_object(req: RegisterObjectRequest) -> RegisterObjectResponse:
     lo = np.min([p.bounds[0] for p in pieces], axis=0)
     hi = np.max([p.bounds[1] for p in pieces], axis=0)
     center = (lo + hi) / 2.0
+    if req.frame_center is not None and req.node_names is None:
+        center = assembly_center  # a whole-model shell: exactly the original's frame
     for piece in pieces:
         piece.apply_translation(-center)
     mesh = _simplified_parts(pieces)

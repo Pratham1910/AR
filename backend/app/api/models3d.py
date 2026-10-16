@@ -50,6 +50,7 @@ from app.services.model3d.glb_inspect import (
     compute_scale_for_real_height,
     list_glb_parts,
 )
+from app.services.model3d import tracking_model
 from app.services.model3d.vishwa_procedure import ProcedureFormatError, normalize_package, summarize
 from app.services.vision.qa_engine import PartInspection, inspect_parts, qa_overlay
 
@@ -920,3 +921,70 @@ async def upload_model(
     db.commit()
     db.refresh(model)
     return _to_out(model, db)
+
+
+# ── Tracking model: the visible shell (hidden internals removed) ─────────
+
+
+class TrackingModelNodeOut(BaseModel):
+    node_index: int
+    name: str
+    faces_before: int
+    faces_after: int
+
+
+class TrackingModelOut(BaseModel):
+    built: bool
+    stale: bool = False  # built from an older version of the GLB: ignored until rebuilt
+    faces_before: int | None = None
+    faces_after: int | None = None
+    nodes: list[TrackingModelNodeOut] = []
+    size_m: list[float] | None = None  # the shell's bounding box at the model's scale
+    created_at: str | None = None
+
+
+def _tracking_out(model: Model3D, info: dict | None) -> TrackingModelOut:
+    if info is None:
+        return TrackingModelOut(built=False)
+    return TrackingModelOut(
+        built=True, stale=bool(info.get("stale")), faces_before=info["faces_before"], faces_after=info["faces_after"],
+        nodes=[TrackingModelNodeOut(**n) for n in info["nodes"]],
+        size_m=[float(v) * model.scale for v in info["size"]], created_at=info.get("created_at"),
+    )
+
+
+@router.get("/{model_id}/tracking-model", response_model=TrackingModelOut)
+def get_tracking_model(model_id: uuid.UUID, db: Session = Depends(get_db)) -> TrackingModelOut:
+    model = db.get(Model3D, model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    path = _glb_path(model)
+    return _tracking_out(model, tracking_model.status(str(model.id), path.read_bytes() if path.exists() else None))
+
+
+@router.post("/{model_id}/tracking-model", response_model=TrackingModelOut)
+def build_tracking_model(model_id: uuid.UUID, db: Session = Depends(get_db)) -> TrackingModelOut:
+    """Optimize for tracking: keep only the triangles a camera can ever see
+    (~20 s). Tracking uses the shell from the next session on; the original
+    stays what is displayed and inspected."""
+    model = db.get(Model3D, model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    path = _glb_path(model)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"GLB file missing: {path}")
+    try:
+        info = tracking_model.build(str(model.id), path.read_bytes())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return _tracking_out(model, info | {"stale": False})
+
+
+@router.delete("/{model_id}/tracking-model", response_model=TrackingModelOut)
+def remove_tracking_model(model_id: uuid.UUID, db: Session = Depends(get_db)) -> TrackingModelOut:
+    """Track the full original model again."""
+    model = db.get(Model3D, model_id)
+    if model is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    tracking_model.remove(str(model.id))
+    return TrackingModelOut(built=False)

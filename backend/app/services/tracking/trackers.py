@@ -549,7 +549,10 @@ class MegaPoseTracker:
             extra=extra,
         )
 
-    def initialize(self, frame: Frame, detection: SegmentedObject, initial_pose: np.ndarray | None = None) -> Measurement:
+    def initialize(
+        self, frame: Frame, detection: SegmentedObject, initial_pose: np.ndarray | None = None,
+        pose_source: str | None = None,
+    ) -> Measurement:
         """Lock onto `detection`: MegaPose's full search, or — given
         `initial_pose` (assembly frame, e.g. from the outline of a region the
         operator clicked) — that pose, put on the image's edges below."""
@@ -585,9 +588,17 @@ class MegaPoseTracker:
         decision = None
         if result.t_camera_object is not None and self._has_orientation_logic:
             k = frame.calibration.camera_matrix
+            from_guide = pose_source == "guide" and initial_pose is not None
             t_chosen, decision = self._decide_orientation(
-                frame.gray, frame.hand_mask, k, np.asarray(result.t_camera_object, float), self._reliable
+                frame.gray, frame.hand_mask, k, np.asarray(result.t_camera_object, float),
+                np.asarray(initial_pose, float) if from_guide else self._reliable,
             )
+            if decision is not None and from_guide and decision.status == "ambiguous":
+                # The operator lined the object up with an outline that shows
+                # which end is which: that settles the twin the features
+                # couldn't (features that clearly disagree would have won).
+                decision.status = "confirmed"
+                decision.reason = "lined up by the operator with the guide view"
             if decision is not None and decision.flipped and self.edge_model is not None:
                 # Near-symmetric parts: the chosen twin is fitted onto the edges itself.
                 t_chosen, refit = self._edge_align(frame.gray, frame.hand_mask, k, t_chosen, 0.0)

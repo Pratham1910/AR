@@ -330,8 +330,12 @@ export interface ARFrameResponse {
     position: { x: number; y: number; z: number };
     quaternion: { x: number; y: number; z: number; w: number };
     saved: boolean;
+    placed?: boolean; // the operator placed (dragged) this outline
+    t_camera_object?: number[][] | null; // the outline's pose, OpenCV camera frame, row-major 4x4
     score: number | null;
     min_score: number;
+    // Outline edge points [x, y, 1 = on a real edge / 0 = not], for green/red feedback.
+    edge_points?: number[][];
   } | null;
   // Fixed-station mode: the frozen pose in use, and whether the part moved off it.
   station?: { locked: boolean; shift_px: number | null; moved: boolean; created_at: string | null; max_shift_px: number | null } | null;

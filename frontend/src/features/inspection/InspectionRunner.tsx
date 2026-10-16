@@ -29,6 +29,10 @@ export function InspectionRunner({ assetId, procedureRevisionId, operator }: Pro
     selectedDeviceId,
     selectDevice,
     captureFrameBase64,
+    retry: retryCamera,
+    takeOver: takeOverCamera,
+    retryNote: cameraRetryNote,
+    otherTabHasCamera,
   } = useCamera();
   const [run, setRun] = useState<InspectionRun | null>(null);
   const [busy, setBusy] = useState(false);
@@ -79,7 +83,7 @@ export function InspectionRunner({ assetId, procedureRevisionId, operator }: Pro
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
         <video ref={videoRef} autoPlay playsInline muted style={{ width: "100%", maxWidth: 640 }} />
         <canvas ref={canvasRef} style={{ display: "none" }} />
-        <CameraStatusBadge status={cameraStatus} deviceLabel={deviceLabel} resolution={resolution} error={cameraError} />
+        <CameraStatusBadge status={cameraStatus} deviceLabel={deviceLabel} resolution={resolution} error={cameraError} retryNote={cameraRetryNote} otherTabHasCamera={otherTabHasCamera} onRetry={retryCamera} onTakeOver={takeOverCamera} />
         <CameraSelect devices={devices} selectedDeviceId={selectedDeviceId} onSelect={selectDevice} />
       </div>
 

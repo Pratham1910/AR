@@ -15,6 +15,7 @@ import { ComponentInspectionPanel } from "./ComponentInspectionPanel";
 import { canvasMarkerTextures, componentColor, DiscrepancyRenderer, STATUS_COLOR } from "./discrepancy";
 import { BoxSelector } from "./BoxSelector";
 import { CalibrationPanel } from "./CalibrationPanel";
+import { dolly, matrixToRows, projectAxes, rotateAbout, rowsToMatrix, slide, tilt, toThreePose, turn, type ModelAxis } from "./guidePose";
 import {
   InspectionReportsApi,
   Models3DApi,
@@ -239,6 +240,10 @@ export function RegistrationOverlay({
     selectDevice,
     captureFrameBase64,
     captureFrameJpeg,
+    retry: retryCamera,
+    takeOver: takeOverCamera,
+    retryNote: cameraRetryNote,
+    otherTabHasCamera,
   } = useCamera();
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const outlineCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -347,6 +352,18 @@ export function RegistrationOverlay({
   // Guide view on screen: the model drawn as an outline at the guide pose (X-Ray style).
   const guideShownRef = useRef(false);
   const [guideBusy, setGuideBusy] = useState(false);
+  // Guide outline placed by the operator: T_camera_object (OpenCV camera
+  // frame, metres) as a THREE.Matrix4. Moved here in the browser for smooth
+  // dragging, and sent to the backend (stream config) so the edge check and
+  // the green/red feedback follow it. null = the saved / default outline.
+  const guidePlacedRef = useRef<THREE.Matrix4 | null>(null);
+  const [guidePlaced, setGuidePlaced] = useState(false);
+  const guideDragRef = useRef<{ x: number; y: number; shift: boolean; alt: boolean } | null>(null);
+  // The model axis the rotate buttons and Alt+drag turn about.
+  const [guideAxis, setGuideAxis] = useState<ModelAxis>("y");
+  const guideAxisRef = useRef<ModelAxis>("y");
+  guideAxisRef.current = guideAxis;
+  const guideSentAtRef = useRef(0);
   const [initBox, setInitBox] = useState<[number, number, number, number] | null>(null);
   const needsClass = (mode === "markerless" || mode === "model") && detectBy === "class";
   const needsBox = (mode === "markerless" || mode === "model") && detectBy === "box";
@@ -918,6 +935,8 @@ export function RegistrationOverlay({
     // stores that frame's session back when it finishes, undoing the delete.
     const previous = sessionIdRef.current;
     sessionIdRef.current = newSessionId();
+    guidePlacedRef.current = null;
+    setGuidePlaced(false);
     void VisionApi.endArSession(previous).catch(() => undefined);
     motionRef.current = null;
     if (wsRef.current?.readyState === WebSocket.OPEN) wsRef.current.send(streamConfig());
@@ -950,6 +969,12 @@ export function RegistrationOverlay({
       });
     }
     return checks;
+  };
+
+  /** Draw the model at a pose given in the OpenCV camera frame (the guide outline the operator moves). */
+  const showGuidePose = (tCameraObject: THREE.Matrix4) => {
+    const { position, quaternion } = toThreePose(tCameraObject);
+    applyModelTransform(position, quaternion, false);
   };
 
   const applyArResult = (result: ARFrameResponse, roundTripMs: number) => {
@@ -1029,6 +1054,39 @@ export function RegistrationOverlay({
         handCtx.stroke();
       }
     }
+    // Guide view: each outline edge point green where it already sits on a
+    // real edge of the object, red where it doesn't — shows which side to move.
+    const guideCtx = outlineCanvasRef.current?.getContext("2d");
+    if (guideCtx && !result.visible && result.guide?.edge_points?.length) {
+      for (const [x, y, on] of result.guide.edge_points) {
+        guideCtx.fillStyle = on ? "rgba(0, 230, 118, 0.95)" : "rgba(255, 82, 82, 0.9)";
+        guideCtx.beginPath();
+        guideCtx.arc(x, y, on ? 2.6 : 2.2, 0, Math.PI * 2);
+        guideCtx.fill();
+      }
+    }
+
+    // Guide view: the outline's own axes (X red, Y green, Z blue; the picked
+    // one thicker), so the rotate buttons have something to refer to.
+    if (guideCtx && !result.visible && result.guide && result.intrinsics) {
+      const m = guidePlacedRef.current ?? (result.guide.t_camera_object ? rowsToMatrix(result.guide.t_camera_object) : null);
+      const axes = m ? projectAxes(m, result.intrinsics, 0.07) : null;
+      if (axes) {
+        const colours: Record<ModelAxis, string> = { x: "#ff5252", y: "#00e676", z: "#448aff" };
+        for (const axis of ["x", "y", "z"] as ModelAxis[]) {
+          guideCtx.strokeStyle = colours[axis];
+          guideCtx.lineWidth = guideAxisRef.current === axis ? 5 : 2.5;
+          guideCtx.beginPath();
+          guideCtx.moveTo(...axes.o);
+          guideCtx.lineTo(...axes[axis]);
+          guideCtx.stroke();
+          guideCtx.fillStyle = colours[axis];
+          guideCtx.font = "bold 15px 'IBM Plex Sans', sans-serif";
+          guideCtx.fillText(axis.toUpperCase(), axes[axis][0] + 4, axes[axis][1] - 4);
+        }
+      }
+    }
+
     // Pose features: where the pose puts each one (dashed ring, +) and the
     // circle actually found there (solid dot), so a wrong orientation shows
     // as a ring on empty surface and a dot somewhere else.
@@ -1192,8 +1250,9 @@ export function RegistrationOverlay({
     if (result.visible) {
       applyModelTransform(result.position, result.quaternion, mode !== "model", healthy ? result.capture_ms ?? undefined : undefined);
     } else if (result.guide) {
-      // Guide view: the outline to line the real object up with.
-      applyModelTransform(result.guide.position, result.guide.quaternion, false);
+      // Guide view: the outline to line the real object up with (where the operator put it, if they moved it).
+      if (guidePlacedRef.current) showGuidePose(guidePlacedRef.current);
+      else applyModelTransform(result.guide.position, result.guide.quaternion, false);
     } else {
       applyModelTransform(null, null);
     }
@@ -1274,6 +1333,7 @@ export function RegistrationOverlay({
       inspection_focus: focusIds.length ? focusIds : null,
       station_lock: mode === "model" && stationLocked,
       camera_label: deviceLabel || null,
+      guide_pose: detectBy === "guide" && guidePlacedRef.current ? matrixToRows(guidePlacedRef.current) : null,
     });
 
   // Live tracking (markerless / model-based) as a stream: every new camera
@@ -1412,7 +1472,78 @@ export function RegistrationOverlay({
   // Click the object on the video to lock onto it (model mode): the backend
   // tries the image segments under the click and keeps the one the 3D model
   // fits best. For plain objects that searching by appearance can't find.
-  const canPick = mode === "model" && liveTracking && !needsBox && !stationLocked;
+  const canPick = mode === "model" && liveTracking && !needsBox && !stationLocked && detectBy !== "guide";
+
+  // ── Moving the guide outline with the mouse ────────────────────────────
+  // Drag: across the table · wheel: nearer/farther · Shift+drag: turn
+  // (left/right, about the model's up axis) and tilt (up/down). Only rough
+  // placement is needed: the edge check snaps it onto the real object.
+  const guideActive = mode === "model" && detectBy === "guide" && !!arResult?.guide && !arResult.visible;
+  const sendGuidePose = (force = false) => {
+    const ws = wsRef.current;
+    const now = performance.now();
+    if (!force && now - guideSentAtRef.current < 80) return;
+    guideSentAtRef.current = now;
+    if (ws?.readyState === WebSocket.OPEN) ws.send(streamConfig());
+  };
+  const placedGuide = (): THREE.Matrix4 | null => {
+    if (guidePlacedRef.current) return guidePlacedRef.current;
+    const rows = arResult?.guide?.t_camera_object;
+    if (!rows) return null;
+    guidePlacedRef.current = rowsToMatrix(rows);
+    setGuidePlaced(true);
+    return guidePlacedRef.current;
+  };
+  const moveGuide = (change: (m: THREE.Matrix4) => void, force = false) => {
+    const m = placedGuide();
+    if (!m) return;
+    change(m);
+    showGuidePose(m);
+    sendGuidePose(force);
+  };
+  const rotateGuide = (degrees: number) => moveGuide((m) => rotateAbout(m, guideAxisRef.current, degrees), true);
+  const onGuidePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!guideActive || e.button !== 0) return;
+    if ((e.target as HTMLElement).closest("button, a, input, select, label, .hud")) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    guideDragRef.current = { x: e.clientX, y: e.clientY, shift: e.shiftKey, alt: e.altKey };
+  };
+  const onGuidePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const drag = guideDragRef.current;
+    const video = videoRef.current;
+    const k = arResult?.intrinsics;
+    if (!drag || !video || !video.videoWidth || !k) return;
+    const toFrame = video.videoWidth / video.getBoundingClientRect().width;
+    const du = (e.clientX - drag.x) * toFrame;
+    const dv = (e.clientY - drag.y) * toFrame;
+    guideDragRef.current = { x: e.clientX, y: e.clientY, shift: drag.shift || e.shiftKey, alt: drag.alt || e.altKey };
+    moveGuide((m) => {
+      if (drag.alt || e.altKey) {
+        rotateAbout(m, guideAxisRef.current, (du - dv) * 0.4); // free rotation about the picked axis
+        return;
+      }
+      if (!(drag.shift || e.shiftKey)) {
+        slide(m, du, dv, k.fx, k.fy);
+        return;
+      }
+      turn(m, du * 0.4); // left / right: turn on the table
+      tilt(m, -dv * 0.3); // up / down: tilt
+    });
+  };
+  const onGuidePointerUp = () => {
+    if (!guideDragRef.current) return;
+    guideDragRef.current = null;
+    sendGuidePose(true);
+  };
+  const onGuideWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    if (!guideActive) return;
+    moveGuide((m) => dolly(m, Math.exp(e.deltaY * 0.0008)), true); // nearer / farther along the viewing ray
+  };
+  const resetPlacedGuide = () => {
+    guidePlacedRef.current = null;
+    setGuidePlaced(false);
+    sendGuidePose(true);
+  };
   const pickObjectAt = (e: React.MouseEvent<HTMLDivElement>) => {
     const video = videoRef.current;
     const ws = wsRef.current;
@@ -1450,6 +1581,11 @@ export function RegistrationOverlay({
     if (!modelId) return;
     setGuideBusy(true);
     try {
+      if (arResult?.state !== "TRACKING" && guidePlacedRef.current) {
+        await GuideViewApi.savePose(modelId, matrixToRows(guidePlacedRef.current));
+        setArEvents((events) => [...events, "[UI] Guide view saved where you placed the outline"].slice(-12));
+        return;
+      }
       await GuideViewApi.saveCurrent(modelId, sessionIdRef.current);
       setArEvents((events) => [...events, "[UI] Guide view saved from the current pose"].slice(-12));
     } catch (err) {
@@ -1681,9 +1817,14 @@ export function RegistrationOverlay({
       )}
       <div className="stage-box">
       <div
-        className={`ar-stage${canPick ? " pickable" : ""}`}
+        className={`ar-stage${canPick ? " pickable" : ""}${guideActive ? " guide-draggable" : ""}`}
         style={{ "--stage-ar": stageAspect } as React.CSSProperties}
         onClick={pickObjectAt}
+        onPointerDown={onGuidePointerDown}
+        onPointerMove={onGuidePointerMove}
+        onPointerUp={onGuidePointerUp}
+        onPointerCancel={onGuidePointerUp}
+        onWheel={onGuideWheel}
       >
         {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
         <video ref={videoRef} autoPlay playsInline muted />
@@ -1723,14 +1864,20 @@ export function RegistrationOverlay({
           {arResult?.guide && !arResult.visible && (
             <div className="hud-pill state-INITIALIZING">
               <span className="dot" />
-              Line the object up with the outline
+              Line the object up with the outline — or drag the outline onto it
               <span className="sub">
                 fit {arResult.guide.score != null ? `${Math.round(arResult.guide.score * 100)}%` : "—"} · locks at{" "}
-                {Math.round(arResult.guide.min_score * 100)}%{arResult.guide.saved ? " · saved view" : ""}
+                {Math.round(arResult.guide.min_score * 100)}%
+                {arResult.guide.edge_points?.length
+                  ? ` · edges on target ${Math.round(
+                      (100 * arResult.guide.edge_points.filter((p) => p[2] > 0).length) / arResult.guide.edge_points.length
+                    )}% (green)`
+                  : ""}
+                {arResult.guide.saved ? " · saved view" : ""}
               </span>
             </div>
           )}
-          {canPick && detectBy !== "guide" && (!arResult || arResult.state === "SEARCHING" || arResult.state === "LOST") && (
+          {canPick && (!arResult || arResult.state === "SEARCHING" || arResult.state === "LOST") && (
             <div className="hud-pill">
               <span className="dot" />
               Click the object to lock onto it
@@ -1853,13 +2000,41 @@ export function RegistrationOverlay({
         {mode === "model" && modelId && (
           <button
             onClick={() => void saveGuideView()}
-            disabled={guideBusy || arResult?.state !== "TRACKING" || arResult.monitoring}
-            title="Use the pose tracked now as this model's guide view: its outline is shown there next time (Find object by: Guide view)"
+            disabled={guideBusy || !((arResult?.state === "TRACKING" && !arResult.monitoring) || (guidePlaced && guideActive))}
+            title="Use the pose tracked now - or where you placed the outline - as this model's guide view: its outline is shown there next time (Find object by: Guide view)"
           >
             Save guide view
           </button>
         )}
-        {mode === "model" && modelId && detectBy === "guide" && arResult?.guide?.saved && (
+        {guideActive && (
+          <span
+            className="segmented guide-rotate"
+            aria-label="Rotate the guide outline"
+            title="Rotate the outline about one of the model's own axes (drawn on it: X red, Y green, Z blue). Or drag: drag moves it, the wheel brings it nearer / farther, Shift+drag turns and tilts, Alt+drag rotates about the picked axis"
+          >
+            {(["x", "y", "z"] as ModelAxis[]).map((axis) => (
+              <button
+                key={axis}
+                className={`axis-${axis}${guideAxis === axis ? " active" : ""}`}
+                onClick={() => setGuideAxis(axis)}
+                title={`Rotate about the model's ${axis.toUpperCase()} axis`}
+              >
+                {axis.toUpperCase()}
+              </button>
+            ))}
+            <button onClick={() => rotateGuide(-90)} title="-90° about the picked axis">−90°</button>
+            <button onClick={() => rotateGuide(-15)} title="-15° about the picked axis">−15°</button>
+            <button onClick={() => rotateGuide(15)} title="+15° about the picked axis">+15°</button>
+            <button onClick={() => rotateGuide(90)} title="+90° about the picked axis">+90°</button>
+            <button onClick={() => rotateGuide(180)} title="Turn round (180°) about the picked axis">180°</button>
+            {guidePlaced && (
+              <button onClick={resetPlacedGuide} title="Back to the saved / default outline">
+                Undo moves
+              </button>
+            )}
+          </span>
+        )}
+        {mode === "model" && modelId && detectBy === "guide" && arResult?.guide?.saved && !guidePlaced && (
           <button onClick={() => void resetGuideView()} disabled={guideBusy} title="Back to the default guide view">
             Reset guide
           </button>
@@ -1882,7 +2057,7 @@ export function RegistrationOverlay({
             ))}
           </span>
         </span>
-        <CameraStatusBadge status={cameraStatus} deviceLabel={deviceLabel} resolution={resolution} error={cameraError} />
+        <CameraStatusBadge status={cameraStatus} deviceLabel={deviceLabel} resolution={resolution} error={cameraError} retryNote={cameraRetryNote} otherTabHasCamera={otherTabHasCamera} onRetry={retryCamera} onTakeOver={takeOverCamera} />
         <CameraSelect devices={devices} selectedDeviceId={selectedDeviceId} onSelect={selectDevice} />
         {isAr && (
           <label

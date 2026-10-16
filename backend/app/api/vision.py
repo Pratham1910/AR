@@ -79,6 +79,7 @@ from app.services.pose.symmetry import find_symmetries
 from app.services.pose.feature_tracker import FeatureTracker, ReferencePlane, RegistrationQuality
 from app.services.pose.markerless import estimate_object_placement
 from app.services.component_inspection.registry import assembly_center
+from app.services.model3d import tracking_model
 from app.services.model3d.glb_inspect import GlbPartMesh, glb_part_meshes, list_glb_parts
 from app.services.pose.model_pose_client import ModelPoseClient, PoseServiceUnavailable
 from app.services.pose.transforms import cv_model_pose_to_threejs, cv_pose_to_threejs, euler_angles_deg, project_pose_axes
@@ -527,12 +528,35 @@ def get_station_settings(model_id: str) -> StationSettings:
 
 class GuideViewSave(BaseModel):
     session_id: str  # the live session whose current pose becomes the guide view
+    # Or: an outline the operator placed (T_camera_object, 4x4) — saved as is, no tracking needed.
+    t_camera_object: list[list[float]] | None = None
+
+
+def _valid_pose(pose: list[list[float]] | None) -> np.ndarray | None:
+    """A 4x4 rigid pose in front of the camera, or None."""
+    if pose is None:
+        return None
+    t = np.asarray(pose, float)
+    if t.shape != (4, 4) or not np.all(np.isfinite(t)) or t[2, 3] <= 0.02:
+        return None
+    r = t[:3, :3]
+    if not np.allclose(r @ r.T, np.eye(3), atol=1e-3) or np.linalg.det(r) < 0.99:
+        return None
+    return t
 
 
 @router.post("/guide-view/{model_id}", response_model=StationSettings)
 def save_guide_view(model_id: str, payload: GuideViewSave) -> StationSettings:
-    """The pose being tracked now becomes the model's guide view: next time,
-    its outline is drawn there for the operator to line the object up with."""
+    """The pose being tracked now — or an outline the operator placed — becomes
+    the model's guide view: next time, its outline is drawn there for the
+    operator to line the object up with."""
+    placed = _valid_pose(payload.t_camera_object)
+    if payload.t_camera_object is not None:
+        if placed is None:
+            raise HTTPException(status_code=400, detail="Not a valid pose in front of the camera.")
+        settings = station_settings(model_id)
+        settings.guide_pose = placed.tolist()
+        return _write_station_settings(model_id, settings)
     entry = _ar_sessions.get(payload.session_id)
     session = entry[1] if entry else None
     t_co = session.obj.extra.get("t_camera_object") if session is not None and session.obj is not None else None
@@ -853,8 +877,18 @@ def measure_part(
 
 
 def register_model_mesh(model_id: str, read_glb, scale: float) -> None:
-    """Makes sure the pose service has the whole model's mesh (needed to find it by its 3D model)."""
-    _model_pose_client.ensure_registered(model_id, read_glb, scale)
+    """Makes sure the pose service has the whole model's mesh (needed to find
+    it by its 3D model) — its tracking shell when one was built from this
+    exact GLB (hidden internals removed, same frame), else the GLB itself.
+    Every registration of the whole model goes through here, so the service
+    never flips between the two."""
+    glb = read_glb()
+    shell = tracking_model.load(model_id, glb)
+    if shell is None:
+        _model_pose_client.ensure_registered(model_id, lambda: glb, scale, variant="original")
+    else:
+        mesh, center, sha = shell
+        _model_pose_client.ensure_registered(model_id, lambda: mesh, scale, frame_center=center, variant=sha)
 
 
 def _cad_detector(label: str, name: str):
@@ -927,7 +961,7 @@ def _finder(request: ARFrameRequest, class_label: str | None, model: Model3D | N
         try:
             # Found by the WHOLE assembly's shape even when tracking one part:
             # the box then covers the whole object, as part regions assume.
-            _model_pose_client.ensure_registered(str(model.id), glb_path.read_bytes, model.scale)
+            register_model_mesh(str(model.id), glb_path.read_bytes, model.scale)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=f"GLB file missing: {glb_path}") from exc
         except PoseServiceUnavailable as exc:
@@ -949,16 +983,20 @@ _edge_models: dict[tuple, EdgeModel | None] = {}
 
 def _edge_model_for(model: Model3D, glb: bytes) -> EdgeModel | None:
     """The model's 3D edges in the tracked frame (whole assembly, recentred
-    on its bounding box like the pose service does, metres), cached per model
-    and scale. None when disabled or too heavy."""
+    on the ORIGINAL model's bounding box like the pose service does, metres),
+    from its tracking shell when there is one; cached per model, scale and
+    shell. None when disabled or too heavy."""
     if not _settings.ar_edge_align_enabled:
         return None
-    key = (str(model.id), model.scale, _settings.ar_edge_crease_deg, _settings.ar_edge_max_points)
+    shell = tracking_model.load(str(model.id), glb)
+    key = (str(model.id), model.scale, _settings.ar_edge_crease_deg, _settings.ar_edge_max_points,
+           shell[2] if shell else None)
     if key not in _edge_models:
-        meshes = glb_part_meshes(glb)
+        source = shell[0] if shell else glb
+        meshes = glb_part_meshes(source)
         edge_model = None
         if meshes and sum(len(m.faces) for m in meshes.values()) <= _settings.ar_edge_max_faces:
-            center = assembly_center(meshes)
+            center = np.asarray(shell[1], float) if shell else assembly_center(meshes)
             vertex_sets, face_sets, base = [], [], 0
             for mesh in meshes.values():
                 vertex_sets.append((mesh.vertices - center) * model.scale)
@@ -983,7 +1021,7 @@ def _orientation_setup(model: Model3D, glb: bytes, edge_model: EdgeModel | None)
         return [np.eye(3)], []
     mapping = Path(_settings.component_registry_dir) / f"{model.id}.json"
     stamp = mapping.stat().st_mtime if mapping.exists() else None
-    key = (str(model.id), model.scale, stamp, _settings.ar_symmetry_tolerance)
+    key = (str(model.id), model.scale, stamp, _settings.ar_symmetry_tolerance, len(edge_model.vertices))
     if key not in _orientation_setups:
         symmetries = find_symmetries(edge_model.vertices, edge_model.faces, tolerance=_settings.ar_symmetry_tolerance)
         try:
@@ -1031,7 +1069,11 @@ def _build_ar_session(request: ARFrameRequest, class_label: str | None, model: M
                 if part is None:
                     raise HTTPException(status_code=400, detail=f"This model has no part {request.track_part}")
                 label, node_names = f"{model.id}__node{part.node_index}", [part.name]
-            offset = _model_pose_client.ensure_registered(label, glb_path.read_bytes, model.scale, node_names)
+            if node_names is None:
+                register_model_mesh(label, glb_path.read_bytes, model.scale)
+                offset = np.zeros(3)
+            else:  # one part: the original's node (the shell keeps node names, not indices)
+                offset = _model_pose_client.ensure_registered(label, glb_path.read_bytes, model.scale, node_names)
             glb_bytes = glb_path.read_bytes()
             edge_model = _edge_model_for(model, glb_bytes)
             symmetries, pose_features = _orientation_setup(model, glb_bytes, edge_model)
@@ -1193,7 +1235,10 @@ def process_ar_frame(
         and session.state in (TrackingState.SEARCHING, TrackingState.RECOVERING, TrackingState.LOST)
     ):
         edge_model = getattr(session.tracker, "edge_model", None)
-        guide = guide_pose_for(model, edge_model, calibration.camera_matrix, (width_px, height_px), request.resting)
+        placed = _valid_pose(request.guide_pose)
+        guide = (placed, False) if placed is not None else guide_pose_for(
+            model, edge_model, calibration.camera_matrix, (width_px, height_px), request.resting
+        )
         if guide is not None and edge_model is not None:
             guide_pose, saved = guide
             matcher = _guide_matchers.setdefault(request.session_id, GuideMatcher(
@@ -1208,7 +1253,7 @@ def process_ar_frame(
                         edge_model, locked.t_co, calibration.camera_matrix, model.name,
                         guide_lock_confidence(locked.score, session.config.good_confidence),
                     ),
-                    select_events, initial_pose=locked.t_co,
+                    select_events, initial_pose=locked.t_co, pose_source="guide",
                 )
                 select_events.insert(0, f"[GUIDE] Lined up with the guide view (edge fit {locked.score:.0%}) — locking")
                 matcher.reset()
@@ -1217,8 +1262,14 @@ def process_ar_frame(
                 position=Vector3(x=shown.position[0], y=shown.position[1], z=shown.position[2]),
                 quaternion=Quaternion(x=shown.quaternion[0], y=shown.quaternion[1], z=shown.quaternion[2], w=shown.quaternion[3]),
                 saved=saved,
+                placed=placed is not None,
+                t_camera_object=np.asarray(guide_pose, float).tolist(),
                 score=matcher.last.score if matcher.last else None,
                 min_score=_settings.ar_guide_min_score,
+                edge_points=(
+                    [[round(float(x), 1), round(float(y), 1), float(m)] for x, y, m in matcher.last.feedback]
+                    if matcher.last is not None and matcher.last.feedback is not None else []
+                ),
             )
     try:
         if result is None and request.select_point and request.mode == "model" and model is not None:

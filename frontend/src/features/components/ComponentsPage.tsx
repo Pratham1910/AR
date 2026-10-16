@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Models3DApi, apiErrorMessage } from "../../services/api";
 import type { Asset, ComponentRegistry, Model3DInfo, RegisteredComponent } from "../../types";
 import { componentColor } from "../viewer3d/discrepancy";
+import { TrackingModelCard } from "./TrackingModelCard";
 
 /*
  * Models & components: which parts of a model's GLB are inspected, under
@@ -434,6 +435,7 @@ export function ComponentsPage({ assets }: { assets: Asset[] }) {
                 ))}
               </ul>
             </section>
+            <TrackingModelCard modelId={modelId} />
             <section className="card" aria-label="Presence references">
               <h3>Presence references</h3>
               <p className="hint">

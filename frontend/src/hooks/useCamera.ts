@@ -2,6 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 export type CameraStatus = "requesting" | "streaming" | "error";
 
+/** Thrown inside a superseded camera request: a newer one took over, nothing to report. */
+class Superseded extends Error {}
+
 export interface CameraDeviceOption {
   deviceId: string;
   label: string;
@@ -122,12 +125,27 @@ const watchTrack = (track: MediaStreamTrack, onLost: () => void) => {
   };
 };
 
-const describeCameraError = (err: unknown): string => {
+// A camera held by someone else ("NotReadableError") is often only briefly
+// busy: Windows releasing it after another page or app let go, a camera
+// hiccup. Retried with these waits before giving up (about 7 s in all).
+const BUSY_RETRY_MS = [500, 1000, 2000, 3500];
+const isBusy = (err: unknown) => err instanceof DOMException && (err.name === "NotReadableError" || err.name === "AbortError");
+
+// Other TVASTA tabs: a camera on Windows opens in one place at a time, so a
+// second tab of the app is a common "in use by another app".
+const TAB_CHANNEL = "tvasta-camera";
+const TAB_ID = Math.random().toString(36).slice(2);
+
+const describeCameraError = (err: unknown, otherTab = false): string => {
   const name = err instanceof DOMException ? err.name : "";
-  if (name === "NotReadableError") {
+  if (name === "NotReadableError" || name === "AbortError") {
+    if (otherTab) {
+      return "The camera is in use in another TVASTA tab. Close that tab, or press \"Use camera here\".";
+    }
     return (
-      "Could not start this camera — it's in use by another app, or it's a virtual camera " +
-      "(DroidCam, Meta Quest, OBS…) whose app isn't running. Pick another camera."
+      "This camera is busy — another app is using it (Teams, Zoom, the Windows Camera app, Logi Tune…), " +
+      "or it's a virtual camera (DroidCam, OBS…) whose app isn't running. Close that app and press Retry, " +
+      "or pick another camera."
     );
   }
   if (name === "NotAllowedError") return "Camera permission was denied — allow it in the browser's site settings.";
@@ -160,6 +178,16 @@ export function useCamera() {
   const [resolution, setResolution] = useState<{ width: number; height: number } | null>(null);
   const [devices, setDevices] = useState<CameraDeviceOption[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+  // "Camera busy — retrying (2/4)…" while a busy camera is being retried.
+  const [retryNote, setRetryNote] = useState<string | null>(null);
+  // Another TVASTA tab holds the camera (it answered our ping).
+  const [otherTabHasCamera, setOtherTabHasCamera] = useState(false);
+  // Every request gets a number; only the newest may keep its stream.
+  // A request that finishes after a newer one started (or after the page
+  // closed) stops its stream at once — before this, such a late stream was
+  // never closed and kept the camera "in use" until a reload.
+  const generationRef = useRef(0);
+  const channelRef = useRef<BroadcastChannel | null>(null);
 
   const stopCurrentStream = useCallback(() => {
     unwatchRef.current?.();
@@ -189,13 +217,40 @@ export function useCamera() {
    */
   const startStream = useCallback(
     async (deviceId?: string, autoFallback = false) => {
+      const generation = ++generationRef.current;
+      const current = () => generation === generationRef.current;
       setStatus("requesting");
       setError(null);
+      setRetryNote(null);
+      // Windows opens a webcam in one place at a time: let go of ours before
+      // asking again, or reopening the same camera fails as "in use".
+      stopCurrentStream();
+      // Opens a camera; retries while it's busy; any stream that arrives
+      // for a superseded request is stopped right away.
+      const open = async (id?: string): Promise<MediaStream> => {
+        for (let attempt = 0; ; attempt++) {
+          try {
+            const opened = await openStream(id);
+            if (!current()) {
+              opened.getTracks().forEach((t) => t.stop());
+              throw new Superseded();
+            }
+            return opened;
+          } catch (err) {
+            if (err instanceof Superseded || !current()) throw new Superseded();
+            if (!isBusy(err) || attempt >= BUSY_RETRY_MS.length) throw err;
+            setRetryNote(`Camera busy — retrying (${attempt + 1}/${BUSY_RETRY_MS.length})…`);
+            await new Promise((resolve) => setTimeout(resolve, BUSY_RETRY_MS[attempt]));
+            if (!current()) throw new Superseded();
+          }
+        }
+      };
       try {
         let stream: MediaStream;
         try {
-          stream = await openStream(deviceId);
+          stream = await open(deviceId);
         } catch (firstError) {
+          if (firstError instanceof Superseded) throw firstError;
           if (!autoFallback) throw firstError;
           // A remembered camera can stop existing under that id — unplugged,
           // or its device path changed (a driver/class change renames it), and
@@ -212,8 +267,13 @@ export function useCamera() {
             if (candidate === deviceId) continue; // already failed above
             try {
               opened = await openStream(candidate);
+              if (!current()) {
+                opened.getTracks().forEach((t) => t.stop());
+                throw new Superseded();
+              }
               break;
-            } catch {
+            } catch (err) {
+              if (err instanceof Superseded) throw err;
               // try the next camera
             }
           }
@@ -222,6 +282,9 @@ export function useCamera() {
         }
         stopCurrentStream();
         streamRef.current = stream;
+        setRetryNote(null);
+        setOtherTabHasCamera(false);
+        channelRef.current?.postMessage({ type: "have-camera", from: TAB_ID });
 
         const [track] = stream.getVideoTracks();
         const actualDeviceId = track?.getSettings().deviceId ?? deviceId ?? null;
@@ -258,7 +321,30 @@ export function useCamera() {
         // granted at least once, so (re-)enumerate after a successful grant.
         await refreshDeviceList();
       } catch (err) {
-        setError(describeCameraError(err));
+        if (err instanceof Superseded || !current()) return; // a newer request owns the camera now
+        setRetryNote(null);
+        let otherTab = false;
+        if (isBusy(err) && channelRef.current) {
+          // Is it one of our own tabs? Ask; a tab with the camera answers at once.
+          otherTab = await new Promise<boolean>((resolve) => {
+            const channel = channelRef.current!;
+            const onReply = (e: MessageEvent) => {
+              if (e.data?.type === "have-camera" && e.data.from !== TAB_ID) {
+                channel.removeEventListener("message", onReply);
+                resolve(true);
+              }
+            };
+            channel.addEventListener("message", onReply);
+            channel.postMessage({ type: "who-has-camera", from: TAB_ID });
+            setTimeout(() => {
+              channel.removeEventListener("message", onReply);
+              resolve(false);
+            }, 300);
+          });
+          if (!current()) return;
+        }
+        setOtherTabHasCamera(otherTab);
+        setError(describeCameraError(err, otherTab));
         setStatus("error");
         // Device list (with labels) still matters here: it's how the user picks a working camera.
         await refreshDeviceList();
@@ -276,6 +362,24 @@ export function useCamera() {
       setStatus("streaming");
     };
     video?.addEventListener("loadedmetadata", handleLoadedMetadata);
+
+    // Other TVASTA tabs: answer "who has the camera?", and give it up when asked.
+    const channel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(TAB_CHANNEL) : null;
+    channelRef.current = channel;
+    const onTabMessage = (e: MessageEvent) => {
+      const message = e.data;
+      if (!message || message.from === TAB_ID) return;
+      const live = streamRef.current?.getVideoTracks()[0]?.readyState === "live";
+      if (message.type === "who-has-camera" && live) channel?.postMessage({ type: "have-camera", from: TAB_ID });
+      if (message.type === "release-camera" && live) {
+        generationRef.current++; // cancels any reopen in flight here
+        stopCurrentStream();
+        setStatus("error");
+        setError("The camera was taken over by another TVASTA tab. Press Retry to take it back.");
+        channel?.postMessage({ type: "released-camera", from: TAB_ID });
+      }
+    };
+    channel?.addEventListener("message", onTabMessage);
 
     // Start on the last camera that actually streamed, not the OS default
     // (which other software, e.g. DroidCam, can silently take over).
@@ -295,6 +399,10 @@ export function useCamera() {
     return () => {
       video?.removeEventListener("loadedmetadata", handleLoadedMetadata);
       navigator.mediaDevices.removeEventListener?.("devicechange", handleDeviceChange);
+      channel?.removeEventListener("message", onTabMessage);
+      channel?.close();
+      channelRef.current = null;
+      generationRef.current++; // a request still opening stops its stream when it lands
       stopCurrentStream();
     };
     // Intentionally run once on mount; switching devices goes through
@@ -308,6 +416,30 @@ export function useCamera() {
     },
     [startStream]
   );
+
+  /** Try the current (or last) camera again — after closing the app that held it. */
+  const retry = useCallback(() => {
+    void startStream(selectedDeviceId ?? readSavedDevice() ?? undefined, true);
+  }, [selectedDeviceId, startStream]);
+
+  /** Ask other TVASTA tabs to let go of the camera, then open it here. */
+  const takeOver = useCallback(() => {
+    const channel = channelRef.current;
+    if (!channel) return retry();
+    const done = () => {
+      channel.removeEventListener("message", onReleased);
+      retry();
+    };
+    const onReleased = (e: MessageEvent) => {
+      if (e.data?.type === "released-camera") done();
+    };
+    channel.addEventListener("message", onReleased);
+    channel.postMessage({ type: "release-camera", from: TAB_ID });
+    setTimeout(() => {
+      channel.removeEventListener("message", onReleased);
+      retry();
+    }, 800);
+  }, [retry]);
 
   const captureFrameBase64 = useCallback((): string | null => {
     const video = videoRef.current;
@@ -349,6 +481,10 @@ export function useCamera() {
     devices,
     selectedDeviceId,
     selectDevice,
+    retry,
+    takeOver,
+    retryNote,
+    otherTabHasCamera,
     captureFrameBase64,
     captureFrameJpeg,
   };

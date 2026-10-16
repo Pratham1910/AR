@@ -88,6 +88,7 @@ against `Project.md` §58.
 cd backend
 python -m app.workers.generate_marker --id 0 --size-px 600
 # -> data/images/aruco_DICT_4X4_50_id0.png
+# chrome://restart
 ```
 
 Print it, measure its printed side length in meters, set `ARUCO_MARKER_LENGTH_M`

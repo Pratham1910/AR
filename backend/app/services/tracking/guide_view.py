@@ -25,7 +25,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from app.services.pose.edge_align import EdgeModel, align, edge_image
+from app.services.pose.edge_align import EdgeModel, _fit_score, _project, _sample, _unknown_at, align, edge_image, visible_edge_points
 
 _pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="guide-view")
 
@@ -68,22 +68,54 @@ def default_guide_pose(
 
 @dataclass
 class GuideCheck:
-    t_co: np.ndarray  # the refined pose (assembly frame)
+    t_co: np.ndarray  # the pose checked (refined onto the edges when it was close)
     score: float  # edge fit, 0..1 (edge_align._fit_score)
     support: float
     matched: bool  # good enough to lock
+    # Operator feedback at the GUIDE pose (what the outline shows): visible
+    # model edge points as (x, y, on_an_image_edge) — green / red on screen.
+    feedback: np.ndarray | None = None
+    quick: bool = False  # a re-score of an earlier match, not a full refinement
+
+
+FEEDBACK_POINTS = 500
+FEEDBACK_NEAR_PX = 5.0
+
+
+LOOSE_NEAR_PX = 12.0  # "roughly lined up": worth a full refinement
+
+
+def _feedback(model: EdgeModel, guide: np.ndarray, camera_matrix: np.ndarray, edges) -> tuple[np.ndarray | None, float]:
+    """(points [x, y, on an edge] at the guide pose, share of them within
+    LOOSE_NEAR_PX of some image edge — the cheap "is it roughly there" test)."""
+    mask = visible_edge_points(model, guide, camera_matrix, budget=FEEDBACK_POINTS)
+    if not mask.any():
+        return None, 0.0
+    px = _project(model, guide, camera_matrix, mask)
+    d = _sample(edges.distance, px, outside=99.0)
+    known = ~_unknown_at(edges, px)
+    on_edge = (d <= FEEDBACK_NEAR_PX) & known
+    loose = float(((d <= LOOSE_NEAR_PX) & known).mean())
+    return np.column_stack([px, on_edge.astype(float)]), loose
 
 
 class GuideMatcher:
-    """Background checks of whether the object is lined up with the guide."""
+    """Background checks of whether the object is lined up with the guide.
+
+    Cost per check: far off (under `min_loose` of the outline within 12 px of
+    any image edge) — one score (~0.1 s), no refinement; close — a full edge refinement from the guide
+    pose (~0.3-0.7 s); confirming an earlier match — the matched pose
+    re-scored on a new frame (~0.1 s). So a lock takes one refinement plus
+    one re-score instead of two refinements."""
 
     def __init__(self, min_score: float = 0.58, min_support: float = 0.55, confirmations: int = 2,
-                 agree_m: float = 0.02, agree_deg: float = 6.0):
+                 agree_m: float = 0.02, agree_deg: float = 6.0, min_loose: float = 0.35):
         self.min_score = min_score
         self.min_support = min_support
         self.confirmations = confirmations
         self.agree_m = agree_m
         self.agree_deg = agree_deg
+        self.min_loose = min_loose
         self._job: Future | None = None
         self._streak: list[GuideCheck] = []
         self.last: GuideCheck | None = None
@@ -95,15 +127,25 @@ class GuideMatcher:
 
     @staticmethod
     def check(model: EdgeModel, guide: np.ndarray, gray: np.ndarray, hand_mask, camera_matrix: np.ndarray,
-              min_score: float, min_support: float) -> GuideCheck:
-        """One frame: refine from the guide pose onto the edges and judge the fit."""
+              min_score: float, min_support: float, verify: np.ndarray | None = None,
+              min_loose: float = 0.35) -> GuideCheck:
+        """One frame: how well the object sits on the guide, refined onto the
+        edges when it's close; or (`verify`) whether an earlier match still holds."""
+        edges = edge_image(gray, exclude=hand_mask)
+        feedback, loose = _feedback(model, guide, camera_matrix, edges)
+        if verify is not None:
+            score, support = _fit_score(model, verify, camera_matrix, edges, 3.0)[:2]
+            return GuideCheck(verify, score, support, score >= min_score and support >= min_support, feedback, quick=True)
+        if loose < min_loose:  # most of the outline isn't near any edge: nothing lined up yet
+            pre_score, pre_support = _fit_score(model, guide, camera_matrix, edges, 3.0)[:2]
+            return GuideCheck(guide, pre_score, pre_support, False, feedback)
         fit = align(
-            model, guide, camera_matrix, edge_image(gray, exclude=hand_mask),
+            model, guide, camera_matrix, edges,
             tilt_starts_deg=0.0, max_rotation_deg=25.0, max_translation_frac=0.3,
         )
         if fit is None:
-            return GuideCheck(guide, 0.0, 0.0, False)
-        return GuideCheck(fit.t_co, fit.score, fit.support, fit.score >= min_score and fit.support >= min_support)
+            return GuideCheck(guide, 0.0, 0.0, False, feedback)
+        return GuideCheck(fit.t_co, fit.score, fit.support, fit.score >= min_score and fit.support >= min_support, feedback)
 
     def _agrees(self, a: GuideCheck, b: GuideCheck) -> bool:
         r = a.t_co[:3, :3] @ b.t_co[:3, :3].T
@@ -114,9 +156,12 @@ class GuideMatcher:
              run_inline: bool = False) -> GuideCheck | None:
         """Start a check on this frame if none is running; when one finishes,
         return the pose to lock onto once `confirmations` checks in a row
-        matched and agree (an object held in place, not a passing look-alike)."""
+        matched and agree (an object held in place, not a passing look-alike).
+        After the first match, the next checks re-score that pose on new frames."""
         if self._job is None:
-            args = (model, guide, gray.copy(), hand_mask, camera_matrix, self.min_score, self.min_support)
+            verify = self._streak[-1].t_co if self._streak else None
+            args = (model, guide, gray.copy(), hand_mask, camera_matrix, self.min_score, self.min_support,
+                    verify, self.min_loose)
             if run_inline:
                 self._job = Future()
                 self._job.set_result(self.check(*args))
